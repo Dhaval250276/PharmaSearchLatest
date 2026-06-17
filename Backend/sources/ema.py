@@ -3,6 +3,8 @@ from playwright.sync_api import sync_playwright
 
 def run_ema_search(substance):
 
+    results = []
+
     with sync_playwright() as p:
 
         browser = p.chromium.launch(headless=True)
@@ -10,14 +12,19 @@ def run_ema_search(substance):
         page = browser.new_page()
 
         url = f"https://www.ema.europa.eu/en/search?search_api_fulltext={substance}"
+
         print("SEARCH URL:", url)
-        page.goto(url)
+
+        page.goto(url, timeout=60000)
+
         page.wait_for_timeout(5000)
+
         body_text = page.locator("body").inner_text()
+
         if "technical difficulties with our search function" in body_text.lower():
             print("EMA search unavailable")
-        return []
-
+            browser.close()
+            return []
         print("TITLE:", page.title())
 
         print("BODY LENGTH:",len(body_text))

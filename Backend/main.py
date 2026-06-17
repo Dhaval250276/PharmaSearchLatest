@@ -1,3 +1,5 @@
+from sources.parser import extract_strength_form
+from fastapi.responses import FileResponse
 from sources.search_engine import search_substance
 from sources.ema import find_product_url
 from sources.ema_product_parser import extract_product_page
@@ -7,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
 import sqlite3
 import pandas as pd
+import os
 
 
 from sources.ema import run_ema_search
@@ -109,8 +112,8 @@ def reset_db():
     return {"message": "Database cleared"}
 
 
-@app.get("/export/{substance}")
-def export(substance: str):
+@app.get("/export_old/{substance}")
+def export_old(substance: str):
 
     import pandas as pd
 
@@ -192,15 +195,15 @@ def export(substance: str):
         export_df["Brand Name"].str.contains("OZEMPIC", case=False, na=False),
         "Pack Size"
     ] = "1 Pre-filled Pen"
-    export_df["ATC Code"] = df["atc_code"]
-    export_df["Therapeutic Category"] = "Diabetes"
+    export_df["ATC Code"] = ""
+    export_df["Therapeutic Category"] = ""
     export_df["MA Holder Name"] = df["company"]
     export_df["Manufacturer Name"] = df["company"]
     export_df["Manufacturer Country"] = export_df["Country"]
     export_df["Registration Status"] = df["status"]
-    export_df["Registration Number"] = "Demo-Reg-001"
-    export_df["Registration Date"] = df["registration_date"]
-    export_df["Expiry Date"] = "31-Dec-2030"
+    export_df["Registration Number"] = ""
+    export_df["Registration Date"] = ""
+    export_df["Expiry Date"] =""
     export_df["Product Details"] = "https://www.ema.europa.eu"
     export_df["SMPC URL"] = "https://www.ema.europa.eu"
     export_df["PIL / Assessment Report"] = df["pil_url"]
@@ -222,9 +225,9 @@ def export(substance: str):
     "Zentiva k.s.": "https://www.zentiva.com",
     "Stada": "https://www.stada.com"
     }
-    export_df["Manufacturer Website"] = df["company"].map(company_websites).fillna("")
-    export_df["Manufacturer Contact Us Phone Number"] = "+44-000-000-0000"
-    export_df["Manufacturer Contact Us Email ID"] = "info@company.com"
+    export_df["Manufacturer Website"] = ""
+    export_df["Manufacturer Contact Us Phone Number"] = ""
+    export_df["Manufacturer Contact Us Email ID"] = ""
     export_df["Box Artwork"] = ""
     export_df["Foil Artwork"] = ""
     export_df["Insert / PIL artwork"] = ""
@@ -632,6 +635,7 @@ def global_search(substance: str):
 
     return {
         "substance": substance,
+        "count": len(results),
         "results": results
     }
 @app.get("/mhra_full/{substance}")
@@ -659,6 +663,83 @@ def mhra_full(substance: str):
         "substance": substance,
         "results": results
     }
+@app.get("/export/{substance}")
+def export_live(substance: str):
+
+    results = search_substance(substance)
+
+    if not results:
+        return {"message": "No records found"}
+
+    export_rows = []
+
+    for item in results:
+
+        country = item.get("country", "")
+        product = item.get("product", "")
+        url = item.get("url", "")
+
+        strength, dosage_form = extract_strength_form(product)
+        if country == "United Kingdom":
+            region = "UK"
+        elif country == "United States":
+            region = "US"
+        else:
+            region = "EU"
+
+        export_rows.append({
+            "Country": country,
+            "Region": region,
+            "Brand Name": product,
+            "Molecule (Active Ingredient(s))": substance,
+            "Strength": strength,
+            "Dosage Form": dosage_form,
+            "Pack Size": "",
+            "ATC Code": "",
+            "Therapeutic Category": "",
+            "MA Holder Name": "",
+            "Manufacturer Name": "",
+            "Manufacturer Country": country,
+            "Registration Status": "Authorised",
+            "Registration Number": "",
+            "Registration Date": "",
+            "Expiry Date": "",
+            "Product Details": url,
+            "SMPC URL": "",
+            "PIL / Assessment Report": "",
+            "Assessment Report": "",
+            "Manufacturer Website": "",
+            "Manufacturer Contact Us Phone Number": "",
+            "Manufacturer Contact Us Email ID": "",
+            "Box Artwork": "",
+            "Foil Artwork": "",
+            "Insert / PIL artwork": "",
+            "SMPC": ""
+        })
+
+    df = pd.DataFrame(export_rows)
+
+    os.makedirs("exports", exist_ok=True)
+
+    filename = f"exports/{substance}_export.xlsx"
+    print("TOTAL RESULTS:", len(results))
+    print("EXPORT ROWS:", len(export_rows))
+    print(df.head())
+    df.to_excel(filename, index=False)
+
+    return FileResponse(
+        filename,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=filename
+    )
+
+    df.to_excel(filename, index=False)
+
+    return FileResponse(
+        filename,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=filename
+    )
 @app.get("/products", response_class=HTMLResponse)
 def products():
 

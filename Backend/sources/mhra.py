@@ -55,7 +55,26 @@ def run_mhra_search(substance):
                 if not href:
                     continue
 
-                clean_text = " ".join(text.split())
+                    clean_text = " ".join(text.split())
+
+                    words = clean_text.split()
+
+                    half = len(words) // 2
+
+                if len(words) > 4 and words[:half] == words[half:]:
+                    clean_text = " ".join(words[:half])
+
+                    clean_text = clean_text.replace(
+                        "METFORMIN HYDROCHLORIDE METFORMIN HYDROCHLORIDE",
+                        "METFORMIN HYDROCHLORIDE"
+                    )
+                    parts = clean_text.split(" ", 2)
+
+                if len(parts) > 2:
+                    first_half = " ".join(parts[:2])
+
+                    if clean_text.startswith(first_half + " " + first_half):
+                        clean_text = clean_text.replace(first_half + " ", "", 1)
 
                 if clean_text.startswith(substance.upper() + " " + substance.upper()):
                     clean_text = clean_text.replace(
