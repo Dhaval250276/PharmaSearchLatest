@@ -12,25 +12,30 @@ def extract_mhra_product_page(url):
         page.goto(url)
 
         page.wait_for_timeout(3000)
+        print("URL:", page.url)
+        print("TITLE:", page.title())
+
+        body_text = page.locator("body").inner_text()
+
+        print(body_text[:3000])
 
         try:
 
-            page.locator("input[type='checkbox']").check()
+            checkbox = page.locator("input[type='checkbox']")
 
-            print("Checkbox checked")
+            if checkbox.count() > 0:
 
-            page.wait_for_timeout(1000)
+                checkbox.check()
 
-            page.get_by_text("Agree", exact=True).click()
+                page.wait_for_timeout(1000)
 
-            print("Agree clicked")
+                page.get_by_text("Agree", exact=True).click()
 
-            page.wait_for_timeout(5000)
+                page.wait_for_timeout(3000)
 
         except Exception as e:
 
-            print("ERROR:", e)
-
+            print("COOKIE WARNING:", e)
         current_url = page.url
         title = page.title()
 
@@ -39,18 +44,8 @@ def extract_mhra_product_page(url):
 
         body_text = page.locator("body").inner_text()
 
-        product_name = ""
-
-        if "FORXIGA" in body_text:
-
-            for line in body_text.split("\n"):
-
-                if "FORXIGA" in line and "TABLETS" in line:
-
-                    product_name = line.strip()
-
-                    break
-
+        # Use page title instead of hardcoded FORXIGA
+        product_name = title.strip()
         print("PRODUCT:", product_name)
 
 

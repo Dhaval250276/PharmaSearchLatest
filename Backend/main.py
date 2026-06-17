@@ -1,3 +1,4 @@
+from sources.search_engine import search_substance
 from sources.ema import find_product_url
 from sources.ema_product_parser import extract_product_page
 from sources.product_details import save_product_details
@@ -623,6 +624,40 @@ def crawl_all_products(substance: str):
         "substance": substance,
         "products_saved": len(saved_products),
         "products": saved_products
+    }
+@app.get("/global_search/{substance}")
+def global_search(substance: str):
+
+    results = search_substance(substance)
+
+    return {
+        "substance": substance,
+        "results": results
+    }
+@app.get("/mhra_full/{substance}")
+def mhra_full(substance: str):
+
+    product_urls = run_mhra_search(substance)
+
+    results = []
+
+    for item in product_urls[:5]:
+
+        try:
+
+            result = extract_mhra_product_page(
+                item["url"]
+            )
+
+            results.append(result)
+
+        except Exception as e:
+
+            print("ERROR:", e)
+
+    return {
+        "substance": substance,
+        "results": results
     }
 @app.get("/products", response_class=HTMLResponse)
 def products():
