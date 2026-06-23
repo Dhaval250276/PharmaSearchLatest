@@ -1,4 +1,8 @@
-from sources.parser import extract_strength_form
+from sources.parser import (
+    extract_strength,
+    extract_dosage_form,
+    extract_pl_number
+)
 from fastapi.responses import FileResponse
 from sources.search_engine import search_substance
 from sources.ema import find_product_url
@@ -10,6 +14,7 @@ from fastapi.responses import HTMLResponse
 import sqlite3
 import pandas as pd
 import os
+import re
 
 
 from sources.ema import run_ema_search
@@ -21,13 +26,33 @@ app = FastAPI()
 
 templates = Jinja2Templates(directory="templates")
 
+
+def extract_pl_number(product):
+
+    match = re.search(r'PL\s*\d+/\d+', product)
+
+    if match:
+        return match.group(0)
+
+    return ""
+
+@app.get("/global_search/{substance}")
+def global_search(substance: str):
+
+    results = search_substance(substance)
+
+    return {
+        "substance": substance,
+        "count": len(results),
+        "results": results
+    }
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="index.html"
     )
-
 @app.get("/crawl_mhra")
 def crawl_mhra(substance: str):
 
@@ -678,8 +703,18 @@ def export_live(substance: str):
         country = item.get("country", "")
         product = item.get("product", "")
         url = item.get("url", "")
-
-        strength, dosage_form = extract_strength_form(product)
+        strength = extract_strength(product)
+        dosage_form = extract_dosage_form(product)
+        registration_number = extract_pl_number(product)
+        print(
+            product,
+            "|",
+            strength,
+            "|",
+            dosage_form,
+            "|",
+            registration_number
+        )
         if country == "United Kingdom":
             region = "UK"
         elif country == "United States":
@@ -701,7 +736,7 @@ def export_live(substance: str):
             "Manufacturer Name": "",
             "Manufacturer Country": country,
             "Registration Status": "Authorised",
-            "Registration Number": "",
+            "Registration Number": registration_number,
             "Registration Date": "",
             "Expiry Date": "",
             "Product Details": url,
@@ -716,15 +751,22 @@ def export_live(substance: str):
             "Insert / PIL artwork": "",
             "SMPC": ""
         })
+    
+
+    print("TOTAL RESULTS:", len(results))
+    print("EXPORT ROWS:", len(export_rows))
+
+    for i, row in enumerate(export_rows):
+        print(i, row["Brand Name"])
 
     df = pd.DataFrame(export_rows)
 
     os.makedirs("exports", exist_ok=True)
 
     filename = f"exports/{substance}_export.xlsx"
-    print("TOTAL RESULTS:", len(results))
-    print("EXPORT ROWS:", len(export_rows))
+
     print(df.head())
+
     df.to_excel(filename, index=False)
 
     return FileResponse(

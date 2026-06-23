@@ -9,6 +9,8 @@ More information: Cookies and Europa Analytics (user behaviour data)
 Accept all cookies
 Accept only essential cookies
 English
+Search
+Select how you want to search using keywords
 Medicines
 Human regulatory
 Veterinary regulatory
@@ -17,208 +19,29 @@ News & events
 Partners & networks
 About us
 Home
-Search
-Search
-Select how you want to search using keywords
-All words
-Any word
-Exact phrase
+Page or document not found
+Page or document not found
+We are sorry, but the content you tried to access is unavailable at the link you used, which was either incorrect or out-of-date. To help you find what you are looking for, we have included some useful tips.
+To help you find the content:
+Use the back button to return to the previous page, or go to our homepage
+Search for the content, using the search option on the top right
+Browse for the content, using the navigation menu above or the links below
 
-We are currently experiencing technical difficulties with our search function. We are working on resolving the issue. Please try again later.
+You can also search or browse for the content on archived versions of this website.
 
-To fetch data from this website via automated systems, please use our JSON data files
+If you still cannot find what you need, you can send a question to EMA.
 
-Filter by
-Type of content
-Medicines and related procedures (13647)
-News (3862)
-Events (3270)
-Guidance and information (2069)
-
-Include documents
-
-No
-Categories
-Corporate (1877)
-Herbal (414)
-Human (17745)
-Veterinary (2411)
-Topics
-Advanced therapies (414)
-Antimicrobial resistance (53)
-Biologicals (26)
-Biosimilars (211)
-Brexit (30)
-Careers (5)
-Clinical trials (251)
-Compassionate use (4)
-Compliance and inspections (108)
-Corporate (102)
-COVID-19 (479)
-Data on medicines (246)
-Early access (25)
-Fees (21)
-Generic and hybrid medicines (419)
-Governance (111)
-Innovation (294)
-Maximum residue limit (549)
-Medical devices (46)
-Medication error (8)
-Medicines (8612)
-Medicines for use outside the EU (39)
-Medicine shortages (280)
-Mpox (19)
-Paediatrics (3564)
-Parallel distribution (6)
-Pharmacovigilance (3474)
-PRIME (3)
-Procurement (11)
-Product information (81)
-Quality of medicines (108)
-Rare diseases (3634)
-Referrals (432)
-Regulatory and procedural guidance (596)
-Research and development (239)
-Scientific advice (43)
-Scientific guidelines (1073)
-SME (67)
-Vaccines (430)
-Veterinary limited markets (15)
-Show all
-Responsible body
-CHMP (1087)
-CVMP (604)
-PRAC (479)
-COMP (288)
-PDCO (272)
-CAT (232)
-Management Board (209)
-HMPC (132)
-CMDh (32)
-Last updated
-From:
-To:
-This week
-This month
-Last week
-Last month
-First published
-From:
-To:
-Search results
-(28151)
-Sort by
-Newest first
-Oldest first
-Closest match
-A to Z
-Z to A
-Zutectra
-INN or common name:human hepatitis B immunoglobulin
-Therapeutic area (MeSH):Immunization, Passive; Hepatitis B; Liver Transplantation
-Marketing authorisation issued: 30 November 2009
-Last updated:12 June 2026
-Revision: 19
-Medicine
-Human
-Authorised
-Emtricitabine/Tenofovir disoproxil Mylan
-INN or common name:emtricitabine; tenofovir disoproxil
-Therapeutic area (MeSH):HIV Infections
-Marketing authorisation issued: 16 December 2016
-Last updated:12 June 2026
-Revision: 18
-Generic
-Medicine
-Human
-Authorised
-Dimethyl fumarate Mylan
-INN or common name:dimethyl fumarate
-Therapeutic area (MeSH):Multiple Sclerosis
-Marketing authorisation issued: 22 April 2024
-Last updated:12 June 2026
-Revision: 4
-Generic
-Medicine
-Human
-Authorised
-Efavirenz/Emtricitabine/Tenofovir disoproxil Mylan
-INN or common name:efavirenz; emtricitabine; tenofovir disoproxil
-Therapeutic area (MeSH):HIV Infections
-Marketing authorisation issued: 5 September 2017
-Last updated:12 June 2026
-Revision: 19
-Generic
-Medicine
-Human
-Authorised
-Sugammadex Mylan
-INN or common name:sugammadex
-Therapeutic area (MeSH):Neuromuscular Blockade
-Marketing authorisation issued: 15 November 2021
-Last updated:12 June 2026
-Revision: 7
-Generic
-Medicine
-Human
-Authorised
-Lenalidomide Mylan
-INN or common name:lenalidomide
-Therapeutic area (MeSH):Multiple Myeloma
-Marketing authorisation issued: 18 December 2020
-Last updated:12 June 2026
-Revision: 14
-Generic
-Medicine
-Human
-Authorised
-Fulvestrant Mylan
-INN or common name:fulvestrant
-Therapeutic area (MeSH):Breast Neoplasms
-Marketing authorisation issued: 8 January 2018
-Last updated:12 June 2026
-Revision: 8
-Generic
-Medicine
-Human
-Authorised
-Regulatory Perspectives on Herbal Medicinal / Botanical Drug Product Development: Joint FDA / EMA Workshop
-Online
-European Medicines Agency, Amsterdam, the Netherlands
-Start date: 25 September 2026, 10:00 (CEST)
-End date: 25 September 2026, 13:00 (CEST)
-Last updated: 12 June 2026
-Event
-Human
-Medicines
-Substance and product data management services
-
-The European Medicines Agency (EMA) is delivering a Product Management Service (PMS) and a Substance Management Service (SMS) to support regulatory activities in the European Union (EU).
-
-Last updated: 12 June 2026
-Human
-Data on medicines
-Amlodipine / Valsartan Mylan
-INN or common name:amlodipine; valsartan
-Therapeutic area (MeSH):Hypertension
-Marketing authorisation issued: 22 March 2016
-Last updated:12 June 2026
-Revision: 18
-Generic
-Medicine
-Human
-Authorised
-1
-2
-3
-4
-5
-6
-7
-8
-9
-…
-2816
+Looking for specific information?
+Medicine-related information
+Find information about a medicine, including its assessment history and product information.
+Scientific guidelines
+Find guidelines to help prepare marketing authorisation applications.
+Documents
+Search EMA's documents. You can refine your search by filtering for the responsible body, a specific topic, document type, and more.
+Events
+Search EMA's events. You can refine your search by filtering for the responsible body, a specific topic, and more.
+What’s new
+Find all new and updated information published on our website in one place.
 Back to top
 
 Product emergency hotline
@@ -267,4 +90,3 @@ Follow EMA on LinkedIn. Opens in a new window.
 © 1995 - 2026 European Medicines Agency
 European Union agencies network
 An agency of the European Union
-40 options available

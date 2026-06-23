@@ -1,104 +1,178 @@
+import traceback
 from playwright.sync_api import sync_playwright
+from sources.parser import clean_product_name
 
 
 def run_mhra_search(substance):
 
     results = []
 
-    with sync_playwright() as p:
+    try:
 
-        browser = p.chromium.launch(
-            headless=True
-        )
+        with sync_playwright() as p:
 
-        page = browser.new_page()
+            browser = p.chromium.launch(headless=True)
 
-        url = f"https://products.mhra.gov.uk/search/?search={substance}&page=1"
+            page = browser.new_page(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/137.0.0.0 Safari/537.36"
+                )
+            )
 
-        print("SEARCH URL:", url)
+            url = (
+                f"https://products.mhra.gov.uk/search/"
+                f"?search={substance}&page=1"
+            )
 
-        page.goto(
-            url,
-            wait_until="domcontentloaded",
-            timeout=60000
-        )
+            print("SEARCH URL:", url)
 
-        page.wait_for_timeout(5000)
+            success = False
 
-        try:
+            for attempt in range(3):
 
-            checkbox = page.locator("input[type='checkbox']")
+                try:
 
-            if checkbox.count() > 0:
+                    page.goto(
+                        url,
+                        wait_until="networkidle",
+                        timeout=90000
+                    )
 
-                checkbox.check()
+                    success = True
+                    break
 
-                page.wait_for_timeout(1000)
+                except Exception as e:
 
-                page.get_by_text("Agree", exact=True).click()
+                    print(
+                        f"ATTEMPT {attempt + 1} FAILED:",
+                        e
+                    )
 
-                page.wait_for_timeout(3000)
+                    page.wait_for_timeout(5000)
 
-        except Exception as e:
+            if not success:
 
-            print("COOKIE WARNING:", e)
-        links = page.locator("a").all()
+                print("MHRA CONNECTION FAILED")
 
-        for link in links:
+                browser.close()
+
+                return []
+
+            page.wait_for_timeout(5000)
 
             try:
 
-                text = link.inner_text().strip()
+                checkbox = page.locator(
+                    "input[type='checkbox']"
+                )
 
-                href = link.get_attribute("href")
+                if checkbox.count() > 0:
 
-                if not href:
-                    continue
+                    checkbox.check()
 
-                    clean_text = " ".join(text.split())
+                    page.wait_for_timeout(1000)
 
-                    words = clean_text.split()
+                    page.get_by_text(
+                        "Agree",
+                        exact=True
+                    ).click()
 
-                    half = len(words) // 2
+                    page.wait_for_timeout(3000)
 
-                if len(words) > 4 and words[:half] == words[half:]:
-                    clean_text = " ".join(words[:half])
+            except Exception as e:
 
-                    clean_text = clean_text.replace(
-                        "METFORMIN HYDROCHLORIDE METFORMIN HYDROCHLORIDE",
-                        "METFORMIN HYDROCHLORIDE"
+                print("COOKIE WARNING:", e)
+
+            print("PAGE TITLE:", page.title())
+            print("PAGE URL:", page.url)
+
+            with open(
+                "mhra_debug.html",
+                "w",
+                encoding="utf-8"
+            ) as f:
+
+                f.write(page.content())
+
+            links = page.locator("a").all()
+
+            print("TOTAL LINKS FOUND:", len(links))
+
+            for link in links:
+
+                try:
+
+                    text = link.inner_text().strip()
+
+                    href = link.get_attribute("href")
+
+                    if not href:
+                        continue
+                    print("DOCUMENT URL:", href)
+
+                    clean_text = " ".join(
+                        text.split()
                     )
-                    parts = clean_text.split(" ", 2)
 
-                if len(parts) > 2:
-                    first_half = " ".join(parts[:2])
-
-                    if clean_text.startswith(first_half + " " + first_half):
-                        clean_text = clean_text.replace(first_half + " ", "", 1)
-
-                if clean_text.startswith(substance.upper() + " " + substance.upper()):
-                    clean_text = clean_text.replace(
-                        substance.upper() + " ",
-                        "",
-                        1
+                    clean_text = clean_product_name(
+                        clean_text
                     )
 
-                if "PL " not in clean_text:
-                    continue
+                    # Ignore non-product links
+                    if "PL " not in clean_text:
+                        continue
 
-                results.append({
-                    "substance": substance,
-                    "product": clean_text,
-                    "country": "United Kingdom",
-                    "source": "MHRA",
-                    "url": href
-                })
+                    print(
+                        "PRODUCT:",
+                        clean_text
+                    )
 
-            except Exception:
-                pass
+                    print(
+                        "URL:",
+                        href
+                    )
+                    print("DOCUMENT URL:", href)
+                    doc_page = browser.new_page()
 
-        browser.close()
+                    doc_page.goto(
+                        href,
+                        wait_until="networkidle",
+                        timeout=60000
+                    )
 
-        print("TOTAL MHRA RESULTS:", len(results))
+                    html = doc_page.content()
 
-        return results
+                    print("DOCUMENT LOADED")
+
+                    doc_page.close()
+
+
+                    print("-" * 100)
+
+                    results.append({
+                        "substance": substance,
+                        "product": clean_text,
+                        "country": "United Kingdom",
+                        "source": "MHRA",
+                        "url": href
+                    })
+
+                except Exception as e:
+
+                    print("ERROR:", e)
+
+                    traceback.print_exc()
+
+            browser.close()
+
+    except Exception as e:
+
+        print("MHRA ERROR:", e)
+
+        traceback.print_exc()
+
+    print("TOTAL MHRA RESULTS:", len(results))
+
+    return results

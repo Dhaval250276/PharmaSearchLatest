@@ -22,7 +22,7 @@ def run_ema_search(substance):
         body_text = page.locator("body").inner_text()
 
         if "technical difficulties with our search function" in body_text.lower():
-            print("EMA search unavailable")
+            print("EMA SEARCH UNAVAILABLE - USING FDA + MHRA ONLY")
             browser.close()
             return []
         print("TITLE:", page.title())

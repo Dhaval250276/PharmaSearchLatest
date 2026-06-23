@@ -1,29 +1,23 @@
-from sources.mhra import run_mhra_search
-from sources.ema import run_ema_search
-from sources.fda import run_fda_search
+from sources.source_registry import SOURCES
 
 
 def search_substance(substance):
 
     results = []
 
-    try:
-        fda_results = run_fda_search(substance)
-        results.extend(fda_results)
-    except Exception as e:
-        print("FDA Error:", e)
+    for source in SOURCES:
 
-    try:
-        mhra_results = run_mhra_search(substance)
-        results.extend(mhra_results)
-    except Exception as e:
-        print("MHRA Error:", e)
+        try:
 
-    try:
-        ema_results = run_ema_search(substance)
-        results.extend(ema_results)
-    except Exception as e:
-        print("EMA Error:", e)
+            print(f"RUNNING {source['name']} SEARCH")
+
+            source_results = source["function"](substance)
+
+            results.extend(source_results)
+
+        except Exception as e:
+
+            print(f"{source['name']} ERROR:", e)
 
     unique = []
     seen = set()
@@ -31,12 +25,17 @@ def search_substance(substance):
     for item in results:
 
         key = (
-            item.get("product", "").lower(),
-            item.get("country", "")
+            item.get("product", "").strip().lower(),
+            item.get("country", "").strip().lower()
         )
 
         if key not in seen:
+
             seen.add(key)
+
             unique.append(item)
+
+    print("RAW RESULTS:", len(results))
+    print("UNIQUE RESULTS:", len(unique))
 
     return unique
