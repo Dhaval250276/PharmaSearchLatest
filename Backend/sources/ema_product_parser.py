@@ -1,17 +1,21 @@
 from playwright.sync_api import sync_playwright
 
+from core.logging_config import get_logger
 
-def extract_product_page(url):
+
+logger = get_logger(__name__)
+
+
+def extract_product_page(url: str) -> dict[str, str]:
 
     with sync_playwright() as p:
 
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=True)
 
         page = browser.new_page()
 
-        page.goto(url)
-
-        page.wait_for_timeout(5000)
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_selector("body", timeout=15000)
 
         title = page.title()
 
@@ -115,14 +119,14 @@ def extract_product_page(url):
             if len(lines) > 1:
                 authorisation_date = lines[1].strip()
 
-        print("SMPC:", smpc_url)
-        print("PIL:", pil_url)
-        print("Assessment:", assessment_report_url)
+        logger.debug("EMA product page SMPC URL: %s", smpc_url)
+        logger.debug("EMA product page PIL URL: %s", pil_url)
+        logger.debug("EMA product page assessment URL: %s", assessment_report_url)
 
         browser.close()
-        print("PRODUCT:", product_name)
-        print("MAH:", mah)
-        print("ACTIVE:", active_substance)
+        logger.info("Parsed EMA product page: %s", product_name)
+        logger.debug("EMA product page MAH: %s", mah)
+        logger.debug("EMA product page active substance: %s", active_substance)
 
         return {
             "page_title": title,

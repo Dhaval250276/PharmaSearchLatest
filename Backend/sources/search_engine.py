@@ -1,41 +1,110 @@
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
+from copy import deepcopy
+from functools import lru_cache
+from typing import Any
+
 from sources.source_registry import SOURCES
+from sources.synonyms import get_substance_search_terms
+from core.logging_config import get_logger
 
 
-def search_substance(substance):
+LIVE_SEARCH_TIMEOUT_SECONDS = 10
+COMPLETE_SEARCH_TIMEOUT_SECONDS = 30
+logger = get_logger(__name__)
+SINGLE_TERM_SOURCES = {
+    "cdsco india",
+    "hong kong drug office",
+}
 
-    results = []
 
-    for source in SOURCES:
+def search_substance(
+    substance: str,
+    source_names: list[str] | None = None,
+    timeout_seconds: int = LIVE_SEARCH_TIMEOUT_SECONDS,
+) -> list[dict[str, Any]]:
+    timeout_seconds = timeout_seconds or LIVE_SEARCH_TIMEOUT_SECONDS
+    source_key = tuple(sorted(name.strip().lower() for name in source_names or [] if name.strip()))
+    return deepcopy(_search_substance_cached(substance.strip(), source_key, timeout_seconds))
 
+
+@lru_cache(maxsize=128)
+def _search_substance_cached(
+    substance: str,
+    source_key: tuple[str, ...],
+    timeout_seconds: int,
+) -> list[dict[str, Any]]:
+    allowed_sources = None
+    if source_key:
+        allowed_sources = set(source_key)
+
+    jobs = {}
+    executor = ThreadPoolExecutor(max_workers=min(8, max(1, len(SOURCES) * 2)))
+    try:
+        for source in SOURCES:
+            if allowed_sources is not None and source["name"].strip().lower() not in allowed_sources:
+                continue
+            source_name = source["name"].strip().lower()
+            search_terms = [substance] if source_name in SINGLE_TERM_SOURCES else get_substance_search_terms(substance)
+            for search_term in search_terms:
+                job = executor.submit(_run_source_search, source, search_term, substance)
+                jobs[job] = source["name"]
+
+        results = []
         try:
-
-            print(f"RUNNING {source['name']} SEARCH")
-
-            source_results = source["function"](substance)
-
-            results.extend(source_results)
-
-        except Exception as e:
-
-            print(f"{source['name']} ERROR:", e)
+            completed_jobs = as_completed(
+                jobs,
+                timeout=timeout_seconds,
+            )
+            for job in completed_jobs:
+                results.extend(job.result())
+        except TimeoutError:
+            pending_sources = sorted(
+                {source_name for job, source_name in jobs.items() if not job.done()}
+            )
+            if pending_sources:
+                logger.warning("Search timeout skipped sources: %s", ", ".join(pending_sources))
+            for job in jobs:
+                if not job.done():
+                    job.cancel()
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
     unique = []
     seen = set()
-
     for item in results:
-
+        if not item.get("product"):
+            continue
         key = (
+            item.get("source", "").strip().lower(),
             item.get("product", "").strip().lower(),
-            item.get("country", "").strip().lower()
+            item.get("country", "").strip().lower(),
+            item.get("registration_number", "").strip().lower(),
+            item.get("url", "").strip().lower(),
         )
-
         if key not in seen:
-
             seen.add(key)
-
             unique.append(item)
 
-    print("RAW RESULTS:", len(results))
-    print("UNIQUE RESULTS:", len(unique))
+    logger.info("Search returned %s raw results and %s unique results", len(results), len(unique))
 
     return unique
+
+
+def _run_source_search(
+    source: dict[str, Any],
+    search_term: str,
+    substance: str,
+) -> list[dict[str, Any]]:
+    try:
+        logger.info("Running %s search for %s", source["name"], search_term)
+        source_results = source["function"](search_term)
+        results = []
+        for item in source_results or []:
+            item["source_substance"] = item.get("substance", "")
+            item["searched_substance"] = substance
+            item["substance"] = substance
+            results.append(item)
+        return results
+    except Exception:
+        logger.exception("%s search failed", source["name"])
+        return []

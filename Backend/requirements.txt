@@ -6,3 +6,5 @@ jinja2
 requests
 beautifulsoup4
 playwright
+pypdf
+cryptography

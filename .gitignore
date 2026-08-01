@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+Backend/.venv/
+
+# Local runtime data and generated exports
+Backend/pharmasearch.db
+Backend/exports/
+Backend/*.xlsx
+
+# Scraper/debug artifacts
+Backend/*_debug.html
+Backend/*_page.html
+Backend/*_results.html
+Backend/*_results.png
+Backend/*_output*.txt
+Backend/mhra_*.html
+Backend/mhra_js_*.js
+Backend/medicines_ie_*.js
+Backend/forxiga_page.png
+
+# Test/runtime caches
+Backend/**/__pycache__/

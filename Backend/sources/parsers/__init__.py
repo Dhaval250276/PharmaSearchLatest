@@ -1,6 +1,5 @@
 from sources.parsers.medicine import (
     clean_product_name,
-    extract_atc_code,
     extract_dosage_form,
     extract_pack_size,
     extract_pl_number,
@@ -13,7 +12,6 @@ from sources.parsers.medicine import (
 
 __all__ = [
     "clean_product_name",
-    "extract_atc_code",
     "extract_dosage_form",
     "extract_pack_size",
     "extract_pl_number",

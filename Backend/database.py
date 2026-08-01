@@ -1,23 +1,5 @@
-import sqlite3
+from repository import initialize_database
 
-conn = sqlite3.connect("pharmasearch.db")
 
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS medicines (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    substance TEXT,
-    product TEXT,
-    company TEXT,
-    country TEXT,
-    status TEXT,
-    source TEXT
-)
-""")
-
-conn.commit()
-
+initialize_database()
 print("Database created successfully")
-
-conn.close()
