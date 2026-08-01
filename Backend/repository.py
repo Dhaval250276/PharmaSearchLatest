@@ -6,7 +6,10 @@ from typing import Any
 import re
 import json
 
-from config import DB_PATH
+from config import BASE_DIR, DB_PATH
+
+
+PRODUCT_DETAILS_SEED_PATH = BASE_DIR / "data" / "product_details_seed.jsonl"
 
 
 PRODUCT_DETAIL_COLUMNS = {
@@ -215,6 +218,45 @@ def initialize_database():
                     """,
                     ("; ".join(filtered_parts), "; ".join(filtered_parts), "; ".join(filtered_parts), row["id"]),
                 )
+        cursor.execute(
+            """
+            DELETE FROM product_details
+            WHERE
+                LOWER(COALESCE(document_type, '')) LIKE '%lookup fallback%'
+                OR LOWER(COALESCE(product, '')) LIKE '%regulator lookup%'
+            """
+        )
+        _seed_product_details_if_empty(cursor)
+
+
+def _seed_product_details_if_empty(cursor: sqlite3.Cursor) -> None:
+    if not PRODUCT_DETAILS_SEED_PATH.exists():
+        return
+    existing_count = cursor.execute("SELECT COUNT(*) FROM product_details").fetchone()[0]
+    if existing_count:
+        return
+
+    columns = [
+        column
+        for column in PRODUCT_DETAIL_COLUMNS
+        if column != "id"
+    ]
+    placeholders = ", ".join(["?"] * len(columns))
+    inserted = 0
+    with PRODUCT_DETAILS_SEED_PATH.open("r", encoding="utf-8") as seed_file:
+        for line in seed_file:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            cursor.execute(
+                f"""
+                INSERT INTO product_details ({", ".join(columns)})
+                VALUES ({placeholders})
+                """,
+                [row.get(column, "") for column in columns],
+            )
+            inserted += 1
+    if inserted:
         cursor.execute(
             """
             DELETE FROM product_details
