@@ -1125,6 +1125,12 @@ def enriched_cached_results(results: list[dict[str, Any]]) -> list[dict[str, Any
     return enriched_results
 
 
+def prepared_cached_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Prepare persisted results for display without network or document parsing."""
+    rows = [dict(item) for item in results]
+    return attach_ai_enrichment_metadata(propagate_molecule_fields(rows))
+
+
 def filtered_search_results(
     substance: str,
     live: bool,

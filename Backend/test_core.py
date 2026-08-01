@@ -43,12 +43,24 @@ from services.search_pipeline import (
     _country_lookup_rows,
     _eu_lookup_rows,
     filtered_search_results,
+    prepared_cached_results,
     sources_for_scope,
     suppress_generic_lookup_rows,
     is_connector_lookup_fallback,
 )
 from services.search_jobs import SLOW_SOURCES, _dedupe_rows, order_sources_for_job, source_skipped_in_mode
 from services.therapeutic_category import short_therapeutic_category
+
+
+class CachedResultPreparationTests(unittest.TestCase):
+    def test_prepares_background_results_without_mutating_saved_rows(self):
+        saved_rows = [{"substance": "metformin", "product": "Metformin 500 mg", "source": "FDA"}]
+
+        prepared = prepared_cached_results(saved_rows)
+
+        self.assertEqual(saved_rows[0].get("data_confidence"), None)
+        self.assertEqual(prepared[0]["product"], "Metformin 500 mg")
+        self.assertIn("data_confidence", prepared[0])
 
 
 class ParserTests(unittest.TestCase):

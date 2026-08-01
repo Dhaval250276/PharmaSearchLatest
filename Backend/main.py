@@ -35,6 +35,7 @@ from services.search_pipeline import (
     enriched_cached_results,
     filtered_search_results,
     parse_sources,
+    prepared_cached_results,
 )
 from services.ai_client import ai_status as current_ai_status
 from services.connector_health import connector_health_rows
@@ -430,7 +431,7 @@ def search_job_results_page(job_id: str):
     job = get_search_job(job_id)
     if not job:
         return HTMLResponse("<h2>Search job not found</h2>", status_code=404)
-    rows = enriched_cached_results(get_search_job_results(job_id))
+    rows = prepared_cached_results(get_search_job_results(job_id))
     body_rows = []
     for row in rows[:200]:
         display_row = formatted_result_row(row, searched_substance=job["substance"])
