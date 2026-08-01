@@ -8,15 +8,17 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from config import BASE_DIR, EXPORT_DIR
+from config import BASE_DIR, DB_PATH, EXPORT_DIR
 from core.logging_config import configure_logging, get_logger
 from export_service import write_excel_export
 from repository import (
+    PRODUCT_DETAILS_SEED_PATH,
     initialize_database,
     list_search_jobs,
     list_product_details,
     reset_database,
     save_product_detail,
+    seed_product_details_if_needed,
 )
 from sources.ema import EU_COUNTRIES, find_product_url, run_ema_search
 from sources.ema_product_parser import extract_product_page
@@ -181,6 +183,41 @@ def api_sources():
 @app.get("/api/version")
 def api_version():
     return {"app": "PharmaSearch", "build": APP_BUILD}
+
+
+@app.get("/api/data_health")
+def api_data_health():
+    inserted = seed_product_details_if_needed()
+    rows = list_product_details()
+    sample_substances = [
+        "metformin",
+        "paracetamol",
+        "dapagliflozin",
+        "quetiapine",
+        "mirabegron",
+    ]
+    sample_counts = {
+        substance: sum(
+            1
+            for row in rows
+            if substance in str(row.get("substance") or "").lower()
+            or substance in str(row.get("product") or "").lower()
+        )
+        for substance in sample_substances
+    }
+    return {
+        "app": "PharmaSearch",
+        "build": APP_BUILD,
+        "database_path": str(DB_PATH),
+        "seed_file": str(PRODUCT_DETAILS_SEED_PATH),
+        "seed_file_exists": PRODUCT_DETAILS_SEED_PATH.exists(),
+        "seed_file_size": PRODUCT_DETAILS_SEED_PATH.stat().st_size
+        if PRODUCT_DETAILS_SEED_PATH.exists()
+        else 0,
+        "seed_rows_inserted_now": inserted,
+        "product_details_count": len(rows),
+        "sample_counts": sample_counts,
+    }
 
 
 @app.get("/api/export_directory")

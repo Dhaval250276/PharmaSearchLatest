@@ -226,15 +226,15 @@ def initialize_database():
                 OR LOWER(COALESCE(product, '')) LIKE '%regulator lookup%'
             """
         )
-        _seed_product_details_if_empty(cursor)
+        _seed_product_details_if_sparse(cursor)
 
 
-def _seed_product_details_if_empty(cursor: sqlite3.Cursor) -> None:
+def _seed_product_details_if_sparse(cursor: sqlite3.Cursor, minimum_rows: int = 1000) -> int:
     if not PRODUCT_DETAILS_SEED_PATH.exists():
-        return
+        return 0
     existing_count = cursor.execute("SELECT COUNT(*) FROM product_details").fetchone()[0]
-    if existing_count:
-        return
+    if existing_count >= minimum_rows:
+        return 0
 
     columns = [
         column
@@ -248,6 +248,26 @@ def _seed_product_details_if_empty(cursor: sqlite3.Cursor) -> None:
             if not line.strip():
                 continue
             row = json.loads(line)
+            existing = cursor.execute(
+                """
+                SELECT 1
+                FROM product_details
+                WHERE
+                    COALESCE(source, '') = COALESCE(?, '')
+                    AND COALESCE(product, '') = COALESCE(?, '')
+                    AND COALESCE(country, '') = COALESCE(?, '')
+                    AND COALESCE(registration_number, '') = COALESCE(?, '')
+                LIMIT 1
+                """,
+                (
+                    row.get("source", ""),
+                    row.get("product", ""),
+                    row.get("country", ""),
+                    row.get("registration_number", ""),
+                ),
+            ).fetchone()
+            if existing:
+                continue
             cursor.execute(
                 f"""
                 INSERT INTO product_details ({", ".join(columns)})
@@ -265,6 +285,13 @@ def _seed_product_details_if_empty(cursor: sqlite3.Cursor) -> None:
                 OR LOWER(COALESCE(product, '')) LIKE '%regulator lookup%'
             """
         )
+    return inserted
+
+
+def seed_product_details_if_needed(minimum_rows: int = 1000) -> int:
+    initialize_database()
+    with get_connection() as conn:
+        return _seed_product_details_if_sparse(conn.cursor(), minimum_rows=minimum_rows)
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
