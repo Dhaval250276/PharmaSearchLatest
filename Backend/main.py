@@ -793,7 +793,7 @@ def search_page(
             """
             <tr>
                 <td colspan="25" class="text-center text-muted py-4">
-                    No direct product records on this page. Use the official registry links above for manual verification.
+                    No direct product records on this page. Use the official source links above for manual verification.
                 </td>
             </tr>
             """
@@ -816,7 +816,7 @@ def search_page(
     if registry_link_rows:
         registry_links_section = f"""
         <div class="alert alert-info border mt-3">
-            <strong>Official registry links:</strong> These are not extracted product records. Open the regulator site to verify this substance manually.
+            <strong>Official source links:</strong> Product data was not extracted from these countries yet. Use these regulator links for manual verification.
             <div class="table-responsive mt-2">
                 <table class="table table-sm table-bordered bg-white mb-0">
                     <thead>
@@ -824,7 +824,7 @@ def search_page(
                             <th>Country</th>
                             <th>Source</th>
                             <th>Status</th>
-                            <th>Registry Link</th>
+                            <th>Official Link</th>
                         </tr>
                     </thead>
                     <tbody>{"".join(registry_link_rows)}</tbody>
@@ -907,10 +907,10 @@ def search_page(
         )
     elif registry_rows:
         result_alert_class = "info"
-        result_alert_title = "Official registry links"
+        result_alert_title = "Official source links"
         result_alert_detail = (
             f"No direct product records were extracted. Showing {len(registry_rows)} official regulator "
-            f"search links for manual verification."
+            f"links at the top for manual verification."
         )
     else:
         result_alert_class = "warning"

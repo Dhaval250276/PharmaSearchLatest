@@ -10,7 +10,7 @@
     <div class="text-center mb-4">
         <h1>PharmaSearch</h1>
         <p class="text-muted">
-            Search any active substance across saved and live regulatory sources
+            Search any active substance across regulatory sources
         </p>
         <div class="d-flex justify-content-center gap-2">
             <a class="btn btn-outline-secondary btn-sm" href="/search_jobs">Recent Searches</a>
@@ -92,16 +92,16 @@
 
         <div class="d-flex gap-2">
             <button class="btn btn-primary" type="submit" name="search_mode" value="fast">
-                Fast Live Search
+                Search
             </button>
             <button class="btn btn-outline-primary" type="submit" name="search_mode" value="full">
-                Full Live Search
+                Deep Search
             </button>
             <button class="btn btn-success" type="submit" formaction="/search_jobs/start" name="mode" value="fast">
-                Fast Background Search
+                Background Search
             </button>
             <button class="btn btn-outline-success" type="submit" formaction="/search_jobs/start" name="mode" value="full">
-                Full Background Search
+                Full Background
             </button>
         </div>
     </form>
