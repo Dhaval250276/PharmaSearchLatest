@@ -431,31 +431,85 @@ def search_job_results_page(job_id: str):
     job = get_search_job(job_id)
     if not job:
         return HTMLResponse("<h2>Search job not found</h2>", status_code=404)
-    rows = prepared_cached_results(get_search_job_results(job_id))
+    saved_rows = get_search_job_results(job_id)
+    rows = prepared_cached_results(saved_rows[:200])
+    columns = [
+        ("molecule", "Molecule"),
+        ("product", "Product Name"),
+        ("company", "Company"),
+        ("country", "Country"),
+        ("region", "Region"),
+        ("registration_status", "Registration Status"),
+        ("source", "Source"),
+        ("strength", "Strength"),
+        ("dosage_form", "Dosage Form"),
+        ("pack_size", "Pack Size"),
+        ("atc_code", "ATC Code"),
+        ("therapeutic_category", "Therapeutic Category"),
+        ("ma_holder", "MA Holder Name"),
+        ("manufacturer_name", "Manufacturer Name"),
+        ("manufacturer_country", "Manufacturer Country"),
+        ("registration_number", "Registration Number"),
+        ("registration_date", "Registration Date"),
+        ("product_details_url", "Product Details"),
+        ("smpc_url", "SmPC URL"),
+        ("pil_url", "PIL URL"),
+        ("assessment_report_url", "Assessment Report"),
+        ("data_confidence", "Data Confidence"),
+        ("enrichment_status", "Enrichment Status"),
+        ("missing_fields", "Missing Fields"),
+    ]
+    link_columns = {
+        "product_details_url": "Open Product",
+        "smpc_url": "Open SmPC",
+        "pil_url": "Open PIL",
+        "assessment_report_url": "Open Assessment",
+    }
     body_rows = []
     for row in rows[:200]:
         display_row = formatted_result_row(row, searched_substance=job["substance"])
-        body_rows.append(
-            f"""
-            <tr>
-                <td>{h(display_row["molecule"])}</td>
-                <td>{h(display_row["product"])}</td>
-                <td>{h(display_row["country"])}</td>
-                <td>{h(display_row["source"])}</td>
-                <td>{h(display_row["registration_status"])}</td>
-                <td>{h(row.get("data_confidence", ""))}</td>
-                <td>{link_or_unavailable(display_row["product_details_url"], "Open Product")}</td>
-            </tr>
-            """
+        display_row.update(
+            {
+                "data_confidence": row.get("data_confidence", ""),
+                "enrichment_status": row.get("enrichment_status", ""),
+                "missing_fields": row.get("missing_fields", ""),
+            }
         )
+        cells = []
+        for key, _label in columns:
+            value = display_row.get(key, "")
+            if key in link_columns:
+                cells.append(f"<td>{link_or_unavailable(value, link_columns[key])}</td>")
+            else:
+                cells.append(f"<td>{h(value)}</td>")
+        body_rows.append(f'<tr class="result-row">{"".join(cells)}</tr>')
     if not body_rows:
-        body_rows.append('<tr><td colspan="7" class="text-center text-muted">No records found yet.</td></tr>')
+        body_rows.append(
+            f'<tr><td colspan="{len(columns)}" class="text-center text-muted">No records found yet.</td></tr>'
+        )
+    header_cells = "".join(f"<th>{h(label)}</th>" for _key, label in columns)
+    filter_cells = "".join(
+        f'<th><input class="form-control form-control-sm column-filter" '
+        f'data-column="{index}" placeholder="Filter" aria-label="Filter {h(label)}"></th>'
+        for index, (_key, label) in enumerate(columns)
+    )
     html = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <title>Search Job Results</title>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <style>
+            .results-scroll {{ overflow: auto; max-height: calc(100vh - 190px); }}
+            .results-table {{ min-width: 4200px; font-size: .88rem; }}
+            .results-table th {{ min-width: 150px; vertical-align: top; }}
+            .results-table th:nth-child(2) {{ min-width: 260px; }}
+            .results-table th:nth-child(12), .results-table th:nth-child(23),
+            .results-table th:nth-child(24) {{ min-width: 300px; }}
+            .results-table thead tr:first-child th {{ position: sticky; top: 0; z-index: 2; }}
+            .results-table thead tr.filters th {{ position: sticky; top: 42px; z-index: 2; background: #dee2e6; }}
+            .results-table td {{ white-space: normal; overflow-wrap: anywhere; }}
+        </style>
     </head>
     <body>
     <div class="container-fluid px-4 mt-4">
@@ -463,7 +517,7 @@ def search_job_results_page(job_id: str):
             <div>
                 <h2>Search Job Results</h2>
                 <p class="mb-0">Active Substance: <strong>{h(job["substance"])}</strong></p>
-                <p class="text-muted small mb-0">Showing up to 200 records from this background job.</p>
+                <p class="text-muted small mb-0">Showing {len(rows)} of {len(saved_rows)} records from this background job.</p>
             </div>
             <div class="d-flex gap-2">
                 <a class="btn btn-secondary" href="/search_jobs/{h(job_id)}">Progress</a>
@@ -471,21 +525,37 @@ def search_job_results_page(job_id: str):
                 <a class="btn btn-secondary" href="/">Back</a>
             </div>
         </div>
-        <table class="table table-striped table-bordered align-middle">
-            <thead class="table-dark">
-                <tr>
-                    <th>Molecule</th>
-                    <th>Product</th>
-                    <th>Country</th>
-                    <th>Source</th>
-                    <th>Status</th>
-                    <th>Confidence</th>
-                    <th>Product Details</th>
-                </tr>
-            </thead>
-            <tbody>{"".join(body_rows)}</tbody>
-        </table>
+        <p id="filter-count" class="mb-2">Visible records: {len(rows)}</p>
+        <div class="results-scroll">
+            <table class="table table-striped table-bordered align-middle results-table">
+                <thead class="table-dark">
+                    <tr>{header_cells}</tr>
+                    <tr class="filters">{filter_cells}</tr>
+                </thead>
+                <tbody id="results-body">{"".join(body_rows)}</tbody>
+            </table>
+        </div>
     </div>
+    <script>
+        const filters = Array.from(document.querySelectorAll('.column-filter'));
+        const resultRows = Array.from(document.querySelectorAll('#results-body .result-row'));
+        const filterCount = document.getElementById('filter-count');
+        function applyColumnFilters() {{
+            let visible = 0;
+            resultRows.forEach((row) => {{
+                const matches = filters.every((input) => {{
+                    const query = input.value.trim().toLowerCase();
+                    if (!query) return true;
+                    const cell = row.cells[Number(input.dataset.column)];
+                    return cell && cell.textContent.toLowerCase().includes(query);
+                }});
+                row.hidden = !matches;
+                if (matches) visible += 1;
+            }});
+            filterCount.textContent = `Visible records: ${{visible}} of ${{resultRows.length}} displayed`;
+        }}
+        filters.forEach((input) => input.addEventListener('input', applyColumnFilters));
+    </script>
     </body>
     </html>
     """
