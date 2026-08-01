@@ -25,6 +25,7 @@ from sources.mhra_product_parser import extract_mhra_product_page
 from sources.search_engine import COMPLETE_SEARCH_TIMEOUT_SECONDS, search_substance
 from sources.source_registry import connector_metadata
 from services.search_pipeline import (
+    COUNTRY_SOURCE_DEFAULTS,
     COUNTRY_OPTIONS,
     DEFAULT_SOURCES,
     REGION_OPTIONS,
@@ -165,7 +166,7 @@ def home(request: Request):
 @app.get("/global_search/{substance}")
 def global_search(
     substance: str,
-    sources: list[str] = Query(default=DEFAULT_SOURCES),
+    sources: list[str] | None = Query(default=None),
 ):
     results = search_substance(substance, source_names=parse_sources(sources))
     return {"substance": substance, "count": len(results), "results": results}
@@ -185,7 +186,7 @@ def api_export_directory():
 def api_search(
     substance: str,
     live: bool = True,
-    sources: list[str] = Query(default=DEFAULT_SOURCES),
+    sources: list[str] | None = Query(default=None),
     country: str = "",
     region: str = "",
     source: str = "",
@@ -465,7 +466,7 @@ def export_search_job_results(job_id: str):
 def search_page(
     substance: str,
     live: bool = True,
-    sources: list[str] = Query(default=DEFAULT_SOURCES),
+    sources: list[str] | None = Query(default=None),
     page: int = 1,
     page_size: int = 50,
     country: str = "",
@@ -488,6 +489,7 @@ def search_page(
     registration_date_filter: str = "",
     sort_by: str = "",
     sort_dir: str = "asc",
+    search_mode: str = "fast",
     export_all: bool = False,
 ):
     if not substance.strip():
@@ -515,13 +517,33 @@ def search_page(
     sort_dir = "desc" if sort_dir == "desc" else "asc"
     status = english_text(status)
     requested_sources = sources if isinstance(sources, list) else [sources] if sources else []
-    slow_live_sources = {"cdsco india", "grls russia"}
-    live_timeout = 45 if any(str(item).lower() in slow_live_sources for item in requested_sources) else None
-    if country == "India":
-        live_timeout = 45
+    if not requested_sources:
+        sources = sorted(FAST_BACKGROUND_SOURCES)
+        requested_sources = list(sources)
+    requested_source_names = {str(item).strip().lower() for item in requested_sources if str(item).strip()}
+    normalized_search_mode = "full" if search_mode == "full" else "fast"
+    slow_live_sources = {
+        "cdsco india",
+        "grls russia",
+        "mhra",
+        "ema",
+        "tga australia",
+        "medsafe new zealand",
+        "eu mri product index",
+        "belgium famhp",
+        "ireland medicines.ie",
+    }
+    country_default_source = COUNTRY_SOURCE_DEFAULTS.get(country, "").strip().lower()
+    auto_slow_country_source = (
+        normalized_search_mode == "fast"
+        and country_default_source in slow_live_sources
+        and country_default_source not in requested_source_names
+    )
+    effective_live = bool(live and not auto_slow_country_source)
+    live_timeout = 45 if normalized_search_mode == "full" else 5
     rows, selected_sources, all_rows = filtered_search_results(
         substance,
-        live=live,
+        live=effective_live,
         sources=sources,
         country=country,
         region=region,
@@ -544,12 +566,12 @@ def search_page(
         sort_by=sort_by,
         sort_dir=sort_dir,
         live_timeout=live_timeout,
-        include_lookup_rows=False,
+        include_lookup_rows=True,
     )
     SEARCH_RESULT_CACHE[
         result_cache_key(
             substance,
-            live,
+            effective_live,
             selected_sources,
             country=country,
             region=region,
@@ -579,7 +601,7 @@ def search_page(
     page = min(page, total_pages)
     start = (page - 1) * page_size
     visible_rows = rows[start : start + page_size]
-    if live and visible_rows:
+    if effective_live and visible_rows:
         visible_rows = enriched_cached_results(visible_rows)
 
     def is_manual_registry_row(row):
@@ -621,6 +643,7 @@ def search_page(
             ("registration_date_filter", registration_date_filter),
             ("sort_by", sort_by),
             ("sort_dir", sort_dir),
+            ("search_mode", normalized_search_mode),
         ]
         if value
     )
@@ -651,6 +674,7 @@ def search_page(
                 ("registration_date_filter", registration_date_filter),
                 ("sort_by", sort_by),
                 ("sort_dir", sort_dir),
+                ("search_mode", normalized_search_mode),
                 ("page", str(page)),
                 ("page_size", str(page_size)),
             ]
@@ -686,6 +710,7 @@ def search_page(
                 ("registration_date_filter", registration_date_filter),
                 ("sort_by", sort_by),
                 ("sort_dir", sort_dir),
+                ("search_mode", normalized_search_mode),
                 ("export_all", "true"),
             ]
             if value
@@ -919,7 +944,7 @@ def search_page(
     clear_href = "/search_page?" + urlencode(
         [("substance", substance), ("live", str(live).lower())]
         + [("sources", selected_source) for selected_source in selected_sources]
-        + [("page_size", str(page_size))]
+        + [("page_size", str(page_size)), ("search_mode", normalized_search_mode)]
     )
     has_active_filters = any(
         [
@@ -1027,6 +1052,7 @@ def search_page(
             <input type="hidden" name="table_search" value="{h(table_search)}">
             <input type="hidden" name="sort_by" value="{h(sort_by)}">
             <input type="hidden" name="sort_dir" value="{h(sort_dir)}">
+            <input type="hidden" name="search_mode" value="{h(normalized_search_mode)}">
             {source_inputs}
         </form>
         <div class="results-scroll">
