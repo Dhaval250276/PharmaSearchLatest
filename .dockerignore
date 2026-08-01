@@ -1,0 +1,15 @@
+.git
+.venv
+Backend/.venv
+__pycache__
+**/__pycache__
+*.pyc
+Backend/exports
+Backend/*.xlsx
+Backend/*.log
+Backend/pharmasearch.db
+localtunnel*.log
+localhostrun*.log
+render_*.html
+StressFlow
+StressFlowMobile
