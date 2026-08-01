@@ -47,6 +47,7 @@ logger = get_logger(__name__)
 app = FastAPI(title="PharmaSearch", version="0.2.0")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 SEARCH_RESULT_CACHE: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+APP_BUILD = "UAT-2026-08-01-platform-core"
 
 
 def result_cache_key(
@@ -175,6 +176,11 @@ def global_search(
 @app.get("/api/sources")
 def api_sources():
     return {"sources": connector_metadata()}
+
+
+@app.get("/api/version")
+def api_version():
+    return {"app": "PharmaSearch", "build": APP_BUILD}
 
 
 @app.get("/api/export_directory")
