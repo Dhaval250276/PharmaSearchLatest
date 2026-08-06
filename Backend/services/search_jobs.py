@@ -36,8 +36,6 @@ FAST_BACKGROUND_SOURCES = {
     "FDA Orange Book",
     "FDA Purple Book",
     "Spain CIMA",
-    "France BDPM",
-    "Hong Kong Drug Office",
 }
 SLOW_SOURCES = {
     "GRLS Russia",

@@ -36,6 +36,7 @@ from services.search_pipeline import (
     filtered_search_results,
     parse_sources,
     prepared_cached_results,
+    sources_for_scope,
 )
 from services.ai_client import ai_status as current_ai_status
 from services.connector_health import connector_health_rows
@@ -657,7 +658,21 @@ def search_page(
         and country_default_source not in requested_source_names
     )
     effective_live = bool(live and not auto_slow_country_source)
-    live_timeout = 45 if normalized_search_mode == "full" else 5
+    live_timeout = 45 if normalized_search_mode == "full" else 10
+    selected_for_live = parse_sources(sources)
+    if normalized_search_mode == "full":
+        live_sources = selected_for_live
+    elif country or region or source:
+        live_sources = sources_for_scope(
+            selected_for_live,
+            country=country,
+            region=region,
+            source=source,
+        )
+    else:
+        live_sources = [
+            item for item in selected_for_live if item in FAST_BACKGROUND_SOURCES
+        ]
     rows, selected_sources, all_rows = filtered_search_results(
         substance,
         live=effective_live,
@@ -683,6 +698,7 @@ def search_page(
         sort_by=sort_by,
         sort_dir=sort_dir,
         live_timeout=live_timeout,
+        live_sources=live_sources,
         include_lookup_rows=True,
     )
     SEARCH_RESULT_CACHE[
@@ -885,7 +901,7 @@ def search_page(
         )
         body_rows.append(
             f"""
-            <tr>
+            <tr class="result-row">
                 <td>{h(display_row["molecule"])}</td>
                 <td>{h(display_row["product"])}</td>
                 <td>{h(display_row["company"])}</td>
@@ -1181,6 +1197,13 @@ def search_page(
             <input type="hidden" name="search_mode" value="{h(normalized_search_mode)}">
             {source_inputs}
         </form>
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <small id="page-filter-status" class="text-muted">Header filters apply to the displayed results.</small>
+            <div class="d-flex gap-2">
+                <a class="btn btn-sm btn-outline-secondary" href="{h(clear_href)}">Clear filters</a>
+                <button form="result-filter-form" class="btn btn-sm btn-primary">Apply filters</button>
+            </div>
+        </div>
         <div class="results-scroll">
         <table class="table table-striped table-bordered align-middle results-table">
             <thead>
@@ -1219,7 +1242,7 @@ def search_page(
                     <th><select id="region-filter" form="result-filter-form" class="form-select form-select-sm" name="region">{region_options}</select></th>
                     <th><select form="result-filter-form" class="form-select form-select-sm" name="status" onchange="this.form.submit()">{status_options}</select></th>
                     <th><select form="result-filter-form" class="form-select form-select-sm" name="source" onchange="this.form.submit()">{source_options}</select></th>
-                    <th><a class="btn btn-sm btn-outline-secondary w-100" href="{h(clear_href)}">Clear</a></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="7" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="strength_filter" value="{h(strength_filter)}" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="dosage_form_filter" value="{h(dosage_form_filter)}" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="pack_size_filter" value="{h(pack_size_filter)}" placeholder="Filter"></th>
@@ -1228,15 +1251,15 @@ def search_page(
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="ma_holder_filter" value="{h(ma_holder_filter)}" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="manufacturer_name_filter" value="{h(manufacturer_name_filter)}" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="manufacturer_country_filter" value="{h(manufacturer_country_filter)}" placeholder="Filter"></th>
-                    <th></th>
+                    <th><select form="result-filter-form" class="form-select form-select-sm" name="status">{status_options}</select></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="registration_number_filter" value="{h(registration_number_filter)}" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="registration_date_filter" value="{h(registration_date_filter)}" placeholder="Filter"></th>
-                    <th></th>
-                    <th></th>
-                    <th><button form="result-filter-form" class="btn btn-sm btn-primary w-100">Apply</button></th>
-                    <th></th>
-                    <th></th>
-                    <th></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="19" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="20" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="21" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="22" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="23" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="24" placeholder="Filter"></th>
                 </tr>
             </thead>
             <tbody>{"".join(body_rows)}</tbody>
@@ -1269,6 +1292,26 @@ def search_page(
     }});
     document.querySelectorAll('select[form="result-filter-form"]:not(#country-filter):not(#region-filter)').forEach(function (control) {{
         control.addEventListener("change", submitFilters);
+    }});
+    const pageColumnFilters = document.querySelectorAll(".page-column-filter");
+    const resultRows = document.querySelectorAll(".result-row");
+    const pageFilterStatus = document.getElementById("page-filter-status");
+    function applyPageColumnFilters() {{
+        let shown = 0;
+        resultRows.forEach(function (row) {{
+            const matches = Array.from(pageColumnFilters).every(function (control) {{
+                const query = control.value.trim().toLowerCase();
+                if (!query) return true;
+                const cell = row.cells[Number(control.dataset.column)];
+                return cell && cell.textContent.toLowerCase().includes(query);
+            }});
+            row.hidden = !matches;
+            if (matches) shown += 1;
+        }});
+        pageFilterStatus.textContent = `Showing ${{shown}} of ${{resultRows.length}} displayed rows after page filters.`;
+    }}
+    pageColumnFilters.forEach(function (control) {{
+        control.addEventListener("input", applyPageColumnFilters);
     }});
     </script>
     </body>

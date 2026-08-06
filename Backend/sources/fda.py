@@ -1,4 +1,5 @@
 from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import re
 from urllib.parse import quote
 
@@ -140,20 +141,31 @@ def _best_ndc_record(product, company, ndc_records):
 def run_fda_search(substance, limit=100):
     encoded = quote(f'openfda.substance_name:"{substance}"')
     url = f"{OPENFDA_LABEL_URL}?search={encoded}&limit={limit}"
+    ndc_executor = ThreadPoolExecutor(max_workers=1)
+    ndc_future = ndc_executor.submit(_fetch_ndc_records, substance)
     try:
         response = requests.get(url, timeout=8)
         if response.status_code == 404:
+            ndc_executor.shutdown(wait=False, cancel_futures=True)
             return []
         response.raise_for_status()
         data = response.json()
     except requests.RequestException as exc:
+        ndc_executor.shutdown(wait=False, cancel_futures=True)
         logger.warning("FDA request failed: %s", exc)
         return []
     except ValueError as exc:
+        ndc_executor.shutdown(wait=False, cancel_futures=True)
         logger.warning("FDA returned invalid JSON: %s", exc)
         return []
 
-    ndc_records = _fetch_ndc_records(substance)
+    try:
+        ndc_records = ndc_future.result(timeout=1)
+    except FutureTimeoutError:
+        logger.info("FDA NDC packaging enrichment deferred for %s", substance)
+        ndc_records = []
+    finally:
+        ndc_executor.shutdown(wait=False, cancel_futures=True)
     results = []
     for item in data.get("results", []):
         openfda = item.get("openfda", {})

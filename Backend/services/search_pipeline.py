@@ -782,6 +782,12 @@ def row_relevant_to_substance(row: dict[str, Any], substance: str) -> bool:
     if contains_all_tokens(source_substance, query_tokens):
         return True
 
+    # Combination searches must not accept records returned for only one of
+    # the requested ingredients. Single-substance searches remain permissive
+    # so regulator-specific synonyms and brand-only product names still work.
+    if len(query_tokens) > 1:
+        return False
+
     if str(row.get("source") or "").strip().lower() == "mhra":
         return False
 
@@ -1072,6 +1078,7 @@ def combined_search(
     substance: str,
     include_live: bool = True,
     sources: list[str] | None = None,
+    live_sources: list[str] | None = None,
     live_timeout: int | None = None,
 ) -> list[dict[str, Any]]:
     rows = []
@@ -1091,9 +1098,10 @@ def combined_search(
             rows.append(item)
 
     if include_live:
+        selected_live_sources = parse_sources(live_sources) if live_sources is not None else selected_sources
         for item in search_substance(
             substance,
-            source_names=selected_sources,
+            source_names=selected_live_sources,
             timeout_seconds=live_timeout or LIVE_SEARCH_TIMEOUT_SECONDS,
         ):
             if is_connector_lookup_fallback(item):
@@ -1156,6 +1164,7 @@ def filtered_search_results(
     sort_by: str = "",
     sort_dir: str = "asc",
     live_timeout: int | None = None,
+    live_sources: list[str] | None = None,
     include_lookup_rows: bool = True,
 ) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
     selected_sources = parse_sources(sources)
@@ -1165,10 +1174,21 @@ def filtered_search_results(
         region=region,
         source=source,
     )
+    scoped_live_sources = (
+        sources_for_scope(
+            parse_sources(live_sources),
+            country=country,
+            region=region,
+            source=source,
+        )
+        if live_sources is not None
+        else None
+    )
     all_rows = combined_search(
         substance,
         include_live=live,
         sources=scoped_sources,
+        live_sources=scoped_live_sources,
         live_timeout=live_timeout,
     )
     all_rows = [row for row in all_rows if row_relevant_to_substance(row, substance)]

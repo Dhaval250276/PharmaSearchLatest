@@ -43,11 +43,13 @@ from services.field_availability import NOT_APPLICABLE, PENDING_ENRICHMENT, fiel
 from services.search_pipeline import (
     _country_lookup_rows,
     _eu_lookup_rows,
+    combined_search,
     filtered_search_results,
     prepared_cached_results,
     sources_for_scope,
     suppress_generic_lookup_rows,
     is_connector_lookup_fallback,
+    row_relevant_to_substance,
 )
 from services.search_jobs import SLOW_SOURCES, _dedupe_rows, order_sources_for_job, source_skipped_in_mode
 from services.therapeutic_category import short_therapeutic_category
@@ -86,6 +88,69 @@ class FieldAvailabilityTests(unittest.TestCase):
             ],
         )
         self.assertEqual(rows, [])
+
+
+class SubstanceRelevanceTests(unittest.TestCase):
+    def test_combination_search_rejects_single_ingredient_record(self):
+        row = {
+            "source": "FDA",
+            "product": "Prilocaine topical cream",
+            "source_substance": "prilocaine",
+        }
+        self.assertFalse(row_relevant_to_substance(row, "Prilocaine+Lidocaine"))
+
+    def test_combination_search_accepts_both_ingredients(self):
+        row = {
+            "source": "FDA",
+            "product": "Lidocaine and Prilocaine cream",
+            "source_substance": "lidocaine prilocaine",
+        }
+        self.assertTrue(row_relevant_to_substance(row, "Prilocaine+Lidocaine"))
+
+
+class LiveSourceSelectionTests(unittest.TestCase):
+    @patch("services.search_pipeline.search_medicines", return_value=[])
+    @patch("services.search_pipeline.search_product_details")
+    @patch("services.search_pipeline.search_substance", return_value=[])
+    def test_cached_sources_and_live_sources_are_separate(
+        self,
+        search_substance_mock,
+        search_product_details_mock,
+        _search_medicines_mock,
+    ):
+        search_product_details_mock.return_value = [
+            {
+                "substance": "metformin",
+                "product": "Cached MHRA product",
+                "source": "MHRA",
+                "country": "United Kingdom",
+            }
+        ]
+
+        rows = combined_search(
+            "metformin",
+            sources=["FDA", "MHRA"],
+            live_sources=["FDA"],
+            live_timeout=5,
+        )
+
+        self.assertEqual(rows[0]["source"], "MHRA")
+        self.assertEqual(search_substance_mock.call_args.kwargs["source_names"], ["FDA"])
+
+
+class SearchPageFilterTests(unittest.TestCase):
+    def test_every_result_column_has_a_header_filter(self):
+        from main import search_page
+
+        response = search_page("metformin", live=False, sources=["FDA"], page_size=10)
+        soup = BeautifulSoup(response.body.decode(), "html.parser")
+        table = soup.select_one("table.results-table")
+        header_rows = table.select("thead tr")
+
+        self.assertEqual(len(header_rows[0].select("th")), 25)
+        filter_cells = header_rows[1].select("th")
+        self.assertEqual(len(filter_cells), 25)
+        self.assertTrue(all(cell.select_one("input, select") for cell in filter_cells))
 
 
 class ParserTests(unittest.TestCase):
