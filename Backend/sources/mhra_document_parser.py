@@ -346,10 +346,6 @@ def _extract_countries(value: str) -> str:
 
 
 def _extract_pack_information(text: str) -> str:
-    pack_size = extract_pack_size(text)
-    if pack_size:
-        return pack_size
-
     for marker in [
         "Pack size",
         "Pack sizes",
@@ -360,7 +356,20 @@ def _extract_pack_information(text: str) -> str:
     ]:
         index = text.lower().find(marker.lower())
         if index >= 0:
-            return _clean_text(text[index : index + 600])[:400]
+            section = _clean_text(text[index : index + 700])
+            sentence_match = re.search(
+                r"(?:available|supplied|presented|marketed)?\s*(?:in\s+)?"
+                r"(?:packs?|boxes?|cartons?|blisters?|bottles?)\s+(?:of|containing)\s+"
+                r"[\d,\s]+(?:and|or|to|-)?[\d,\s]*"
+                r"(?:tablets?|capsules?|sachets?|vials?|ampoules?|patch(?:es)?|doses?)",
+                section,
+                flags=re.IGNORECASE,
+            )
+            if sentence_match:
+                return _clean_text(sentence_match.group(0))[:250]
+            pack_size = extract_pack_size(section)
+            if pack_size:
+                return pack_size
     return ""
 
 

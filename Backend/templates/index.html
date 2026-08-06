@@ -78,7 +78,7 @@
                             value="{{ source.name }}"
                             id="source-{{ loop.index }}"
                             data-fast="{% if source.name in fast_background_sources %}true{% else %}false{% endif %}"
-                            {% if source.name in fast_background_sources %}checked{% endif %}
+                            {% if source.enabled %}checked{% endif %}
                             {% if not source.enabled %}disabled{% endif %}>
                         <label class="form-check-label {% if not source.enabled %}text-muted{% endif %}" for="source-{{ loop.index }}">
                             {{ source.name }}

@@ -13,6 +13,7 @@ from core.logging_config import get_logger
 from repository import region_for_country
 from services.ai_enrichment import enrichment_metadata
 from services.english_normalizer import english_row
+from services.field_availability import field_value
 from services.result_formatter import (
     assessment_report_url as formatted_assessment_report_url,
     clean_brand_name,
@@ -139,6 +140,11 @@ def build_export_rows(substance: str, results: list[dict[str, Any]]) -> list[dic
     generated_at = datetime.now().isoformat(timespec="seconds")
     default_category = default_therapeutic_category(substance, results)
     for item in results:
+        if (
+            str(item.get("connector_mode") or "").strip() == "manual_registry"
+            or "registry search handoff" in str(item.get("document_type") or "").lower()
+        ):
+            continue
         item = english_row(item)
         ai_metadata = enrichment_metadata(item)
         product = clean_brand_name(item.get("product", ""))
@@ -168,12 +174,19 @@ def build_export_rows(substance: str, results: list[dict[str, Any]]) -> list[dic
                     item.get("substance"),
                     substance,
                 ),
-                "Strength": export_value(item.get("strength"), extract_strength(product)),
-                "Dosage Form": export_value(item.get("dosage_form"), extract_dosage_form(product)),
+                "Strength": field_value(item, "strength", item.get("strength"), extract_strength(product)),
+                "Dosage Form": field_value(
+                    item,
+                    "dosage_form",
+                    item.get("dosage_form"),
+                    extract_dosage_form(product),
+                ),
                 "Route": export_value(item.get("route"), extract_route(product)),
-                "Pack Size": export_value(item.get("pack_size"), extract_pack_size(product)),
-                "ATC Code": export_value(item.get("atc_code")),
-                "Therapeutic Category": export_value(
+                "Pack Size": field_value(item, "pack_size", item.get("pack_size"), extract_pack_size(product)),
+                "ATC Code": field_value(item, "atc_code", item.get("atc_code")),
+                "Therapeutic Category": field_value(
+                    item,
+                    "therapeutic_category",
                     short_therapeutic_category(
                         item.get("therapeutic_category"),
                         item.get("searched_substance") or item.get("substance") or substance,
@@ -182,9 +195,13 @@ def build_export_rows(substance: str, results: list[dict[str, Any]]) -> list[dic
                     therapeutic_category_from_atc(item.get("atc_code")),
                     default_category,
                 ),
-                "MA Holder Name": export_value(company),
-                "Manufacturer Name": export_value(manufacturer_name_value(item)),
-                "Manufacturer Country": export_value(manufacturer_country_value(item)),
+                "MA Holder Name": field_value(item, "company", company),
+                "Manufacturer Name": field_value(item, "manufacturer_name", manufacturer_name_value(item)),
+                "Manufacturer Country": field_value(
+                    item,
+                    "manufacturer_country",
+                    manufacturer_country_value(item),
+                ),
                 "Registration Status": export_value(item.get("status")),
                 "Registration Number": export_value(
                     item.get("registration_number"),
@@ -194,10 +211,14 @@ def build_export_rows(substance: str, results: list[dict[str, Any]]) -> list[dic
                 "Expiry Date": export_value(item.get("expiry_date")),
                 "Product Details": export_value(product_url, source_url),
                 "PDF URL": export_value(pdf_url),
-                "SMPC URL": export_value(smpc_url),
-                "PIL URL": export_value(pil_url),
+                "SMPC URL": field_value(item, "smpc_url", smpc_url),
+                "PIL URL": field_value(item, "pil_url", pil_url),
                 "PIL / Assessment Report": export_value(pil_or_assessment_document_url),
-                "Assessment Report URL": export_value(assessment_document_url),
+                "Assessment Report URL": field_value(
+                    item,
+                    "assessment_report_url",
+                    assessment_document_url,
+                ),
                 "Manufacturer Website": export_value(item.get("manufacturer_website"), product_url),
                 "Manufacturer Contact Us Phone Number": export_value(item.get("manufacturer_phone")),
                 "Manufacturer Contact Us Email ID": export_value(item.get("manufacturer_email")),

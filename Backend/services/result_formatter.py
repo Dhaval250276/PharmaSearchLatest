@@ -3,6 +3,7 @@ import re
 
 from repository import region_for_country
 from services.english_normalizer import english_row
+from services.field_availability import field_value
 from services.therapeutic_category import short_therapeutic_category
 from sources.parser import (
     clean_product_name,
@@ -173,21 +174,23 @@ def formatted_result_row(item: dict[str, Any], searched_substance: str = "") -> 
             searched_substance,
         ),
         "product": display_value(product),
-        "strength": display_value(item.get("strength"), extract_strength(product)),
-        "dosage_form": display_value(item.get("dosage_form"), extract_dosage_form(product)),
-        "pack_size": display_value(item.get("pack_size"), extract_pack_size(product)),
-        "atc_code": display_value(item.get("atc_code")),
-        "therapeutic_category": display_value(
+        "strength": field_value(item, "strength", item.get("strength"), extract_strength(product)),
+        "dosage_form": field_value(item, "dosage_form", item.get("dosage_form"), extract_dosage_form(product)),
+        "pack_size": field_value(item, "pack_size", item.get("pack_size"), extract_pack_size(product)),
+        "atc_code": field_value(item, "atc_code", item.get("atc_code")),
+        "therapeutic_category": field_value(
+            item,
+            "therapeutic_category",
             short_therapeutic_category(
                 item.get("therapeutic_category"),
                 item.get("searched_substance") or item.get("substance") or searched_substance,
                 item.get("atc_code"),
             )
         ),
-        "company": display_value(company_display_value(item)),
-        "ma_holder": display_value(company),
-        "manufacturer_name": display_value(manufacturer_name_value(item)),
-        "manufacturer_country": display_value(manufacturer_country_value(item)),
+        "company": field_value(item, "company", company_display_value(item)),
+        "ma_holder": field_value(item, "company", company),
+        "manufacturer_name": field_value(item, "manufacturer_name", manufacturer_name_value(item)),
+        "manufacturer_country": field_value(item, "manufacturer_country", manufacturer_country_value(item)),
         "registration_status": display_value(item.get("status")),
         "registration_number": display_value(
             item.get("registration_number"),

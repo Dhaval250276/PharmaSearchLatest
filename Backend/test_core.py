@@ -39,6 +39,7 @@ from services.ai_enrichment import enrichment_metadata, missing_enrichment_field
 from services.connector_health import connector_health_rows, record_source_health
 from services.connector_status import connector_status_rows
 from services.english_normalizer import english_row, english_text
+from services.field_availability import NOT_APPLICABLE, PENDING_ENRICHMENT, field_value
 from services.search_pipeline import (
     _country_lookup_rows,
     _eu_lookup_rows,
@@ -61,6 +62,30 @@ class CachedResultPreparationTests(unittest.TestCase):
         self.assertEqual(saved_rows[0].get("data_confidence"), None)
         self.assertEqual(prepared[0]["product"], "Metformin 500 mg")
         self.assertIn("data_confidence", prepared[0])
+
+
+class FieldAvailabilityTests(unittest.TestCase):
+    def test_document_fields_are_not_applicable_to_fda_schema(self):
+        self.assertEqual(field_value({"source": "FDA"}, "smpc_url"), NOT_APPLICABLE)
+
+    def test_missing_mhra_manufacturer_is_marked_for_enrichment(self):
+        row = {"source": "MHRA", "pil_url": "https://example.test/pil.pdf"}
+        self.assertEqual(field_value(row, "manufacturer_name"), PENDING_ENRICHMENT)
+
+    def test_export_excludes_registry_handoff_rows(self):
+        rows = build_export_rows(
+            "metformin",
+            [
+                {
+                    "substance": "metformin",
+                    "product": "Official registry search",
+                    "source": "NMPA China",
+                    "connector_mode": "manual_registry",
+                    "document_type": "Official registry search handoff",
+                }
+            ],
+        )
+        self.assertEqual(rows, [])
 
 
 class ParserTests(unittest.TestCase):
@@ -157,6 +182,27 @@ class MHRADocumentParserTests(unittest.TestCase):
         links = _document_links_from_html(soup)
         self.assertEqual(links["smpc_url"], "https://products.mhra.gov.uk/docs/example-spc.pdf")
         self.assertEqual(links["pil_url"], "https://products.mhra.gov.uk/docs/example-pil.pdf")
+
+    def test_extracts_multiple_manufacturers_and_pack_section(self):
+        metadata = _metadata_from_text(
+            """
+            Marketing Authorisation Holder
+            Mylan Ltd, Potters Bar, United Kingdom
+
+            Manufacturer
+            Merckle GmbH, Ludwig-Merckle-Strasse 3, Germany
+            Mylan Hungary Kft, Mylan utca 1, Hungary
+            McDermott Laboratories Ltd, Dublin, Ireland
+
+            Contents of the pack
+            The tablets are available in packs of 10, 30 and 60 tablets.
+            """
+        )
+        self.assertEqual(metadata["company"], "Mylan Ltd")
+        self.assertIn("Merckle GmbH", metadata["manufacturer_name"])
+        self.assertIn("Mylan Hungary Kft", metadata["manufacturer_name"])
+        self.assertEqual(metadata["manufacturer_country"], "Germany; Hungary; Ireland")
+        self.assertIn("packs of 10, 30 and 60 tablets", metadata["pack_size"])
 
 
 class EMAConnectorTests(unittest.TestCase):

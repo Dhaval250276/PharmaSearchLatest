@@ -41,6 +41,7 @@ from services.ai_client import ai_status as current_ai_status
 from services.connector_health import connector_health_rows
 from services.connector_status import connector_status_rows
 from services.english_normalizer import english_text
+from services.field_availability import missing_field_value
 from services.result_formatter import formatted_result_row
 from services.search_jobs import FAST_BACKGROUND_SOURCES, create_search_job, get_search_job, get_search_job_results
 
@@ -109,9 +110,9 @@ def h(value: object) -> str:
     return escape("" if value is None else str(value))
 
 
-def link_or_unavailable(url: str, label: str) -> str:
+def link_or_unavailable(url: str, label: str, missing_text: str = "Not available") -> str:
     if not url:
-        return '<span class="text-muted">Not available</span>'
+        return f'<span class="text-muted">{h(missing_text)}</span>'
     return f'<a href="{h(url)}" target="_blank" rel="noopener noreferrer">{h(label)}</a>'
 
 
@@ -479,7 +480,9 @@ def search_job_results_page(job_id: str):
         for key, _label in columns:
             value = display_row.get(key, "")
             if key in link_columns:
-                cells.append(f"<td>{link_or_unavailable(value, link_columns[key])}</td>")
+                cells.append(
+                    f"<td>{link_or_unavailable(value, link_columns[key], missing_field_value(row, key))}</td>"
+                )
             else:
                 cells.append(f"<td>{h(value)}</td>")
         body_rows.append(f'<tr class="result-row">{"".join(cells)}</tr>')
@@ -865,11 +868,20 @@ def search_page(
     for row in visible_product_rows:
         display_row = formatted_result_row(row, searched_substance=substance)
         product_link = link_or_unavailable(display_row["product_details_url"], "Open Product")
-        smpc_link = link_or_unavailable(display_row["smpc_url"], "Open SmPC")
-        pil_link = link_or_unavailable(display_row["pil_url"], "Open PIL")
+        smpc_link = link_or_unavailable(
+            display_row["smpc_url"],
+            "Open SmPC",
+            missing_field_value(row, "smpc_url"),
+        )
+        pil_link = link_or_unavailable(
+            display_row["pil_url"],
+            "Open PIL",
+            missing_field_value(row, "pil_url"),
+        )
         assessment_link = link_or_unavailable(
             display_row["assessment_report_url"],
             "Open Assessment",
+            missing_field_value(row, "assessment_report_url"),
         )
         body_rows.append(
             f"""
