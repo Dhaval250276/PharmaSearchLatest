@@ -200,8 +200,7 @@ def formatted_result_row(item: dict[str, Any], searched_substance: str = "") -> 
         "registration_date": display_value(
             item.get("registration_date"),
             item.get("approval_date"),
-            item.get("created"),
-            item.get("last_checked"),
+            item.get("authorisation_date"),
         ),
         "country": display_value(country),
         "region": display_value(item.get("region"), region_for_country(country)),

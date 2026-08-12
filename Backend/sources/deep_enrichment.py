@@ -10,6 +10,7 @@ from pypdf import PdfReader
 
 from core.logging_config import get_logger
 from services.ai_client import ai_extract_regulatory_fields, ai_enabled
+from sources.spain_cima import fetch_cima_detail
 from sources.parser import (
     extract_atc_code,
     extract_dosage_form,
@@ -21,6 +22,7 @@ from sources.parser import (
 
 EMA_BASE_URL = "https://www.ema.europa.eu"
 MAX_EMA_PRODUCT_PAGES = 30
+MAX_CIMA_DETAIL_PAGES = 60
 MAX_PDF_URLS_PER_EXPORT = 60
 MAX_PDF_PAGES = 5
 PDF_EDGE_PAGES = 6
@@ -491,7 +493,39 @@ def _enrich_pdf_fields(rows):
     return rows
 
 
+def _enrich_spain_cima_details(rows):
+    """Fill ATC code and pack size from the CIMA per-product endpoint."""
+    numbers = []
+    for row in rows:
+        if row.get("source") != "Spain CIMA":
+            continue
+        number = str(row.get("registration_number") or "").strip()
+        if number and number not in numbers and not row.get("atc_code"):
+            numbers.append(number)
+        if len(numbers) >= MAX_CIMA_DETAIL_PAGES:
+            break
+    if not numbers:
+        return
+
+    detail_by_number = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(numbers))) as executor:
+        jobs = {executor.submit(fetch_cima_detail, number): number for number in numbers}
+        for job in as_completed(jobs):
+            detail_by_number[jobs[job]] = job.result()
+
+    for row in rows:
+        if row.get("source") != "Spain CIMA":
+            continue
+        detail = detail_by_number.get(str(row.get("registration_number") or "").strip())
+        if not detail:
+            continue
+        for field in ("atc_code", "pack_size", "registration_date"):
+            if detail.get(field) and not row.get(field):
+                row[field] = detail[field]
+
+
 def enrich_deep_results(rows):
+    _enrich_spain_cima_details(rows)
     ema_urls = sorted(
         {
             row.get("product_url") or row.get("url")
