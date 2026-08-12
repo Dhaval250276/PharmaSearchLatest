@@ -409,7 +409,9 @@ def _run_bpom_indonesia_json_search(substance: str, limit: int = MAX_RESULTS) ->
         if clean_substance.lower() not in f"{product} {ingredients}".lower():
             continue
         company, _ = _clean_company_country(item.get("REGISTRAR"))
-        manufacturer, manufacturer_country = _clean_company_country(item.get("MANUFACTURER_NAME"))
+        manufacturer, manufacturer_country = _clean_company_country(
+            item.get("MANUFACTURER_NAME") or item.get("MANUFACTURER")
+        )
         product_url = _bpom_detail_url(item)
         rows.append(
             {

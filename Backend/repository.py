@@ -191,12 +191,14 @@ def initialize_database():
         )
         rows = cursor.execute(
             """
-            SELECT id, manufacturer_name, company
+            SELECT id, manufacturer_name, company, manufacturer_source
             FROM product_details
             WHERE TRIM(COALESCE(manufacturer_name, '')) != ''
             """
         ).fetchall()
         for row in rows:
+            if str(row["manufacturer_source"] or "").strip():
+                continue
             manufacturer_parts = [
                 part.strip()
                 for part in str(row["manufacturer_name"] or "").split(";")

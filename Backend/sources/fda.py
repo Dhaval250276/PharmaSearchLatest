@@ -185,6 +185,8 @@ def run_fda_search(substance, limit=100):
                 "substance": substance,
                 "product": product,
                 "company": company or (ndc_record or {}).get("labeler_name", ""),
+                "manufacturer_name": company,
+                "manufacturer_source": "FDA label manufacturer_name",
                 "country": "United States",
                 "region": "US",
                 "status": "Label available",
