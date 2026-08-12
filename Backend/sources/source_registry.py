@@ -36,6 +36,7 @@ from sources.regional_live import (
     run_thai_fda_search,
     run_ukraine_drlz_search,
 )
+from sources.romania_anmdmr import run_romania_anmdmr_search
 from sources.spain_cima import run_spain_cima_search
 from sources.swissmedic import run_swissmedic_search
 from sources.tga import run_tga_search
@@ -359,6 +360,15 @@ CONNECTORS: list[SourceConnector] = [
             supports_documents=True,
         ),
         run_spain_cima_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="ANMDMR Romania",
+            region="EU",
+            countries=("Romania",),
+            supports_documents=True,
+        ),
+        run_romania_anmdmr_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(

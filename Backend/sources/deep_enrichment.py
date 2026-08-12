@@ -388,9 +388,14 @@ def _enrich_from_pdf_text(row, text):
         row["pack_size"] = _pack_size_from_pdf(text)
     if not row.get("therapeutic_category"):
         row["therapeutic_category"] = _therapeutic_indication_from_pdf(text)
+    # A manufacturer the connector read from a dedicated regulator field is
+    # authoritative. Registries such as ANMDMR publish it separately from the
+    # authorisation holder, and the two legitimately match when a company makes
+    # its own product, so neither overwrite nor discard it here.
+    explicitly_sourced = bool(str(row.get("manufacturer_source") or "").strip())
     manufacturer_metadata = _manufacturer_from_pdf(text)
     manufacturer_name = manufacturer_metadata.get("manufacturer_name")
-    if manufacturer_name and (
+    if manufacturer_name and not explicitly_sourced and (
         not row.get("manufacturer_name")
         or _normalized_value(row.get("manufacturer_name")) == _normalized_value(row.get("company"))
     ):
@@ -402,7 +407,9 @@ def _enrich_from_pdf_text(row, text):
         row["manufacturer_email"] = _find_email(text)
     if not row.get("manufacturer_phone"):
         row["manufacturer_phone"] = _find_phone(text)
-    if _normalized_value(row.get("manufacturer_name")) == _normalized_value(row.get("company")):
+    if not explicitly_sourced and _normalized_value(row.get("manufacturer_name")) == _normalized_value(
+        row.get("company")
+    ):
         row["manufacturer_name"] = ""
         row["manufacturer_country"] = ""
         row["manufacturer_source"] = ""

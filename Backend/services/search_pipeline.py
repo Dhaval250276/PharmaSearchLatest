@@ -22,6 +22,7 @@ DEFAULT_SOURCES = [
     "France BDPM",
     "Ireland medicines.ie",
     "Spain CIMA",
+    "ANMDMR Romania",
     "MHRA",
     "FDA",
     "FDA Orange Book",
@@ -54,6 +55,7 @@ EU_NATIONAL_SOURCES = [
     "France BDPM",
     "Ireland medicines.ie",
     "Spain CIMA",
+    "ANMDMR Romania",
     "Cyprus Pharmaceutical Services",
     "Ukraine DRLZ",
 ]
@@ -463,6 +465,7 @@ COUNTRY_SOURCE_DEFAULTS = {
     "Ukraine": "Ukraine DRLZ",
     "Russia": "GRLS Russia",
     "Cyprus": "Cyprus Pharmaceutical Services",
+    "Romania": "ANMDMR Romania",
 }
 REGION_SOURCE_DEFAULTS = {
     "AU": "TGA Australia",

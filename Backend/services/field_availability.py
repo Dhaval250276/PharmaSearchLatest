@@ -20,6 +20,7 @@ DOCUMENT_CAPABLE_SOURCES = {
     "Belgium FAMHP",
     "Ireland medicines.ie",
     "Spain CIMA",
+    "ANMDMR Romania",
 }
 
 
