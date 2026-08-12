@@ -18,7 +18,7 @@ from sources.parser import extract_dosage_form, extract_pack_size, extract_stren
 
 
 REQUEST_TIMEOUT = 5
-MAX_RESULTS = 50
+MAX_RESULTS = 150
 MAX_CDSCO_PDFS = 1
 MAX_CDSCO_PAGES_PER_PDF = 4
 MAX_CDSCO_LIVE_PDF_KB = 600

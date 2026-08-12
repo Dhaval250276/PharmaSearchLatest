@@ -49,7 +49,7 @@ CONNECTORS: list[SourceConnector] = [
             countries=("United States",),
             supports_documents=True,
         ),
-        lambda substance: run_fda_search(substance, limit=25),
+        lambda substance: run_fda_search(substance, limit=100),
     ),
     FunctionSourceConnector(
         SourceMetadata(
@@ -159,7 +159,7 @@ CONNECTORS: list[SourceConnector] = [
             countries=("Canada",),
             supports_documents=False,
         ),
-        lambda substance: run_health_canada_search(substance, limit=25),
+        lambda substance: run_health_canada_search(substance, limit=50),
     ),
     FunctionSourceConnector(
         SourceMetadata(
