@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import re
+import unicodedata
 from urllib.parse import quote
 
 import requests
@@ -68,6 +69,58 @@ def _named_value(row, field):
     return str(value or "").strip()
 
 
+# CIMA names the pharmaceutical form in Spanish. Longest form first, so
+# "CAPSULA DURA GASTRORRESISTENTE" is not shortened to "Hard capsule".
+DOSAGE_FORM_TRANSLATIONS = {
+    "COMPRIMIDO DE LIBERACION PROLONGADA": "Prolonged-release tablet",
+    "COMPRIMIDO DE LIBERACION MODIFICADA": "Modified-release tablet",
+    "COMPRIMIDO RECUBIERTO CON PELICULA": "Film-coated tablet",
+    "CAPSULA DURA DE LIBERACION PROLONGADA": "Prolonged-release hard capsule",
+    "CAPSULA DURA GASTRORRESISTENTE": "Gastro-resistant hard capsule",
+    "COMPRIMIDO GASTRORRESISTENTE": "Gastro-resistant tablet",
+    "COMPRIMIDO BUCODISPERSABLE": "Orodispersible tablet",
+    "COMPRIMIDO EFERVESCENTE": "Effervescent tablet",
+    "COMPRIMIDO MASTICABLE": "Chewable tablet",
+    "COMPRIMIDO RECUBIERTO": "Coated tablet",
+    "POLVO PARA SOLUCION INYECTABLE": "Powder for solution for injection",
+    "POLVO PARA SUSPENSION ORAL": "Powder for oral suspension",
+    "SOLUCION PARA PERFUSION": "Solution for infusion",
+    "SOLUCION INYECTABLE": "Solution for injection",
+    "PARCHE TRANSDERMICO": "Transdermal patch",
+    "SUSPENSION ORAL": "Oral suspension",
+    "CAPSULA BLANDA": "Soft capsule",
+    "SOLUCION ORAL": "Oral solution",
+    "CAPSULA DURA": "Hard capsule",
+    "SUPOSITORIO": "Suppository",
+    "COMPRIMIDO": "Tablet",
+    "GRANULADO": "Granules",
+    "EMULSION": "Emulsion",
+    "CAPSULA": "Capsule",
+    "SOLUCION": "Solution",
+    "POMADA": "Ointment",
+    "COLIRIO": "Eye drops",
+    "JARABE": "Syrup",
+    "CREMA": "Cream",
+    "POLVO": "Powder",
+    "GEL": "Gel",
+}
+
+
+def _english_dosage_form(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    normalized = unicodedata.normalize("NFKD", text.upper())
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    normalized = " ".join(normalized.split())
+    for spanish, english in sorted(
+        DOSAGE_FORM_TRANSLATIONS.items(), key=lambda item: len(item[0]), reverse=True
+    ):
+        if normalized.startswith(spanish):
+            return english
+    return text.capitalize()
+
+
 def _extract_record(row, substance):
     docs = _document_urls(row.get("docs"))
     registration_number = str(row.get("nregistro") or "")
@@ -86,8 +139,10 @@ def _extract_record(row, substance):
         "region": "EU",
         "status": _status(row),
         "strength": str(row.get("dosis") or "").strip() or extract_strength(product),
-        "dosage_form": _named_value(row, "formaFarmaceutica")
-        or _named_value(row, "formaFarmaceuticaSimplificada")
+        "dosage_form": _english_dosage_form(
+            _named_value(row, "formaFarmaceutica")
+            or _named_value(row, "formaFarmaceuticaSimplificada")
+        )
         or extract_dosage_form(product),
         "pack_size": extract_pack_size(product),
         "route": _first_named(row.get("viasAdministracion")),
@@ -169,34 +224,68 @@ def fetch_cima_detail(registration_number):
     }
 
 
-def run_spain_cima_search(substance, limit=CIMA_MAX_RESULTS):
+def spanish_search_terms(substance):
+    """CIMA indexes substances under their Spanish INN, and matches on a prefix.
+
+    English INNs that only differ by spelling therefore find nothing:
+    "omeprazole" misses "omeprazol", "amoxicillin" misses "amoxicilina" and
+    "levothyroxine" misses "levotiroxina". Reducing the English name to a stem
+    the Spanish spelling starts with recovers them.
+    """
+    original = substance.strip()
+    terms = [original]
+    stem = original.lower()
+    stem = stem.replace("ph", "f").replace("th", "t").replace("y", "i")
+    stem = re.sub(r"([bcdfglmnprst])\1", r"\1", stem)
+    for candidate in (stem, re.sub(r"e$", "", stem)):
+        if candidate and candidate not in terms:
+            terms.append(candidate)
+    return terms
+
+
+def _search_page(term, page):
+    response = requests.get(
+        CIMA_SEARCH_URL,
+        params={"practiv1": term, "pagina": page},
+        timeout=30,
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _search_term(term, substance, limit):
     results = []
     page = 1
-    try:
-        while len(results) < limit:
-            response = requests.get(
-                CIMA_SEARCH_URL,
-                params={"practiv1": substance, "pagina": page},
-                timeout=30,
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            response.raise_for_status()
-            payload = response.json()
-            records = payload.get("resultados", [])
-            if not records:
+    while len(results) < limit:
+        payload = _search_page(term, page)
+        records = payload.get("resultados", [])
+        if not records:
+            break
+        for row in records:
+            if not row.get("nombre", ""):
+                continue
+            results.append(_extract_record(row, substance))
+            if len(results) >= limit:
                 break
-            for row in records:
-                product = row.get("nombre", "")
-                if not product:
-                    continue
-                results.append(_extract_record(row, substance))
-                if len(results) >= limit:
-                    break
-            total = int(payload.get("totalFilas") or 0)
-            if page * CIMA_PAGE_SIZE >= total:
-                break
-            page += 1
-    except (requests.RequestException, ValueError) as exc:
-        logger.warning("Spain CIMA request failed: %s", exc)
-        return []
+        total = int(payload.get("totalFilas") or 0)
+        if page * CIMA_PAGE_SIZE >= total:
+            break
+        page += 1
     return results
+
+
+def run_spain_cima_search(substance, limit=CIMA_MAX_RESULTS):
+    if not substance.strip():
+        return []
+    for term in spanish_search_terms(substance):
+        try:
+            results = _search_term(term, substance, limit)
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("Spain CIMA request failed for %s: %s", term, exc)
+            return []
+        if results:
+            if term != substance.strip():
+                logger.info("Spain CIMA matched %s using Spanish term %s", substance, term)
+            return results
+    return []
