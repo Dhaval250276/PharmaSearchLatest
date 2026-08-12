@@ -552,11 +552,15 @@ def save_product_detail(record: dict[str, Any]) -> dict[str, Any]:
         for part in str(manufacturer_name or "").split(";")
         if part.strip()
     ]
-    filtered_parts = [
-        part
-        for part in manufacturer_parts
-        if not same_company_identity(part, record.get("company", ""))
-    ]
+    filtered_parts = (
+        manufacturer_parts
+        if manufacturer_source
+        else [
+            part
+            for part in manufacturer_parts
+            if not same_company_identity(part, record.get("company", ""))
+        ]
+    )
     if manufacturer_parts and filtered_parts != manufacturer_parts:
         manufacturer_name = "; ".join(filtered_parts)
         if not manufacturer_name:

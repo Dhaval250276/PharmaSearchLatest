@@ -111,6 +111,7 @@ def assessment_report_url(item: dict[str, Any]) -> str:
 def manufacturer_name_value(item: dict[str, Any]) -> str:
     manufacturer = first_value(item.get("manufacturer_name"))
     company = first_value(item.get("company"), item.get("mah"), item.get("ma_holder"))
+    explicitly_sourced = bool(first_value(item.get("manufacturer_source")))
     if not manufacturer:
         return ""
     manufacturer_parts = [
@@ -123,10 +124,10 @@ def manufacturer_name_value(item: dict[str, Any]) -> str:
         for part in manufacturer_parts
         if not same_company_identity(part, company)
     ]
-    if manufacturer_parts and not filtered_parts:
+    if manufacturer_parts and not filtered_parts and not explicitly_sourced:
         return ""
     cleaned_manufacturer = "; ".join(filtered_parts) if filtered_parts else manufacturer
-    if same_company_identity(cleaned_manufacturer, company):
+    if same_company_identity(cleaned_manufacturer, company) and not explicitly_sourced:
         return ""
     return cleaned_manufacturer
 

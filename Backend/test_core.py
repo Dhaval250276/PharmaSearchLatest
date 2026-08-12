@@ -19,7 +19,11 @@ from sources.medsafe import (
     _fallback_rows as _medsafe_fallback_rows,
     _parse_product_search_results as _parse_medsafe_product_search_results,
 )
-from sources.mhra_document_parser import _document_links_from_html, _metadata_from_text
+from sources.mhra_document_parser import (
+    _document_links_from_html,
+    _invalid_manufacturer_value,
+    _metadata_from_text,
+)
 from sources.parser import (
     clean_product_name,
     extract_dosage_form,
@@ -40,6 +44,7 @@ from services.connector_health import connector_health_rows, record_source_healt
 from services.connector_status import connector_status_rows
 from services.english_normalizer import english_row, english_text
 from services.field_availability import NOT_APPLICABLE, PENDING_ENRICHMENT, field_value
+from services.result_formatter import manufacturer_name_value
 from services.search_pipeline import (
     _country_lookup_rows,
     _eu_lookup_rows,
@@ -233,6 +238,23 @@ class ExportTests(unittest.TestCase):
 
 
 class MHRADocumentParserTests(unittest.TestCase):
+    def test_rejects_leaflet_narrative_as_manufacturer(self):
+        self.assertTrue(
+            _invalid_manufacturer_value(
+                "This leaflet was last revised in August 2022. EVER Pharma Jena GmbH "
+                "Contents of the pack and other information"
+            )
+        )
+        self.assertFalse(_invalid_manufacturer_value("EVER Pharma Jena GmbH"))
+
+    def test_preserves_explicit_manufacturer_when_it_is_also_the_holder(self):
+        row = {
+            "company": "Henry Schein UK Holdings Ltd",
+            "manufacturer_name": "Henry Schein UK Holdings Ltd.",
+            "manufacturer_source": "MHRA document",
+        }
+        self.assertEqual(manufacturer_name_value(row), "Henry Schein UK Holdings Ltd.")
+
     def test_extracts_document_metadata_from_text(self):
         metadata = _metadata_from_text(
             """

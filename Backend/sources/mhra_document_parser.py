@@ -97,7 +97,13 @@ def _value_after_label(text: str, labels: list[str], max_lines: int = 6, max_cha
                 break
             candidates.append(next_line)
 
-        company_candidate = next((item for item in candidates if _company_like(item)), "")
+        combined_candidates = _clean_text("; ".join(item for item in candidates if item))
+        embedded_companies = _company_names_from_block(combined_candidates)
+        company_candidate = (
+            "; ".join(embedded_companies)
+            if embedded_companies
+            else next((item for item in candidates if _company_like(item)), "")
+        )
         value = company_candidate or " ".join(item for item in candidates if item)
         if value:
             return value[:max_chars].strip()
@@ -185,6 +191,25 @@ def _company_name_from_address_line(value: str) -> str:
 
 def _company_names_from_block(value: str, allow_address_name: bool = False) -> list[str]:
     names = []
+    company_pattern = re.compile(
+        r"\b(?:[A-Z][A-Za-z0-9&.'’/-]*\s+){1,7}"
+        r"(?:Ltd\.?|Limited|PLC|GmbH|Kft|S\.?A\.?|B\.?V\.?|Inc\.?|LLC|Company)\b",
+    )
+    for match in company_pattern.finditer(value):
+        name = _clean_text(match.group(0))
+        # A valid company fragment must contain at least one legal suffix and
+        # should not begin with common leaflet narrative.
+        name = re.sub(
+            r"^(?:and|or|the|this|leaflet|medicine|medicinal product)\s+",
+            "",
+            name,
+            flags=re.IGNORECASE,
+        )
+        identity = name.rstrip(".").casefold()
+        if name and all(existing.rstrip(".").casefold() != identity for existing in names):
+            names.append(name)
+    if names:
+        return names
     for part in [item.strip() for item in value.split(";") if item.strip()]:
         name = _company_name_from_address_line(part)
         if _address_line_like(name):
@@ -194,12 +219,40 @@ def _company_names_from_block(value: str, allow_address_name: bool = False) -> l
     return names
 
 
+def _manufacturer_countries(text: str, manufacturer: str, fallback_block: str) -> str:
+    countries: list[str] = []
+    normalized_text = _clean_text(text)
+    for company in [item.strip() for item in manufacturer.split(";") if item.strip()]:
+        match = re.search(re.escape(company), normalized_text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        nearby = normalized_text[match.end() : match.end() + 350]
+        for country in _extract_countries(nearby).split(";"):
+            country = country.strip()
+            if country and country not in countries:
+                countries.append(country)
+    return "; ".join(countries) or _extract_countries(fallback_block)
+
+
 def _address_line_like(value: str) -> bool:
     return bool(
         re.search(
             r"^(?:\d+|[a-z]?-?\d{3,}|floor\b|flat\b|unit\b|suite\b|building\b|"
             r"street\b|road\b|avenue\b|lane\b|drive\b)",
             _clean_text(value),
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _invalid_manufacturer_value(value: object) -> bool:
+    text = _clean_text(value)
+    return bool(
+        len(text) > 180
+        or re.search(
+            r"\b(?:this leaflet|contents of the pack|active substance|"
+            r"medicine is|medicinal product is|last revised)\b",
+            text,
             flags=re.IGNORECASE,
         )
     )
@@ -400,7 +453,7 @@ def _metadata_from_text(text: str) -> dict[str, str]:
     metadata = {
         "company": _extract_ma_holder(text),
         "manufacturer_name": manufacturer,
-        "manufacturer_country": _extract_countries(manufacturer_block),
+        "manufacturer_country": _manufacturer_countries(text, manufacturer, manufacturer_block),
         "pack_size": _extract_pack_information(text),
     }
     if manufacturer:
@@ -413,7 +466,12 @@ def _pdf_text(content: bytes) -> str:
     parts = []
     for page_index in _pdf_page_indices(len(reader.pages)):
         try:
-            parts.append(reader.pages[page_index].extract_text() or "")
+            page = reader.pages[page_index]
+            try:
+                text = page.extract_text(extraction_mode="layout") or ""
+            except (TypeError, ValueError):
+                text = page.extract_text() or ""
+            parts.append(text)
         except Exception as exc:
             logger.debug("MHRA PDF page extraction failed on page %s: %s", page_index + 1, exc)
     return "\n".join(parts)
@@ -527,9 +585,19 @@ def enrich_mhra_document_metadata(rows: list[dict[str, Any]]) -> list[dict[str, 
                 and current_value
                 and current_value.lower() == _clean_text(row.get("company", "")).lower()
             )
-            if metadata_value and (not current_value or should_replace_holder_copy):
+            should_replace_invalid = (
+                field == "manufacturer_name"
+                and _invalid_manufacturer_value(current_value)
+            )
+            if metadata_value and (
+                not current_value or should_replace_holder_copy or should_replace_invalid
+            ):
                 row[field] = metadata_value
-        if _clean_text(row.get("manufacturer_name", "")).lower() == _clean_text(row.get("company", "")).lower():
+        if (
+            _clean_text(row.get("manufacturer_name", "")).lower()
+            == _clean_text(row.get("company", "")).lower()
+            and not row.get("manufacturer_source")
+        ):
             row["manufacturer_name"] = ""
             row["manufacturer_country"] = ""
             row["manufacturer_source"] = ""
