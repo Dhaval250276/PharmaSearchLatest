@@ -13,13 +13,13 @@ DOCUMENT_ENRICHMENT_FIELDS = {
     "manufacturer_name",
     "manufacturer_country",
 }
-NON_EU_DOCUMENT_SOURCES = {
-    "FDA",
-    "FDA Orange Book",
-    "FDA Purple Book",
-    "Health Canada",
-    "TGA Australia",
-    "Medsafe New Zealand",
+DOCUMENT_CAPABLE_SOURCES = {
+    "MHRA",
+    "EMA",
+    "EU MRI Product Index",
+    "Belgium FAMHP",
+    "Ireland medicines.ie",
+    "Spain CIMA",
 }
 
 
@@ -28,8 +28,17 @@ def missing_field_value(item: dict[str, Any], field: str) -> str:
     source = str(item.get("source") or "").strip()
     if str(item.get("connector_mode") or "").strip() == "manual_registry":
         return "Product record not extracted"
-    if field in DOCUMENT_FIELDS and source in NON_EU_DOCUMENT_SOURCES:
+    if (
+        field in DOCUMENT_FIELDS | DOCUMENT_ENRICHMENT_FIELDS
+        and source
+        and source not in DOCUMENT_CAPABLE_SOURCES
+    ):
         return NOT_APPLICABLE
+    if (
+        field in DOCUMENT_FIELDS | DOCUMENT_ENRICHMENT_FIELDS
+        and item.get("document_enrichment_attempted")
+    ):
+        return NOT_SUPPLIED
     if field in DOCUMENT_FIELDS | DOCUMENT_ENRICHMENT_FIELDS and any(
         item.get(name)
         for name in ("product_url", "url", "source_url", "smpc_url", "pil_url", "assessment_report_url")

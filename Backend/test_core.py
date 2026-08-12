@@ -70,9 +70,25 @@ class FieldAvailabilityTests(unittest.TestCase):
     def test_document_fields_are_not_applicable_to_fda_schema(self):
         self.assertEqual(field_value({"source": "FDA"}, "smpc_url"), NOT_APPLICABLE)
 
+    def test_manufacturer_is_not_pending_for_fda_schema(self):
+        row = {"source": "FDA", "product_url": "https://example.test/label"}
+        self.assertEqual(field_value(row, "manufacturer_name"), NOT_APPLICABLE)
+
+    def test_manufacturer_is_not_pending_for_regional_api_schema(self):
+        row = {"source": "BPOM Indonesia", "product_url": "https://example.test/product"}
+        self.assertEqual(field_value(row, "manufacturer_name"), NOT_APPLICABLE)
+
     def test_missing_mhra_manufacturer_is_marked_for_enrichment(self):
         row = {"source": "MHRA", "pil_url": "https://example.test/pil.pdf"}
         self.assertEqual(field_value(row, "manufacturer_name"), PENDING_ENRICHMENT)
+
+    def test_missing_mhra_manufacturer_is_not_pending_after_document_parse(self):
+        row = {
+            "source": "MHRA",
+            "pil_url": "https://example.test/pil.pdf",
+            "document_enrichment_attempted": True,
+        }
+        self.assertEqual(field_value(row, "manufacturer_name"), "Not supplied by regulator")
 
     def test_export_excludes_registry_handoff_rows(self):
         rows = build_export_rows(

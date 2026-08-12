@@ -533,5 +533,8 @@ def enrich_mhra_document_metadata(rows: list[dict[str, Any]]) -> list[dict[str, 
             row["manufacturer_name"] = ""
             row["manufacturer_country"] = ""
             row["manufacturer_source"] = ""
+        # Distinguish a completed document parse with no published value from
+        # a cached row whose documents have not been inspected yet.
+        row["document_enrichment_attempted"] = True
 
     return rows
