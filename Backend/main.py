@@ -634,12 +634,19 @@ def search_page(
         )
     sort_dir = "desc" if sort_dir == "desc" else "asc"
     status = english_text(status)
+    normalized_search_mode = "full" if search_mode == "full" else "fast"
     requested_sources = sources if isinstance(sources, list) else [sources] if sources else []
     if not requested_sources:
-        sources = sorted(FAST_BACKGROUND_SOURCES)
+        # A full search with no explicit source list means every source, not the
+        # quick-search shortlist.
+        default_sources = (
+            [item["name"] for item in connector_metadata() if item.get("enabled", True)]
+            if normalized_search_mode == "full"
+            else sorted(FAST_BACKGROUND_SOURCES)
+        )
+        sources = default_sources
         requested_sources = list(sources)
     requested_source_names = {str(item).strip().lower() for item in requested_sources if str(item).strip()}
-    normalized_search_mode = "full" if search_mode == "full" else "fast"
     slow_live_sources = {
         "cdsco india",
         "grls russia",
