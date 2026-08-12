@@ -28,12 +28,14 @@ def missing_field_value(item: dict[str, Any], field: str) -> str:
     source = str(item.get("source") or "").strip()
     if str(item.get("connector_mode") or "").strip() == "manual_registry":
         return "Product record not extracted"
+    if field in DOCUMENT_FIELDS and source and source not in DOCUMENT_CAPABLE_SOURCES:
+        return NOT_APPLICABLE
     if (
-        field in DOCUMENT_FIELDS | DOCUMENT_ENRICHMENT_FIELDS
+        field in DOCUMENT_ENRICHMENT_FIELDS
         and source
         and source not in DOCUMENT_CAPABLE_SOURCES
     ):
-        return NOT_APPLICABLE
+        return NOT_SUPPLIED
     if (
         field in DOCUMENT_FIELDS | DOCUMENT_ENRICHMENT_FIELDS
         and item.get("document_enrichment_attempted")

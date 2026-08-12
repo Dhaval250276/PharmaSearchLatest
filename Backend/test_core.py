@@ -72,11 +72,11 @@ class FieldAvailabilityTests(unittest.TestCase):
 
     def test_manufacturer_is_not_pending_for_fda_schema(self):
         row = {"source": "FDA", "product_url": "https://example.test/label"}
-        self.assertEqual(field_value(row, "manufacturer_name"), NOT_APPLICABLE)
+        self.assertEqual(field_value(row, "manufacturer_name"), "Not supplied by regulator")
 
     def test_manufacturer_is_not_pending_for_regional_api_schema(self):
         row = {"source": "BPOM Indonesia", "product_url": "https://example.test/product"}
-        self.assertEqual(field_value(row, "manufacturer_name"), NOT_APPLICABLE)
+        self.assertEqual(field_value(row, "manufacturer_name"), "Not supplied by regulator")
 
     def test_missing_mhra_manufacturer_is_marked_for_enrichment(self):
         row = {"source": "MHRA", "pil_url": "https://example.test/pil.pdf"}
