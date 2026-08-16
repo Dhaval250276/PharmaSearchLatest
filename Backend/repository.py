@@ -41,12 +41,15 @@ PRODUCT_DETAIL_COLUMNS = {
     "source_url",
     "document_type",
     "last_checked",
-    # Values lent by another regulator that published them for the same
-    # molecule. Kept apart from the row's own columns so an inherited document
-    # is never read as this authorisation's own label.
     # The molecule this row is about, normalized across languages and registers
     # so a search for "ibuprofen" also reaches France's IBUPROFENE rows.
     "substance_key",
+    # The substance exactly as the registry stated it, which is where the salt
+    # or ester is named when the product is a brand.
+    "source_substance",
+    # Values lent by another regulator that published them for the same
+    # molecule. Kept apart from the row's own columns so an inherited document
+    # is never read as this authorisation's own label.
     "completion_source",
     "reference_smpc_url",
     "reference_pil_url",
@@ -608,6 +611,7 @@ def save_product_detail(record: dict[str, Any]) -> dict[str, Any]:
     data = {
         "substance": record.get("substance", ""),
         "substance_key": molecule_group_key(record.get("substance", "")),
+        "source_substance": record.get("source_substance", ""),
         "product": record.get("product", ""),
         "company": record.get("company", ""),
         "country": record.get("country", ""),

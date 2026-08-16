@@ -1564,6 +1564,40 @@ class FieldCompletionTests(unittest.TestCase):
         self.assertEqual(changes["reference_smpc_url"], "https://mhra/spray-smpc")
         self.assertEqual(changes["reference_product"], "NASACORT ALLERGY NASAL SPRAY")
 
+    def test_lends_from_the_same_salt(self):
+        # Kenalog is triamcinolone acetonide and Aristospan is hexacetonide:
+        # same molecule, same injectable suspension, different medicines. The
+        # FDA states the salt in substance_name while the product is a brand.
+        hexacetonide = {
+            "id": 1,
+            "source": "MHRA",
+            "substance": "Triamcinolone",
+            "product": "TRIAMCINOLONE HEXACETONIDE 20MG/ML SUSPENSION FOR INJECTION",
+            "dosage_form": "Suspension for injection",
+            "smpc_url": "https://mhra/hexacetonide-smpc",
+            "pil_url": "https://mhra/hexacetonide-pil",
+        }
+        acetonide = {
+            "id": 2,
+            "source": "MHRA",
+            "substance": "Triamcinolone",
+            "product": "KENALOG INTRA-ARTICULAR TRIAMCINOLONE ACETONIDE",
+            "dosage_form": "Suspension for injection",
+            "smpc_url": "https://mhra/acetonide-smpc",
+        }
+        kenalog = {
+            "id": 3,
+            "source": "FDA",
+            "substance": "triamcinolone",
+            "source_substance": "TRIAMCINOLONE ACETONIDE",
+            "product": "KENALOG-10",
+            "dosage_form": "Suspension",
+        }
+
+        changes = self._group(hexacetonide, acetonide, kenalog)[3]
+
+        self.assertEqual(changes["reference_smpc_url"], "https://mhra/acetonide-smpc")
+
     def test_prefers_the_regulator_that_publishes_a_full_document_set(self):
         stray = {"id": 1, "source": "Thai FDA", "substance": "metformin", "pil_url": "https://thai/pil"}
         ema = {

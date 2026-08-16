@@ -100,6 +100,32 @@ def _dosage_form_key(value: object) -> str:
     return text
 
 
+# Esters and salts that make a genuinely different medicine of the same
+# molecule: triamcinolone acetonide is Kenalog, hexacetonide is Aristospan, and
+# they are not interchangeable.
+SALT_QUALIFIERS = (
+    "hexacetonide", "acetonide", "diacetate", "dipropionate", "propionate",
+    "valerate", "furoate", "decanoate", "enanthate", "palmitate", "pamoate",
+    "succinate", "fumarate", "maleate", "besylate", "mesylate", "tartrate",
+)
+
+
+def _salt_key(row: dict[str, Any]) -> str:
+    """The salt or ester a row names, wherever it happens to state it.
+
+    Registries put it in different places: the MHRA writes it into the product
+    name, openFDA states it in substance_name while the product is a brand.
+    """
+    text = " ".join(
+        _clean(row.get(field)).lower()
+        for field in ("source_substance", "substance", "product")
+    )
+    for qualifier in SALT_QUALIFIERS:
+        if qualifier in text:
+            return qualifier
+    return ""
+
+
 def _document_donor(
     rows: list[dict[str, Any]], target: dict[str, Any] | None = None
 ) -> dict[str, Any] | None:
@@ -122,9 +148,14 @@ def _document_donor(
     if not candidates:
         return None
     wanted_form = _dosage_form_key(target.get("dosage_form")) if target else ""
+    wanted_salt = _salt_key(target) if target else ""
     return max(
         candidates,
         key=lambda row: (
+            # The salt outranks the form: an acetonide injection and a
+            # hexacetonide injection are different medicines, not two
+            # presentations of one.
+            bool(wanted_salt) and _salt_key(row) == wanted_salt,
             bool(wanted_form) and _dosage_form_key(row.get("dosage_form")) == wanted_form,
             _clean(row.get("source")) in DOCUMENT_CAPABLE_SOURCES,
             sum(1 for field in DOCUMENT_FIELDS if _clean(row.get(field))),
@@ -203,7 +234,7 @@ def attach_reference_documents(rows: list[dict[str, Any]]) -> list[dict[str, Any
             dict(candidate)
             for candidate in connection.execute(
                 f"""
-                SELECT substance_key, source, product, dosage_form,
+                SELECT substance_key, source, product, dosage_form, source_substance,
                        smpc_url, pil_url, assessment_report_url
                 FROM product_details
                 WHERE substance_key IN ({placeholders})

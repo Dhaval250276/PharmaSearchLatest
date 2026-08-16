@@ -198,6 +198,11 @@ def run_fda_search(substance, limit=100):
         results.append(
             {
                 "substance": substance,
+                # The label names the exact salt -- "TRIAMCINOLONE ACETONIDE"
+                # where the search term was just "triamcinolone". A brand like
+                # KENALOG-40 states it nowhere else, and without it a document
+                # can only be matched to the molecule, not to the salt.
+                "source_substance": _first(openfda.get("substance_name")) or substance,
                 "product": product,
                 "company": holder,
                 "commercial_company": labeler,
