@@ -1509,6 +1509,41 @@ class FieldCompletionTests(unittest.TestCase):
 
         self.assertNotIn("reference_smpc_url", changes.get(2, {}))
 
+    def test_lends_from_the_same_dosage_form(self):
+        # Triamcinolone is a nasal spray in one country and an injectable
+        # suspension in another; the injection's assessment report describes a
+        # different medicine and must not be lent to the spray.
+        injection = {
+            "id": 1,
+            "source": "MHRA",
+            "substance": "triamcinolone",
+            "product": "TRIAMCINOLONE HEXACETONIDE SUSPENSION FOR INJECTION",
+            "dosage_form": "Suspension for injection",
+            "smpc_url": "https://mhra/injection-smpc",
+            "pil_url": "https://mhra/injection-pil",
+            "assessment_report_url": "https://mhra/injection-par",
+        }
+        spray = {
+            "id": 2,
+            "source": "MHRA",
+            "substance": "triamcinolone",
+            "product": "NASACORT ALLERGY NASAL SPRAY",
+            "dosage_form": "Nasal spray",
+            "smpc_url": "https://mhra/spray-smpc",
+        }
+        us_spray = {
+            "id": 3,
+            "source": "FDA",
+            "substance": "triamcinolone",
+            "product": "Good Sense Nasal Allergy",
+            "dosage_form": "Spray",
+        }
+
+        changes = self._group(injection, spray, us_spray)[3]
+
+        self.assertEqual(changes["reference_smpc_url"], "https://mhra/spray-smpc")
+        self.assertEqual(changes["reference_product"], "NASACORT ALLERGY NASAL SPRAY")
+
     def test_prefers_the_regulator_that_publishes_a_full_document_set(self):
         stray = {"id": 1, "source": "Thai FDA", "substance": "metformin", "pil_url": "https://thai/pil"}
         ema = {

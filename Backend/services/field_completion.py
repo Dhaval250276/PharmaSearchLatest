@@ -76,12 +76,32 @@ def _agreed_value(rows: list[dict[str, Any]], field: str) -> tuple[str, str]:
     return value, sources.get(value, "")
 
 
-def _document_donor(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The row whose documents best represent the molecule.
+def _dosage_form_key(value: object) -> str:
+    """A dosage form reduced to what distinguishes it from another form."""
+    text = _clean(value).lower()
+    for form in (
+        "injection", "infusion", "spray", "cream", "ointment", "gel", "drops",
+        "inhaler", "inhalation", "capsule", "tablet", "solution", "suspension",
+        "syrup", "patch", "suppository", "powder", "lotion", "paste",
+    ):
+        if form in text:
+            return form
+    return text
 
-    Regulators that publish full document sets are preferred; among them the
-    row carrying the most documents wins, so a reference points at a complete
-    label rather than a stray PIL.
+
+def _document_donor(
+    rows: list[dict[str, Any]], target: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """The row whose documents best represent this product.
+
+    A molecule is not a product. Triamcinolone is a nasal spray in one country
+    and an injectable suspension in another, and lending the injection's
+    assessment report to the spray describes a different medicine. So a donor
+    in the same dosage form outranks everything else.
+
+    After that, regulators publishing full document sets are preferred, and
+    among them the row carrying the most documents wins, so a reference points
+    at a complete label rather than a stray PIL.
     """
     candidates = [
         row
@@ -90,9 +110,11 @@ def _document_donor(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     ]
     if not candidates:
         return None
+    wanted_form = _dosage_form_key(target.get("dosage_form")) if target else ""
     return max(
         candidates,
         key=lambda row: (
+            bool(wanted_form) and _dosage_form_key(row.get("dosage_form")) == wanted_form,
             _clean(row.get("source")) in DOCUMENT_CAPABLE_SOURCES,
             sum(1 for field in DOCUMENT_FIELDS if _clean(row.get(field))),
         ),
@@ -102,10 +124,12 @@ def _document_donor(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 def _completions_for_group(rows: list[dict[str, Any]]) -> list[tuple[int, dict[str, str]]]:
     """The column updates each row in a molecule group needs."""
     agreed = {field: _agreed_value(rows, field) for field in MOLECULE_FIELDS}
-    donor = _document_donor(rows)
     updates: list[tuple[int, dict[str, str]]] = []
 
     for row in rows:
+        # Chosen per row, since the best donor depends on the dosage form of
+        # the product being completed.
+        donor = _document_donor(rows, row)
         changes: dict[str, str] = {}
         lenders = []
 
@@ -168,7 +192,8 @@ def attach_reference_documents(rows: list[dict[str, Any]]) -> list[dict[str, Any
             dict(candidate)
             for candidate in connection.execute(
                 f"""
-                SELECT substance_key, source, product, smpc_url, pil_url, assessment_report_url
+                SELECT substance_key, source, product, dosage_form,
+                       smpc_url, pil_url, assessment_report_url
                 FROM product_details
                 WHERE substance_key IN ({placeholders})
                   AND (smpc_url <> '' OR pil_url <> '' OR assessment_report_url <> '')
@@ -177,16 +202,14 @@ def attach_reference_documents(rows: list[dict[str, Any]]) -> list[dict[str, Any
             ).fetchall()
         ]
 
-    donors: dict[str, dict[str, Any]] = {}
-    for key in wanted:
-        group = [row for row in candidates if row.get("substance_key") == key]
-        donor = _document_donor(group)
-        if donor:
-            donors[key] = donor
+    by_key: dict[str, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        by_key.setdefault(str(candidate.get("substance_key") or ""), []).append(candidate)
 
     for row in rows:
         key = molecule_group_key(row.get("substance"))
-        donor = donors.get(key)
+        # Per row, so a spray is not handed the injection's assessment report.
+        donor = _document_donor(by_key.get(key, []), row)
         if not donor:
             continue
         for field in DOCUMENT_FIELDS:
