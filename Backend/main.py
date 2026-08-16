@@ -886,28 +886,28 @@ def search_page(
             marker = " v" if sort_dir == "asc" else " ^"
         return f'<a class="link-light" href="{h(sort_href(column))}">{h(label)}{marker}</a>'
 
-    def reference_documents_cell(row):
-        """Documents another regulator published for the same molecule.
+    def document_cell(row, display_row, field, label):
+        """The product's own document, or the molecule's if it has none.
 
-        Labelled with the regulator and product they belong to, because they
-        are not this authorisation's own label and must not be read as one.
+        A row's own document is shown plainly. Where the regulator publishes
+        none, the document another regulator published for the same molecule
+        takes the column, carrying a note naming that regulator and product:
+        the link is the useful thing, but it is not this authorisation's label
+        and the column must not imply that it is.
         """
-        links = []
-        for field, label in (
-            ("reference_smpc_url", "SmPC"),
-            ("reference_pil_url", "PIL"),
-            ("reference_assessment_report_url", "Assessment"),
-        ):
-            url = str(row.get(field) or "").strip()
-            if url:
-                links.append(f'<a href="{h(url)}" target="_blank" rel="noopener">{label}</a>')
-        if not links:
-            return '<span class="text-muted">None</span>'
+        own_url = str(display_row.get(field) or "").strip()
+        if own_url:
+            return f'<a href="{h(own_url)}" target="_blank" rel="noopener">Open {label}</a>'
+
+        reference_url = str(row.get(f"reference_{field}") or "").strip()
+        if not reference_url:
+            return f'<span class="text-muted">{h(missing_field_value(row, field))}</span>'
+
         origin = str(row.get("reference_source") or "").strip()
         product = str(row.get("reference_product") or "").strip()
         attribution = " / ".join(part for part in (origin, product) if part)
         return (
-            f'{" &middot; ".join(links)}'
+            f'<a href="{h(reference_url)}" target="_blank" rel="noopener">Open {label}</a>'
             f'<div class="small text-muted">Molecule reference from {h(attribution)}</div>'
         )
 
@@ -918,21 +918,9 @@ def search_page(
     for row in visible_product_rows:
         display_row = formatted_result_row(row, searched_substance=substance)
         product_link = link_or_unavailable(display_row["product_details_url"], "Open Product")
-        smpc_link = link_or_unavailable(
-            display_row["smpc_url"],
-            "Open SmPC",
-            missing_field_value(row, "smpc_url"),
-        )
-        pil_link = link_or_unavailable(
-            display_row["pil_url"],
-            "Open PIL",
-            missing_field_value(row, "pil_url"),
-        )
-        assessment_link = link_or_unavailable(
-            display_row["assessment_report_url"],
-            "Open Assessment",
-            missing_field_value(row, "assessment_report_url"),
-        )
+        smpc_link = document_cell(row, display_row, "smpc_url", "SmPC")
+        pil_link = document_cell(row, display_row, "pil_url", "PIL")
+        assessment_link = document_cell(row, display_row, "assessment_report_url", "Assessment")
         body_rows.append(
             f"""
             <tr class="result-row">
@@ -958,10 +946,6 @@ def search_page(
                 <td>{smpc_link}</td>
                 <td>{pil_link}</td>
                 <td>{assessment_link}</td>
-                <td>{h(row.get("data_confidence", ""))}</td>
-                <td>{h(row.get("enrichment_status", ""))}</td>
-                <td>{h(row.get("missing_fields", ""))}</td>
-                <td>{reference_documents_cell(row)}</td>
             </tr>
             """
         )
@@ -969,7 +953,7 @@ def search_page(
         body_rows.append(
             """
             <tr>
-                <td colspan="26" class="text-center text-muted py-4">
+                <td colspan="22" class="text-center text-muted py-4">
                     No direct product records on this page. Use the official source links above for manual verification.
                 </td>
             </tr>
@@ -1265,10 +1249,6 @@ def search_page(
                     <th>SMPC URL</th>
                     <th>PIL URL</th>
                     <th>Assessment Report URL</th>
-                    <th>Data Confidence</th>
-                    <th>Enrichment Status</th>
-                    <th>Missing Fields</th>
-                    <th>Molecule Reference Documents</th>
                 </tr>
                 <tr class="table-secondary">
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="substance_filter" value="{h(substance_filter)}" placeholder="Filter"></th>
@@ -1293,10 +1273,6 @@ def search_page(
                     <th><input class="form-control form-control-sm page-column-filter" data-column="19" placeholder="Filter"></th>
                     <th><input class="form-control form-control-sm page-column-filter" data-column="20" placeholder="Filter"></th>
                     <th><input class="form-control form-control-sm page-column-filter" data-column="21" placeholder="Filter"></th>
-                    <th><input class="form-control form-control-sm page-column-filter" data-column="22" placeholder="Filter"></th>
-                    <th><input class="form-control form-control-sm page-column-filter" data-column="23" placeholder="Filter"></th>
-                    <th><input class="form-control form-control-sm page-column-filter" data-column="24" placeholder="Filter"></th>
-                    <th><input class="form-control form-control-sm page-column-filter" data-column="25" placeholder="Filter"></th>
                 </tr>
             </thead>
             <tbody>{"".join(body_rows)}</tbody>

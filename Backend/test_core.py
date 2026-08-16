@@ -177,9 +177,9 @@ class SearchPageFilterTests(unittest.TestCase):
         table = soup.select_one("table.results-table")
         header_rows = table.select("thead tr")
 
-        self.assertEqual(len(header_rows[0].select("th")), 26)
+        self.assertEqual(len(header_rows[0].select("th")), 22)
         filter_cells = header_rows[1].select("th")
-        self.assertEqual(len(filter_cells), 26)
+        self.assertEqual(len(filter_cells), 22)
         self.assertTrue(all(cell.select_one("input, select") for cell in filter_cells))
 
 
