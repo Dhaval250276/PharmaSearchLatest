@@ -10,6 +10,9 @@ from sources.parser import extract_dosage_form, extract_strength
 
 
 OPENFDA_LABEL_URL = "https://api.fda.gov/drug/label.json"
+# openFDA serves the label as JSON; DailyMed serves the same SPL as the
+# readable Prescribing Information, keyed by the set id the API already returns.
+DAILYMED_LABEL_URL = "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm"
 OPENFDA_NDC_URL = "https://api.fda.gov/drug/ndc.json"
 # NDC records carry pack size, marketing start date and the labeler, so it is
 # worth waiting for them rather than dropping the enrichment after one second.
@@ -191,6 +194,8 @@ def run_fda_search(substance, limit=100):
         ndc_record = _best_ndc_record(product, company, ndc_records) or {}
         labeler = str(ndc_record.get("labeler_name", "")).strip()
         holder = company or labeler
+        set_id = str(item.get("set_id") or _first(openfda.get("spl_set_id")) or "").strip()
+        dailymed_url = f"{DAILYMED_LABEL_URL}?setid={set_id}" if set_id else ""
         product_query_url = url
         if application_number:
             product_query = quote(f'openfda.application_number:"{application_number}"')
@@ -222,8 +227,14 @@ def run_fda_search(substance, limit=100):
                 "registration_number": application_number,
                 "source": "FDA",
                 "source_url": url,
-                "product_url": product_query_url,
-                "url": product_query_url,
+                "product_url": dailymed_url or product_query_url,
+                "url": dailymed_url or product_query_url,
+                # The FDA's Prescribing Information is the US counterpart of an
+                # SmPC, and DailyMed is where it is published for people rather
+                # than for the API. Without it a US row has no document of its
+                # own and ends up borrowing another country's label.
+                "smpc_url": dailymed_url,
+                "document_type": "FDA prescribing information" if dailymed_url else "",
             }
         )
     return results
