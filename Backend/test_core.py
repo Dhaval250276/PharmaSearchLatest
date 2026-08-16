@@ -37,6 +37,14 @@ from sources.regional_live import (
     run_cdsco_india_search,
     run_nmpa_china_search,
 )
+from services.field_completion import _completions_for_group
+from services.harvest import CONSECUTIVE_FAILURE_LIMIT, run_harvest
+from services.harvest_vocabulary import (
+    _Accumulator,
+    normalize_molecule,
+    split_combination,
+)
+from sources.connectors.base import SourceMetadata
 from sources.source_registry import CONNECTORS, SOURCES, connector_metadata
 from sources.tga import _fallback_rows, _merge_detail, _parse_artg_detail, _parse_artg_search_results
 from services.ai_client import ai_extract_regulatory_fields, ai_status
@@ -169,9 +177,9 @@ class SearchPageFilterTests(unittest.TestCase):
         table = soup.select_one("table.results-table")
         header_rows = table.select("thead tr")
 
-        self.assertEqual(len(header_rows[0].select("th")), 25)
+        self.assertEqual(len(header_rows[0].select("th")), 26)
         filter_cells = header_rows[1].select("th")
-        self.assertEqual(len(filter_cells), 25)
+        self.assertEqual(len(filter_cells), 26)
         self.assertTrue(all(cell.select_one("input, select") for cell in filter_cells))
 
 
@@ -1232,6 +1240,225 @@ class TherapeuticCategoryTests(unittest.TestCase):
 
     def test_uses_atc_category_when_available(self):
         self.assertEqual(short_therapeutic_category("", "", "N02BE01"), "Analgesic")
+
+
+class HarvestVocabularyTests(unittest.TestCase):
+    def test_reduces_a_registry_substance_string_to_its_molecule(self):
+        self.assertEqual(
+            normalize_molecule(
+                "Dapagliflozin Propanediol Monohydrate IP eq. To Dapagliflozin 10.0000 Milligram (Mg)"
+            ),
+            "dapagliflozin",
+        )
+
+    def test_strips_a_trailing_salt(self):
+        self.assertEqual(normalize_molecule("DICLOFENAC SODIUM"), "diclofenac")
+        self.assertEqual(normalize_molecule("ATORVASTATIN CALCIUM"), "atorvastatin")
+
+    def test_keeps_a_salt_that_is_itself_the_molecule(self):
+        self.assertEqual(normalize_molecule("SODIUM CHLORIDE"), "sodium chloride")
+        self.assertEqual(normalize_molecule("MAGNESIUM SULFATE"), "magnesium sulfate")
+
+    def test_rejects_containers_and_excipients(self):
+        for value in ("Vial", "Water For Injection", "Tablets", "Polysorbate 80"):
+            self.assertEqual(normalize_molecule(value), "", value)
+
+    def test_splits_a_fixed_dose_combination_into_its_molecules(self):
+        self.assertEqual(
+            split_combination("Amoxycillin Trihydrate Ip Eq. To Amoxycillin+Vonoprazan Fumarate"),
+            ["amoxycillin", "vonoprazan"],
+        )
+
+    def test_ranks_multi_registry_molecules_before_high_count_singletons(self):
+        accumulator = _Accumulator()
+        # A US-only monograph ingredient with an enormous label count.
+        accumulator.add("ZINC OXIDE", "openfda", evidence=4148)
+        # A prescription molecule attested by two registries.
+        accumulator.add("METFORMIN", "openfda", evidence=200)
+        accumulator.add("Metformin Hydrochloride IP", "cdsco")
+
+        self.assertEqual(
+            [entry["molecule"] for entry in accumulator.entries()],
+            ["metformin", "zinc oxide"],
+        )
+
+
+class _StubConnector:
+    """Stands in for a registry connector in harvest tests."""
+
+    def __init__(self, name, rows=None, error=None):
+        self.metadata = SourceMetadata(
+            name=name, region="EU", countries=("Germany",), rate_limit_per_minute=6000
+        )
+        self._rows = rows or []
+        self._error = error
+        self.calls = []
+
+    def search(self, substance):
+        self.calls.append(substance)
+        if self._error:
+            raise self._error
+        return [dict(row) for row in self._rows]
+
+
+class HarvestRunnerTests(unittest.TestCase):
+    def setUp(self):
+        self.persisted = []
+        persist = patch(
+            "services.harvest.save_product_detail",
+            side_effect=lambda record: self.persisted.append(record) or record,
+        )
+        # Progress is a database write; the runner's logic is what is under test.
+        progress = patch("services.harvest.record_progress")
+        tables = patch("services.harvest.initialize_harvest_tables")
+        self.record_progress = progress.start()
+        persist.start()
+        tables.start()
+        self.addCleanup(patch.stopall)
+
+    def test_harvests_every_molecule_and_stores_the_rows(self):
+        connector = _StubConnector("Stub", rows=[{"product": "Glucophage", "source": "Stub"}])
+
+        with patch("services.harvest.CONNECTORS", [connector]), patch(
+            "services.harvest.completed_pairs", return_value=set()
+        ):
+            result = run_harvest(molecules=["metformin", "atorvastatin"])
+
+        self.assertEqual(connector.calls, ["metformin", "atorvastatin"])
+        self.assertEqual(result.rows, 2)
+        # A connector row without a substance is filed under the molecule that
+        # produced it, or the harvested row could never be found again.
+        self.assertEqual([row["substance"] for row in self.persisted], ["metformin", "atorvastatin"])
+
+    def test_skips_pairs_already_harvested(self):
+        connector = _StubConnector("Stub", rows=[{"product": "Glucophage"}])
+
+        with patch("services.harvest.CONNECTORS", [connector]), patch(
+            "services.harvest.completed_pairs", return_value={("Stub", "metformin")}
+        ):
+            result = run_harvest(molecules=["metformin", "atorvastatin"])
+
+        self.assertEqual(connector.calls, ["atorvastatin"])
+        self.assertEqual(result.outcomes["Stub"].skipped, 1)
+
+    def test_one_failing_registry_does_not_stop_the_others(self):
+        broken = _StubConnector("Broken", error=requests.RequestException("down"))
+        working = _StubConnector("Working", rows=[{"product": "Glucophage"}])
+
+        with patch("services.harvest.CONNECTORS", [broken, working]), patch(
+            "services.harvest.completed_pairs", return_value=set()
+        ):
+            result = run_harvest(molecules=["metformin", "atorvastatin"])
+
+        self.assertEqual(result.outcomes["Broken"].failures, 2)
+        self.assertEqual(result.outcomes["Broken"].rows, 0)
+        self.assertEqual(result.outcomes["Working"].rows, 2)
+
+    def test_stops_a_registry_that_has_gone_down(self):
+        broken = _StubConnector("Broken", error=requests.RequestException("down"))
+        molecules = [f"molecule-{index}" for index in range(CONSECUTIVE_FAILURE_LIMIT + 5)]
+
+        with patch("services.harvest.CONNECTORS", [broken]), patch(
+            "services.harvest.completed_pairs", return_value=set()
+        ):
+            result = run_harvest(molecules=molecules)
+
+        outcome = result.outcomes["Broken"]
+        self.assertTrue(outcome.stopped_early)
+        self.assertEqual(len(broken.calls), CONSECUTIVE_FAILURE_LIMIT)
+        # The molecules never attempted stay unrecorded, so the next run retries
+        # them rather than treating a dead registry as covered.
+        recorded = {call.args[1] for call in self.record_progress.call_args_list}
+        self.assertEqual(recorded, set(molecules[:CONSECUTIVE_FAILURE_LIMIT]))
+
+
+class FieldCompletionTests(unittest.TestCase):
+    def _group(self, *rows):
+        return {row_id: changes for row_id, changes in _completions_for_group(list(rows))}
+
+    def test_lends_a_molecule_level_code_to_a_registry_that_omits_it(self):
+        ema = {"id": 1, "source": "EMA", "substance": "metformin", "atc_code": "A10BA02"}
+        cdsco = {"id": 2, "source": "CDSCO India", "substance": "Metformin Hydrochloride IP"}
+
+        changes = self._group(ema, cdsco)
+
+        self.assertEqual(changes[2]["atc_code"], "A10BA02")
+        self.assertEqual(changes[2]["completion_source"], "EMA")
+        # The lender keeps its own code and gains nothing from itself.
+        self.assertNotIn("atc_code", changes.get(1, {}))
+
+    def test_derives_the_category_instead_of_lending_another_registrys_wording(self):
+        # Romania states the ATC class in Romanian and would win a majority
+        # vote; lending that text would put it on every other country's rows.
+        romania = {
+            "id": 1,
+            "source": "ANMDMR Romania",
+            "substance": "metformin",
+            "atc_code": "A10BA02",
+            "therapeutic_category": "Medicamente De Scadere A Glucozei Din Sang, Excl. Insuline",
+        }
+        cdsco = {"id": 2, "source": "CDSCO India", "substance": "metformin"}
+
+        changes = self._group(romania, cdsco)
+
+        self.assertEqual(changes[2]["therapeutic_category"], "Antidiabetic")
+        # And the Romanian regulator's own text is left on the Romanian row.
+        self.assertNotIn(
+            "Medicamente",
+            " ".join(value for row in changes.values() for value in row.values()),
+        )
+
+    def test_takes_the_code_most_registries_agree_on(self):
+        rows = [
+            {"id": 1, "source": "EMA", "substance": "metformin", "atc_code": "A10BA02"},
+            {"id": 2, "source": "MHRA", "substance": "metformin", "atc_code": "A10BA02"},
+            # A single mis-parsed value must not be lent to the whole molecule.
+            {"id": 3, "source": "Thai FDA", "substance": "metformin", "atc_code": "XXXX"},
+            {"id": 4, "source": "CDSCO India", "substance": "metformin"},
+        ]
+
+        self.assertEqual(self._group(*rows)[4]["atc_code"], "A10BA02")
+
+    def test_never_writes_another_countrys_document_into_the_products_own_column(self):
+        ema = {
+            "id": 1,
+            "source": "EMA",
+            "substance": "metformin",
+            "product": "Glucophage",
+            "smpc_url": "https://ema.europa.eu/glucophage-smpc",
+        }
+        cdsco = {"id": 2, "source": "CDSCO India", "substance": "metformin"}
+
+        changes = self._group(ema, cdsco)[2]
+
+        self.assertNotIn("smpc_url", changes)
+        self.assertEqual(changes["reference_smpc_url"], "https://ema.europa.eu/glucophage-smpc")
+        self.assertEqual(changes["reference_source"], "EMA")
+        self.assertEqual(changes["reference_product"], "Glucophage")
+
+    def test_leaves_a_row_that_has_its_own_document_alone(self):
+        ema = {"id": 1, "source": "EMA", "substance": "metformin", "smpc_url": "https://ema/one"}
+        mhra = {"id": 2, "source": "MHRA", "substance": "metformin", "smpc_url": "https://mhra/two"}
+
+        changes = self._group(ema, mhra)
+
+        self.assertNotIn("reference_smpc_url", changes.get(2, {}))
+
+    def test_prefers_the_regulator_that_publishes_a_full_document_set(self):
+        stray = {"id": 1, "source": "Thai FDA", "substance": "metformin", "pil_url": "https://thai/pil"}
+        ema = {
+            "id": 2,
+            "source": "EMA",
+            "substance": "metformin",
+            "smpc_url": "https://ema/smpc",
+            "pil_url": "https://ema/pil",
+        }
+        cdsco = {"id": 3, "source": "CDSCO India", "substance": "metformin"}
+
+        changes = self._group(stray, ema, cdsco)[3]
+
+        self.assertEqual(changes["reference_source"], "EMA")
+        self.assertEqual(changes["reference_pil_url"], "https://ema/pil")
 
 
 if __name__ == "__main__":

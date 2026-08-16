@@ -238,6 +238,15 @@ def build_export_rows(substance: str, results: list[dict[str, Any]]) -> list[dic
                     ai_metadata["enrichment_status"],
                 ),
                 "Missing Fields": export_value(item.get("missing_fields"), ai_metadata["missing_fields"]),
+                # Documents another regulator published for the same molecule.
+                # Exported in their own columns, never merged into the SmPC and
+                # PIL columns above, which hold this authorisation's own label.
+                "Molecule Reference SMPC URL": export_value(item.get("reference_smpc_url")),
+                "Molecule Reference PIL URL": export_value(item.get("reference_pil_url")),
+                "Molecule Reference Assessment Report URL": export_value(
+                    item.get("reference_assessment_report_url")
+                ),
+                "Molecule Reference Source": export_value(item.get("reference_source")),
                 "AI Next Action": export_value(item.get("ai_next_action"), ai_metadata["ai_next_action"]),
                 "Last Checked": export_value(item.get("last_checked"), generated_at),
             }

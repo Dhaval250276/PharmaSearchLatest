@@ -40,6 +40,15 @@ PRODUCT_DETAIL_COLUMNS = {
     "source_url",
     "document_type",
     "last_checked",
+    # Values lent by another regulator that published them for the same
+    # molecule. Kept apart from the row's own columns so an inherited document
+    # is never read as this authorisation's own label.
+    "completion_source",
+    "reference_smpc_url",
+    "reference_pil_url",
+    "reference_assessment_report_url",
+    "reference_source",
+    "reference_product",
 }
 
 

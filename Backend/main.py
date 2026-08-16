@@ -43,6 +43,8 @@ from services.connector_health import connector_health_rows
 from services.connector_status import connector_status_rows
 from services.english_normalizer import english_text
 from services.field_availability import missing_field_value
+from services.harvest import harvest_coverage
+from services.harvest_vocabulary import load_vocabulary
 from services.result_formatter import formatted_result_row
 from services.search_jobs import FAST_BACKGROUND_SOURCES, create_search_job, get_search_job, get_search_job_results
 
@@ -884,6 +886,31 @@ def search_page(
             marker = " v" if sort_dir == "asc" else " ^"
         return f'<a class="link-light" href="{h(sort_href(column))}">{h(label)}{marker}</a>'
 
+    def reference_documents_cell(row):
+        """Documents another regulator published for the same molecule.
+
+        Labelled with the regulator and product they belong to, because they
+        are not this authorisation's own label and must not be read as one.
+        """
+        links = []
+        for field, label in (
+            ("reference_smpc_url", "SmPC"),
+            ("reference_pil_url", "PIL"),
+            ("reference_assessment_report_url", "Assessment"),
+        ):
+            url = str(row.get(field) or "").strip()
+            if url:
+                links.append(f'<a href="{h(url)}" target="_blank" rel="noopener">{label}</a>')
+        if not links:
+            return '<span class="text-muted">None</span>'
+        origin = str(row.get("reference_source") or "").strip()
+        product = str(row.get("reference_product") or "").strip()
+        attribution = " / ".join(part for part in (origin, product) if part)
+        return (
+            f'{" &middot; ".join(links)}'
+            f'<div class="small text-muted">Molecule reference from {h(attribution)}</div>'
+        )
+
     visible_product_rows = [row for row in visible_rows if not is_manual_registry_row(row)]
     visible_registry_rows = [row for row in visible_rows if is_manual_registry_row(row)]
 
@@ -934,6 +961,7 @@ def search_page(
                 <td>{h(row.get("data_confidence", ""))}</td>
                 <td>{h(row.get("enrichment_status", ""))}</td>
                 <td>{h(row.get("missing_fields", ""))}</td>
+                <td>{reference_documents_cell(row)}</td>
             </tr>
             """
         )
@@ -941,7 +969,7 @@ def search_page(
         body_rows.append(
             """
             <tr>
-                <td colspan="25" class="text-center text-muted py-4">
+                <td colspan="26" class="text-center text-muted py-4">
                     No direct product records on this page. Use the official source links above for manual verification.
                 </td>
             </tr>
@@ -1240,6 +1268,7 @@ def search_page(
                     <th>Data Confidence</th>
                     <th>Enrichment Status</th>
                     <th>Missing Fields</th>
+                    <th>Molecule Reference Documents</th>
                 </tr>
                 <tr class="table-secondary">
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="substance_filter" value="{h(substance_filter)}" placeholder="Filter"></th>
@@ -1267,6 +1296,7 @@ def search_page(
                     <th><input class="form-control form-control-sm page-column-filter" data-column="22" placeholder="Filter"></th>
                     <th><input class="form-control form-control-sm page-column-filter" data-column="23" placeholder="Filter"></th>
                     <th><input class="form-control form-control-sm page-column-filter" data-column="24" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="25" placeholder="Filter"></th>
                 </tr>
             </thead>
             <tbody>{"".join(body_rows)}</tbody>
@@ -1559,6 +1589,17 @@ def connector_health():
 @app.get("/ai_status")
 def ai_status():
     return current_ai_status()
+
+
+@app.get("/harvest_coverage")
+def harvest_coverage_report():
+    """What the source-wide harvest has stored so far, per source."""
+    rows = harvest_coverage()
+    return {
+        "sources": rows,
+        "rows": sum(row["rows"] for row in rows),
+        "molecules_available": len(load_vocabulary()),
+    }
 
 
 @app.get("/connector_status_page")
