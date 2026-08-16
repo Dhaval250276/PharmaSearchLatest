@@ -14,9 +14,9 @@ from sources.health_canada import run_health_canada_search
 from sources.ireland_medicines_ie import run_ireland_medicines_search
 from sources.medsafe import run_medsafe_search
 from sources.mhra import run_mhra_search
+from sources.cdsco_india import run_cdsco_india_search
 from sources.regional_live import (
     run_bpom_indonesia_search,
-    run_cdsco_india_search,
     run_dav_vietnam_search,
     run_cyprus_pharmaceutical_services_search,
     run_fda_orange_book_search,

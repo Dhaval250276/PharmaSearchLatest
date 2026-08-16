@@ -22,3 +22,4 @@ Backend/forxiga_page.png
 
 # Test/runtime caches
 Backend/**/__pycache__/
+Backend/data/cdsco_india_approvals.json

@@ -1,7 +1,8 @@
 import unittest
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import requests
 from bs4 import BeautifulSoup
 
 from export_service import build_export_rows
@@ -708,7 +709,7 @@ class RegionalLiveConnectorTests(unittest.TestCase):
         self.assertEqual(rows[0]["product"], "acetaminophen official India registry search")
         self.assertEqual(rows[0]["connector_mode"], "manual_registry")
 
-    def test_cdsco_india_search_uses_pdf_parser(self):
+    def test_cdsco_india_search_delegates_to_approvals_connector(self):
         expected = [
             {
                 "substance": "dapagliflozin",
@@ -718,11 +719,137 @@ class RegionalLiveConnectorTests(unittest.TestCase):
             }
         ]
 
-        with patch("sources.regional_live._run_cdsco_india_pdf_search", return_value=expected) as parser:
+        with patch("sources.regional_live._run_cdsco_india_search", return_value=expected) as connector:
             rows = run_cdsco_india_search("dapagliflozin")
 
-        parser.assert_called_once_with("dapagliflozin")
+        connector.assert_called_once_with("dapagliflozin")
         self.assertEqual(rows, expected)
+
+    def test_cdsco_india_search_falls_back_when_no_approvals_match(self):
+        with patch("sources.regional_live._run_cdsco_india_search", return_value=[]):
+            rows = run_cdsco_india_search("acetaminophen")
+
+        self.assertEqual(rows[0]["connector_mode"], "manual_registry")
+        self.assertEqual(rows[0]["country"], "India")
+
+
+class CDSCOIndiaConnectorTests(unittest.TestCase):
+    PAYLOAD = {
+        "iTotalRecords": 2,
+        "aaData": [
+            {
+                "num_form_id": 39942,
+                "str_man_unit_name": "PURE & CURE HEALTHCARE Pvt. Ltd.",
+                "str_address": "305, Mohan Place, Saraswati Vihar, , Delhi, India, 110034",
+                "str_drug_name": "Dapagliflozin+Metoprolol Succinate (Er)",
+                "str_composition": "Dapagliflozin Propanediol Monohydrate Eq. To Dapagliflozin 10.0000 Milligram (Mg)",
+                "manuf_addr": "Precise Chemipharma Pvt.Ltd, Navi Mumbai Maharashtra India-400703"
+                "<br>Reine Lifescience, Ankleshwar Gujarat India-393002",
+                "str_dosage": "Tablets",
+                "str_indication": "Indicated In Patients With Heart Failure",
+                "dt_closure_dt": "09-JAN-2026",
+                "str_applied_for": "Finished Formulation",
+            },
+            {
+                "num_form_id": 54683,
+                "str_man_unit_name": "Serum Institute Of India Pvt. Ltd.",
+                "str_address": "212/2, Hadapsar, , Maharashtra, India, 411028",
+                "str_drug_name": "Hepatitis B Surface Antigen Concentrate Bulk",
+                "str_composition": "Hepatitis B Protein 0.2000 Mg/Ml",
+                "manuf_addr": "Serum Institute Of India Pvt Ltd.., Pune Maharashtra India-411028",
+                "str_dosage": "NA",
+                "str_indication": "NA",
+                "dt_closure_dt": "13-AUG-2026",
+                "str_applied_for": "Bulk Drug",
+            },
+        ],
+    }
+
+    def setUp(self):
+        from sources import cdsco_india
+
+        # The connector caches the corpus on disk and in memory; both have to be
+        # bypassed so a real cache file cannot mask the payload under test.
+        cdsco_india._MEMORY_CACHE.clear()
+        self.addCleanup(cdsco_india._MEMORY_CACHE.clear)
+        for target in ("_read_cache", "_write_cache"):
+            patcher = patch.object(
+                cdsco_india, target, return_value=None if target == "_read_cache" else None
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _search(self, substance, payload=None):
+        from sources import cdsco_india
+
+        response = MagicMock()
+        response.json.return_value = payload or self.PAYLOAD
+        response.raise_for_status.return_value = None
+        with patch.object(cdsco_india.requests, "get", return_value=response):
+            return cdsco_india.run_cdsco_india_search(substance)
+
+    def test_maps_company_and_supply_type(self):
+        rows = self._search("dapagliflozin")
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["company"], "PURE & CURE HEALTHCARE Pvt. Ltd.")
+        self.assertEqual(row["country"], "India")
+        self.assertEqual(row["source"], "CDSCO India")
+        self.assertEqual(row["status"], "Approved (finished formulation)")
+        self.assertEqual(row["dosage_form"], "Tablets")
+        self.assertEqual(row["registration_number"], "39942")
+
+    def test_first_manufacturing_site_is_kept_apart_from_the_applicant(self):
+        row = self._search("dapagliflozin")[0]
+
+        self.assertEqual(row["manufacturer_name"], "Precise Chemipharma Pvt.Ltd, Navi Mumbai Maharashtra India-400703")
+        self.assertEqual(row["manufacturer_country"], "India")
+
+    def test_bulk_drug_approvals_are_labelled_as_api(self):
+        row = self._search("hepatitis b")[0]
+
+        self.assertEqual(row["company"], "Serum Institute Of India Pvt. Ltd.")
+        self.assertEqual(row["status"], "Approved (bulk drug / API)")
+        # "NA" placeholders must not leak into the output.
+        self.assertEqual(row["therapeutic_category"], "")
+
+    def test_ignores_rows_that_only_mention_the_substance_in_the_indication(self):
+        payload = {
+            "aaData": [
+                {
+                    "num_form_id": 1,
+                    "str_man_unit_name": "Some Pharma Ltd",
+                    "str_drug_name": "Ramipril Tablets",
+                    "str_composition": "Ramipril 5mg",
+                    "str_indication": "Used alongside dapagliflozin therapy",
+                    "str_applied_for": "Finished Formulation",
+                    "manuf_addr": "",
+                    "str_dosage": "Tablets",
+                    "dt_closure_dt": "01-JAN-2026",
+                }
+            ]
+        }
+        self.assertEqual(self._search("dapagliflozin", payload), [])
+
+    def test_serves_repeat_searches_from_the_cached_corpus(self):
+        from sources import cdsco_india
+
+        response = MagicMock()
+        response.json.return_value = self.PAYLOAD
+        response.raise_for_status.return_value = None
+        with patch.object(cdsco_india, "_read_cache", side_effect=[None, self.PAYLOAD["aaData"]]):
+            with patch.object(cdsco_india.requests, "get", return_value=response) as fetch:
+                cdsco_india.run_cdsco_india_search("dapagliflozin")
+                cdsco_india.run_cdsco_india_search("hepatitis b")
+
+        self.assertEqual(fetch.call_count, 1)
+
+    def test_returns_empty_when_the_endpoint_is_unavailable(self):
+        from sources import cdsco_india
+
+        with patch.object(cdsco_india.requests, "get", side_effect=requests.RequestException("boom")):
+            self.assertEqual(cdsco_india.run_cdsco_india_search("dapagliflozin"), [])
 
 
 class TGAConnectorTests(unittest.TestCase):
