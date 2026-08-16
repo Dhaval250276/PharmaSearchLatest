@@ -74,7 +74,7 @@ NON_MOLECULE_TERMS = {
     "syrup", "tablet", "tablets", "vial", "water", "water for injection",
 }
 
-COMBINATION_SEPARATORS = re.compile(r"\s*(?:\+|/|,| and | with )\s*", flags=re.IGNORECASE)
+COMBINATION_SEPARATORS = re.compile(r"\s*(?:\+|/|,|;| and | with )\s*", flags=re.IGNORECASE)
 # Indian records state the salt they weigh, then the molecule it is equivalent
 # to: "Amoxycillin Trihydrate IP eq. To Amoxycillin". The molecule is the part
 # after the equivalence, and it is already the plain name we want.

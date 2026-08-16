@@ -37,7 +37,7 @@ from sources.regional_live import (
     run_cdsco_india_search,
     run_nmpa_china_search,
 )
-from services.field_completion import _completions_for_group
+from services.field_completion import _completions_for_group, molecule_group_key
 from services.harvest import CONSECUTIVE_FAILURE_LIMIT, run_harvest
 from services.harvest_vocabulary import (
     _Accumulator,
@@ -1386,6 +1386,31 @@ class FieldCompletionTests(unittest.TestCase):
         self.assertEqual(changes[2]["completion_source"], "EMA")
         # The lender keeps its own code and gains nothing from itself.
         self.assertNotIn("atc_code", changes.get(1, {}))
+
+    def test_groups_a_molecule_across_languages_and_registers(self):
+        # France files IBUPROFÈNE and the Latin INN keeps a final "e" English
+        # drops, so grouping on the plain name leaves the French rows with
+        # nobody to lend them a document.
+        for french, english in (
+            ("IBUPROFÈNE", "ibuprofen"),
+            ("AMOXICILLINE, AMOXICILLINE TRIHYDRATE", "amoxicillin"),
+            ("ATORVASTATINE, ATORVASTATINE CALCIUM", "ATORVASTATIN CALCIUM"),
+            ("CHLORHYDRATE DE METFORMINE, METFORMINE", "metformin"),
+            ("ÉSOMÉPRAZOLE, ÉSOMÉPRAZOLE MAGNÉSIQUE", "esomeprazole"),
+        ):
+            self.assertEqual(
+                molecule_group_key(french), molecule_group_key(english), french
+            )
+
+    def test_groups_a_semicolon_combination_under_its_first_molecule(self):
+        self.assertEqual(
+            molecule_group_key("sitagliptin;metformin hydrochloride"),
+            molecule_group_key("Sitagliptin"),
+        )
+
+    def test_keeps_different_molecules_apart(self):
+        self.assertNotEqual(molecule_group_key("metformin"), molecule_group_key("metoprolol"))
+        self.assertNotEqual(molecule_group_key("ibuprofen"), molecule_group_key("naproxen"))
 
     def test_derives_the_category_instead_of_lending_another_registrys_wording(self):
         # Romania states the ATC class in Romanian and would win a majority
