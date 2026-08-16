@@ -144,6 +144,60 @@ def _completions_for_group(rows: list[dict[str, Any]]) -> list[tuple[int, dict[s
     return updates
 
 
+def attach_reference_documents(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Lend documents to result rows without writing to the database.
+
+    A live search builds its rows from the connectors, so they have never been
+    through completion and show no documents at all -- even where the database
+    already holds a document for that very molecule. Displaying them means
+    lending in memory, against the stored rows, at the moment of rendering.
+    """
+    wanted = {
+        molecule_group_key(row.get("substance"))
+        for row in rows
+        if not any(_clean(row.get(field)) for field in DOCUMENT_FIELDS)
+        and not any(_clean(row.get(f"reference_{field}")) for field in DOCUMENT_FIELDS)
+    }
+    wanted.discard("")
+    if not wanted:
+        return rows
+
+    placeholders = ", ".join("?" for _ in wanted)
+    with get_connection() as connection:
+        candidates = [
+            dict(candidate)
+            for candidate in connection.execute(
+                f"""
+                SELECT substance_key, source, product, smpc_url, pil_url, assessment_report_url
+                FROM product_details
+                WHERE substance_key IN ({placeholders})
+                  AND (smpc_url <> '' OR pil_url <> '' OR assessment_report_url <> '')
+                """,
+                tuple(wanted),
+            ).fetchall()
+        ]
+
+    donors: dict[str, dict[str, Any]] = {}
+    for key in wanted:
+        group = [row for row in candidates if row.get("substance_key") == key]
+        donor = _document_donor(group)
+        if donor:
+            donors[key] = donor
+
+    for row in rows:
+        key = molecule_group_key(row.get("substance"))
+        donor = donors.get(key)
+        if not donor:
+            continue
+        for field in DOCUMENT_FIELDS:
+            value = _clean(donor.get(field))
+            if value and not _clean(row.get(field)) and not _clean(row.get(f"reference_{field}")):
+                row[f"reference_{field}"] = value
+                row["reference_source"] = _clean(donor.get("source"))
+                row["reference_product"] = _clean(donor.get("product"))
+    return rows
+
+
 def _load_rows() -> list[dict[str, Any]]:
     with get_connection() as connection:
         rows = connection.execute("SELECT * FROM product_details").fetchall()

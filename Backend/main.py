@@ -45,6 +45,7 @@ from services.connector_health import connector_health_rows
 from services.connector_status import connector_status_rows
 from services.english_normalizer import english_text
 from services.field_availability import missing_field_value
+from services.field_completion import attach_reference_documents
 from services.harvest import harvest_coverage
 from services.harvest_vocabulary import load_vocabulary
 from services.result_formatter import formatted_result_row
@@ -773,6 +774,10 @@ def search_page(
     visible_rows = rows[start : start + page_size]
     if effective_live and visible_rows:
         visible_rows = enriched_cached_results(visible_rows)
+    # Live rows are built from the connectors and have never been through
+    # completion, so the documents already stored for the molecule are lent to
+    # them here rather than leaving the columns empty.
+    visible_rows = attach_reference_documents(visible_rows)
 
     def is_manual_registry_row(row):
         return row.get("connector_mode") == "manual_registry"

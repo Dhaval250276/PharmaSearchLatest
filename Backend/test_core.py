@@ -37,7 +37,11 @@ from sources.regional_live import (
     run_cdsco_india_search,
     run_nmpa_china_search,
 )
-from services.field_completion import _completions_for_group, molecule_group_key
+from services.field_completion import (
+    _completions_for_group,
+    attach_reference_documents,
+    molecule_group_key,
+)
 from services.harvest import CONSECUTIVE_FAILURE_LIMIT, run_harvest
 from services.harvest_vocabulary import (
     _Accumulator,
@@ -1407,6 +1411,42 @@ class FieldCompletionTests(unittest.TestCase):
             molecule_group_key("sitagliptin;metformin hydrochloride"),
             molecule_group_key("Sitagliptin"),
         )
+
+    def test_lends_stored_documents_to_a_live_row(self):
+        # A live search builds rows from the connectors, so they carry no
+        # completion at all even when the database holds the molecule.
+        live_row = {"source": "CDSCO India", "substance": "QUÉTIAPINE"}
+        stored = [
+            {
+                "substance_key": "quetiapin",
+                "source": "MHRA",
+                "product": "Seroquel 25mg",
+                "smpc_url": "https://mhra/seroquel-smpc",
+                "pil_url": "",
+                "assessment_report_url": "",
+            }
+        ]
+
+        connection = MagicMock()
+        connection.execute.return_value.fetchall.return_value = stored
+        with patch("services.field_completion.get_connection") as get_connection:
+            get_connection.return_value.__enter__.return_value = connection
+            rows = attach_reference_documents([live_row])
+
+        self.assertEqual(rows[0]["reference_smpc_url"], "https://mhra/seroquel-smpc")
+        self.assertEqual(rows[0]["reference_source"], "MHRA")
+        # Nothing is written into the row's own column, in memory or otherwise.
+        self.assertNotIn("smpc_url", rows[0])
+
+    def test_does_not_overwrite_a_live_rows_own_document(self):
+        live_row = {"source": "MHRA", "substance": "quetiapine", "smpc_url": "https://mhra/own"}
+
+        with patch("services.field_completion.get_connection") as get_connection:
+            rows = attach_reference_documents([live_row])
+
+        get_connection.assert_not_called()
+        self.assertEqual(rows[0]["smpc_url"], "https://mhra/own")
+        self.assertNotIn("reference_smpc_url", rows[0])
 
     def test_keeps_different_molecules_apart(self):
         self.assertNotEqual(molecule_group_key("metformin"), molecule_group_key("metoprolol"))
