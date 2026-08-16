@@ -26,8 +26,7 @@ from typing import Any
 from core.logging_config import get_logger
 from repository import get_connection, initialize_database
 from services.field_availability import DOCUMENT_CAPABLE_SOURCES
-from services.english_normalizer import _strip_latin_accents
-from services.harvest_vocabulary import split_combination
+from services.harvest_vocabulary import molecule_group_key
 from services.therapeutic_category import short_therapeutic_category
 
 
@@ -51,32 +50,6 @@ DOCUMENT_FIELDS = ("smpc_url", "pil_url", "assessment_report_url")
 
 def _clean(value: object) -> str:
     return " ".join(str(value or "").split())
-
-
-def molecule_group_key(substance: object) -> str:
-    """The key that decides which rows describe the same molecule.
-
-    Registries write the substance in their own language and register, so
-    grouping on the plain name splits a molecule across several groups and each
-    fragment ends up with nobody to borrow from. France files IBUPROFÈNE, Spain
-    files combinations joined by semicolons, and the Latin INN carries a final
-    "e" that English drops -- amoxicilline against amoxicillin.
-
-    Accents are stripped, a combination is keyed on its first molecule, and a
-    trailing "e" is dropped from the stem. The last rule is applied to every
-    name alike, so it does not matter that "omeprazol" is nobody's spelling:
-    both spellings reach it, which is all a grouping key has to do.
-    """
-    molecules = split_combination(_strip_latin_accents(_clean(substance)))
-    stem = molecules[0] if molecules else _clean(substance).lower()
-    stem = _strip_latin_accents(stem).lower()
-    # Romance registers name the salt first: "chlorhydrate de metformine" is
-    # metformin's, and the molecule is whatever follows the last "de".
-    if " de " in stem:
-        stem = stem.rsplit(" de ", 1)[1].strip()
-    if len(stem) > 5 and stem.endswith("e"):
-        stem = stem[:-1]
-    return stem
 
 
 def _molecule_key(row: dict[str, Any]) -> str:

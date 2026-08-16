@@ -7,6 +7,7 @@ import re
 import json
 
 from config import BASE_DIR, DB_PATH
+from services.harvest_vocabulary import molecule_group_key
 
 
 PRODUCT_DETAILS_SEED_PATH = BASE_DIR / "data" / "product_details_seed.jsonl"
@@ -43,6 +44,9 @@ PRODUCT_DETAIL_COLUMNS = {
     # Values lent by another regulator that published them for the same
     # molecule. Kept apart from the row's own columns so an inherited document
     # is never read as this authorisation's own label.
+    # The molecule this row is about, normalized across languages and registers
+    # so a search for "ibuprofen" also reaches France's IBUPROFENE rows.
+    "substance_key",
     "completion_source",
     "reference_smpc_url",
     "reference_pil_url",
@@ -510,18 +514,42 @@ def region_for_country(country: str | None) -> str:
 
 
 def search_product_details(substance: str) -> list[dict[str, Any]]:
+    """Rows for a molecule, whatever language the registry filed it in.
+
+    Matching on the text alone strands the rows a registry wrote in its own
+    register: "ibuprofen" never matches France's IBUPROFENE, because the accent
+    breaks the substring. The normalized molecule key catches those, and the
+    text match stays for brand names and for rows stored before the key existed.
+    """
     initialize_database()
+    key = molecule_group_key(substance)
     with get_connection() as conn:
         rows = conn.execute(
             """
             SELECT *
             FROM product_details
-            WHERE substance LIKE ? OR product LIKE ?
+            WHERE substance LIKE ? OR product LIKE ? OR (substance_key <> '' AND substance_key = ?)
             ORDER BY country, product
             """,
-            (f"%{substance}%", f"%{substance}%"),
+            (f"%{substance}%", f"%{substance}%", key),
         ).fetchall()
     return rows_to_dicts(rows)
+
+
+def backfill_substance_keys() -> int:
+    """Populate the molecule key on rows stored before the column existed."""
+    initialize_database()
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, substance FROM product_details"
+            " WHERE substance_key IS NULL OR substance_key = ''"
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                "UPDATE product_details SET substance_key = ? WHERE id = ?",
+                (molecule_group_key(row["substance"]), row["id"]),
+            )
+    return len(rows)
 
 
 def search_medicines(substance: str) -> list[dict[str, Any]]:
@@ -579,6 +607,7 @@ def save_product_detail(record: dict[str, Any]) -> dict[str, Any]:
             manufacturer_source = ""
     data = {
         "substance": record.get("substance", ""),
+        "substance_key": molecule_group_key(record.get("substance", "")),
         "product": record.get("product", ""),
         "company": record.get("company", ""),
         "country": record.get("country", ""),
