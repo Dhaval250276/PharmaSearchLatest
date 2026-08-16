@@ -1,6 +1,8 @@
 from html import escape
 from pathlib import Path
+from collections import Counter
 from math import ceil
+import re
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -582,6 +584,32 @@ def export_search_job_results(job_id: str):
     )
 
 
+def document_cell(row, display_row, field, label):
+    """The product's own document, or the molecule's if it has none.
+
+    A row's own document is shown plainly. Where the regulator publishes
+    none, the document another regulator published for the same molecule
+    takes the column, carrying a note naming that regulator and product:
+    the link is the useful thing, but it is not this authorisation's label
+    and the column must not imply that it is.
+    """
+    own_url = str(display_row.get(field) or "").strip()
+    if own_url:
+        return f'<a href="{h(own_url)}" target="_blank" rel="noopener">Open {label}</a>'
+
+    reference_url = str(row.get(f"reference_{field}") or "").strip()
+    if not reference_url:
+        return f'<span class="text-muted">{h(missing_field_value(row, field))}</span>'
+
+    origin = str(row.get("reference_source") or "").strip()
+    product = str(row.get("reference_product") or "").strip()
+    attribution = " / ".join(part for part in (origin, product) if part)
+    return (
+        f'<a href="{h(reference_url)}" target="_blank" rel="noopener">Open {label}</a>'
+        f'<div class="small text-muted">Molecule reference from {h(attribution)}</div>'
+    )
+
+
 @app.get("/search_page", response_class=HTMLResponse)
 def search_page(
     substance: str,
@@ -885,31 +913,6 @@ def search_page(
         if sort_by == column:
             marker = " v" if sort_dir == "asc" else " ^"
         return f'<a class="link-light" href="{h(sort_href(column))}">{h(label)}{marker}</a>'
-
-    def document_cell(row, display_row, field, label):
-        """The product's own document, or the molecule's if it has none.
-
-        A row's own document is shown plainly. Where the regulator publishes
-        none, the document another regulator published for the same molecule
-        takes the column, carrying a note naming that regulator and product:
-        the link is the useful thing, but it is not this authorisation's label
-        and the column must not imply that it is.
-        """
-        own_url = str(display_row.get(field) or "").strip()
-        if own_url:
-            return f'<a href="{h(own_url)}" target="_blank" rel="noopener">Open {label}</a>'
-
-        reference_url = str(row.get(f"reference_{field}") or "").strip()
-        if not reference_url:
-            return f'<span class="text-muted">{h(missing_field_value(row, field))}</span>'
-
-        origin = str(row.get("reference_source") or "").strip()
-        product = str(row.get("reference_product") or "").strip()
-        attribution = " / ".join(part for part in (origin, product) if part)
-        return (
-            f'<a href="{h(reference_url)}" target="_blank" rel="noopener">Open {label}</a>'
-            f'<div class="small text-muted">Molecule reference from {h(attribution)}</div>'
-        )
 
     visible_product_rows = [row for row in visible_rows if not is_manual_registry_row(row)]
     visible_registry_rows = [row for row in visible_rows if is_manual_registry_row(row)]
@@ -1539,6 +1542,190 @@ def products():
             </thead>
             <tbody>{"".join(body_rows)}</tbody>
         </table>
+    </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
+
+
+CATALOGUE_COLUMNS = (
+    "Molecule",
+    "Product Name",
+    "Company",
+    "Country",
+    "Region",
+    "Status",
+    "Source",
+    "Product Details",
+    "Strength",
+    "Dosage Form",
+    "Pack Size",
+    "ATC Code",
+    "Therapeutic Category",
+    "MA Holder Name",
+    "Manufacturer Name",
+    "Manufacturer Country",
+    "Registration Status",
+    "Registration Number",
+    "Registration Date",
+    "SMPC URL",
+    "PIL URL",
+    "Assessment Report URL",
+)
+
+# The harvest stores a handoff row for registries whose live endpoint returns
+# nothing. They carry no product data, so the catalogue hides them by default.
+REGISTRY_HANDOFF_PATTERN = re.compile(r"official .* registry search", flags=re.IGNORECASE)
+
+
+def _is_registry_handoff(row: dict[str, Any]) -> bool:
+    return bool(REGISTRY_HANDOFF_PATTERN.search(str(row.get("product") or "")))
+
+
+@app.get("/catalogue", response_class=HTMLResponse)
+def catalogue(
+    page: int = 1,
+    page_size: int = 50,
+    substance: str = "",
+    country: str = "",
+    source: str = "",
+    company: str = "",
+    product: str = "",
+    include_handoffs: bool = False,
+):
+    """Everything harvested, with no substance required.
+
+    The search page answers "what exists for this molecule". This answers "what
+    do we hold", which is the view a harvest produces and the one that shows
+    coverage across every registry at once.
+    """
+    rows = list_product_details()
+    if not include_handoffs:
+        rows = [row for row in rows if not _is_registry_handoff(row)]
+
+    filters = (
+        ("substance", substance),
+        ("country", country),
+        ("source", source),
+        ("company", company),
+        ("product", product),
+    )
+    for field, needle in filters:
+        if needle.strip():
+            wanted = needle.strip().lower()
+            rows = [row for row in rows if wanted in str(row.get(field) or "").lower()]
+
+    total = len(rows)
+    page_size = max(1, min(page_size, 500))
+    pages = max(1, ceil(total / page_size))
+    page = max(1, min(page, pages))
+    visible = rows[(page - 1) * page_size : page * page_size]
+    visible = prepared_cached_results(visible)
+
+    by_source = Counter(str(row.get("source") or "") for row in rows)
+    by_country = Counter(str(row.get("country") or "") for row in rows)
+
+    body_rows = []
+    for row in visible:
+        display_row = formatted_result_row(row, searched_substance=row.get("substance", ""))
+        body_rows.append(
+            f"""
+            <tr>
+                <td>{h(display_row["molecule"])}</td>
+                <td>{h(display_row["product"])}</td>
+                <td>{h(display_row["company"])}</td>
+                <td>{h(display_row["country"])}</td>
+                <td>{h(display_row["region"])}</td>
+                <td>{h(display_row["registration_status"])}</td>
+                <td>{h(display_row["source"])}</td>
+                <td>{link_or_unavailable(display_row["product_details_url"], "Open Product")}</td>
+                <td>{h(display_row["strength"])}</td>
+                <td>{h(display_row["dosage_form"])}</td>
+                <td>{h(display_row["pack_size"])}</td>
+                <td>{h(display_row["atc_code"])}</td>
+                <td>{h(display_row["therapeutic_category"])}</td>
+                <td>{h(display_row["ma_holder"])}</td>
+                <td>{h(display_row["manufacturer_name"])}</td>
+                <td>{h(display_row["manufacturer_country"])}</td>
+                <td>{h(display_row["registration_status"])}</td>
+                <td>{h(display_row["registration_number"])}</td>
+                <td>{h(display_row["registration_date"])}</td>
+                <td>{document_cell(row, display_row, "smpc_url", "SmPC")}</td>
+                <td>{document_cell(row, display_row, "pil_url", "PIL")}</td>
+                <td>{document_cell(row, display_row, "assessment_report_url", "Assessment")}</td>
+            </tr>
+            """
+        )
+    if not body_rows:
+        body_rows.append(
+            f'<tr><td colspan="{len(CATALOGUE_COLUMNS)}" class="text-center text-muted py-4">'
+            "No harvested records match these filters.</td></tr>"
+        )
+
+    def page_href(number):
+        query = [(field, value) for field, value in filters if value.strip()]
+        query.extend([("page", str(number)), ("page_size", str(page_size))])
+        if include_handoffs:
+            query.append(("include_handoffs", "true"))
+        return f"/catalogue?{urlencode(query)}"
+
+    headers = "".join(f"<th>{h(label)}</th>" for label in CATALOGUE_COLUMNS)
+    source_summary = ", ".join(f"{name}: {count}" for name, count in by_source.most_common())
+    country_summary = ", ".join(f"{name}: {count}" for name, count in by_country.most_common(12))
+    previous_link = (
+        f'<a class="btn btn-outline-secondary" href="{h(page_href(page - 1))}">Previous</a>'
+        if page > 1
+        else '<span class="btn btn-outline-secondary disabled">Previous</span>'
+    )
+    next_link = (
+        f'<a class="btn btn-outline-secondary" href="{h(page_href(page + 1))}">Next</a>'
+        if page < pages
+        else '<span class="btn btn-outline-secondary disabled">Next</span>'
+    )
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>PharmaSearch Catalogue</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <style>
+            .catalogue-scroll {{ overflow-x: auto; }}
+            .catalogue-scroll table {{ min-width: 2400px; }}
+        </style>
+    </head>
+    <body>
+    <div class="container-fluid mt-4">
+        <h2>Harvested Catalogue</h2>
+        <p class="alert alert-info mb-2">
+            <strong>{total}</strong> product records across <strong>{len(by_source)}</strong> sources
+            and <strong>{len(by_country)}</strong> countries. No substance needed &mdash; this is
+            everything the harvest has stored.
+        </p>
+        <p class="small text-muted">By source &mdash; {h(source_summary)}</p>
+        <p class="small text-muted">By country &mdash; {h(country_summary)}</p>
+        <form class="row g-2 mb-3" method="get" action="/catalogue">
+            <div class="col"><input class="form-control" name="substance" value="{h(substance)}" placeholder="Molecule"></div>
+            <div class="col"><input class="form-control" name="product" value="{h(product)}" placeholder="Product"></div>
+            <div class="col"><input class="form-control" name="company" value="{h(company)}" placeholder="Company"></div>
+            <div class="col"><input class="form-control" name="country" value="{h(country)}" placeholder="Country"></div>
+            <div class="col"><input class="form-control" name="source" value="{h(source)}" placeholder="Source"></div>
+            <div class="col"><input class="form-control" name="page_size" value="{page_size}" placeholder="Rows"></div>
+            <div class="col-auto"><button class="btn btn-primary" type="submit">Filter</button></div>
+            <div class="col-auto"><a class="btn btn-outline-secondary" href="/catalogue">Clear</a></div>
+        </form>
+        <div class="d-flex gap-2 align-items-center mb-2">
+            {previous_link}{next_link}
+            <span class="text-muted">Page {page} of {pages}</span>
+            <a class="btn btn-outline-primary ms-auto" href="/">Back to search</a>
+        </div>
+        <div class="catalogue-scroll">
+        <table class="table table-striped table-bordered align-middle">
+            <thead class="table-dark"><tr>{headers}</tr></thead>
+            <tbody>{"".join(body_rows)}</tbody>
+        </table>
+        </div>
     </div>
     </body>
     </html>
