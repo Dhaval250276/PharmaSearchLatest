@@ -1501,6 +1501,26 @@ class FieldCompletionTests(unittest.TestCase):
         self.assertEqual(changes["reference_source"], "EMA")
         self.assertEqual(changes["reference_product"], "Glucophage")
 
+    def test_never_lends_an_assessment_report(self):
+        # An assessment report evaluates one licence application -- it is
+        # headed with that procedure and licence number -- so it describes a
+        # decision about another country's authorisation, not this medicine.
+        ema = {
+            "id": 1,
+            "source": "EMA",
+            "substance": "metformin",
+            "product": "Glucophage",
+            "smpc_url": "https://ema/smpc",
+            "assessment_report_url": "https://ema/glucophage-assessment",
+        }
+        cdsco = {"id": 2, "source": "CDSCO India", "substance": "metformin"}
+
+        changes = self._group(ema, cdsco)[2]
+
+        self.assertEqual(changes["reference_smpc_url"], "https://ema/smpc")
+        self.assertNotIn("reference_assessment_report_url", changes)
+        self.assertNotIn("assessment_report_url", changes)
+
     def test_leaves_a_row_that_has_its_own_document_alone(self):
         ema = {"id": 1, "source": "EMA", "substance": "metformin", "smpc_url": "https://ema/one"}
         mhra = {"id": 2, "source": "MHRA", "substance": "metformin", "smpc_url": "https://mhra/two"}

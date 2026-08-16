@@ -47,6 +47,17 @@ MOLECULE_FIELDS = ("atc_code",)
 # Authorisation-level documents, attached only as a molecule reference.
 DOCUMENT_FIELDS = ("smpc_url", "pil_url", "assessment_report_url")
 
+# Of those, the ones worth lending to another regulator's product.
+#
+# An assessment report is not lent. The SmPC and the PIL describe the medicine
+# -- its composition, indications, dosing and warnings -- which is largely the
+# same medicine wherever it is sold. An assessment report is the regulator's
+# evaluation of one specific licence application, headed with the procedure and
+# licence numbers that identify it: "Procedure No: UK/H/4817/001/DC, UK Licence
+# No: PL 17509/0061". It documents a decision about a UK authorisation and says
+# nothing about a US product, so an empty column is the honest answer.
+LENDABLE_DOCUMENT_FIELDS = ("smpc_url", "pil_url")
+
 
 def _clean(value: object) -> str:
     return " ".join(str(value or "").split())
@@ -152,7 +163,7 @@ def _completions_for_group(rows: list[dict[str, Any]]) -> list[tuple[int, dict[s
 
         if donor is not None and donor.get("id") != row.get("id"):
             reference_changes = {}
-            for field in DOCUMENT_FIELDS:
+            for field in LENDABLE_DOCUMENT_FIELDS:
                 value = _clean(donor.get(field))
                 # Only offer a reference where the row has no document of its own.
                 if value and not _clean(row.get(field)):
@@ -179,8 +190,8 @@ def attach_reference_documents(rows: list[dict[str, Any]]) -> list[dict[str, Any
     wanted = {
         molecule_group_key(row.get("substance"))
         for row in rows
-        if not any(_clean(row.get(field)) for field in DOCUMENT_FIELDS)
-        and not any(_clean(row.get(f"reference_{field}")) for field in DOCUMENT_FIELDS)
+        if not any(_clean(row.get(field)) for field in LENDABLE_DOCUMENT_FIELDS)
+        and not any(_clean(row.get(f"reference_{field}")) for field in LENDABLE_DOCUMENT_FIELDS)
     }
     wanted.discard("")
     if not wanted:
@@ -212,7 +223,7 @@ def attach_reference_documents(rows: list[dict[str, Any]]) -> list[dict[str, Any
         donor = _document_donor(by_key.get(key, []), row)
         if not donor:
             continue
-        for field in DOCUMENT_FIELDS:
+        for field in LENDABLE_DOCUMENT_FIELDS:
             value = _clean(donor.get(field))
             if value and not _clean(row.get(field)) and not _clean(row.get(f"reference_{field}")):
                 row[f"reference_{field}"] = value
@@ -282,6 +293,22 @@ def complete_fields(dry_run: bool = False) -> dict[str, Any]:
         "filled": dict(filled.most_common()),
         "dry_run": dry_run,
     }
+
+
+def clear_lent_assessment_reports() -> int:
+    """Drop assessment reports lent by an earlier pass.
+
+    They were lent before it was clear that an assessment report documents a
+    decision about one licence rather than describing the medicine. A row's own
+    assessment report is untouched.
+    """
+    initialize_database()
+    with get_connection() as connection:
+        cursor = connection.execute(
+            "UPDATE product_details SET reference_assessment_report_url = ''"
+            " WHERE reference_assessment_report_url <> ''"
+        )
+        return cursor.rowcount
 
 
 def repair_lent_categories() -> dict[str, Any]:
