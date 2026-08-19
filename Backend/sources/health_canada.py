@@ -1,3 +1,4 @@
+import re
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
@@ -9,6 +10,12 @@ from sources.parser import extract_dosage_form, extract_pack_size, extract_stren
 
 BASE_URL = "https://health-products.canada.ca/api/drug"
 DPD_PRODUCT_URL = "https://health-products.canada.ca/dpd-bdpp/info"
+# The DPD product page links the Product Monograph, which is Canada's SmPC. It
+# is a PDF on a separate host and is the only document Health Canada publishes
+# per product, so it is worth the one extra request per drug code.
+PRODUCT_MONOGRAPH_PATTERN = re.compile(
+    r"href=\"(https://pdf\.hres\.ca/[^\"]+\.PDF)\"", flags=re.IGNORECASE
+)
 REQUEST_TIMEOUT = 15
 DETAIL_WORKERS = 12
 logger = get_logger(__name__)
@@ -89,6 +96,25 @@ def _status_details(status_rows):
     return status, market_date
 
 
+
+def _product_monograph_url(product_url: str) -> str:
+    """The Product Monograph PDF the DPD page links, if it has one.
+
+    Not every listing has a monograph -- older and discontinued products often
+    do not -- so a miss is normal and must not fail the row.
+    """
+    try:
+        response = requests.get(
+            product_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=REQUEST_TIMEOUT
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        logger.info("Health Canada monograph lookup failed for %s: %s", product_url, exc)
+        return ""
+    match = PRODUCT_MONOGRAPH_PATTERN.search(response.text)
+    return match.group(1) if match else ""
+
+
 def _drug_record(substance, drug_code, ingredient_rows):
     products = _fetch_quietly("drugproduct", drug_code)
     if not products:
@@ -118,6 +144,7 @@ def _drug_record(substance, drug_code, ingredient_rows):
     din = str(_get_field(product_row, "drug_identification_number", "drugIdentificationNumber")).strip()
     company = str(_get_field(product_row, "company_name", "companyName")).strip()
     product_url = f"{DPD_PRODUCT_URL}.do?lang=en&code={drug_code}"
+    monograph_url = _product_monograph_url(product_url)
     return {
         "substance": substance,
         "product": product,
@@ -135,6 +162,11 @@ def _drug_record(substance, drug_code, ingredient_rows):
         "source_url": f"{BASE_URL}/activeingredient/?lang=en&type=json&ingredientname={substance}",
         "product_url": product_url,
         "url": product_url,
+        # Canada's Product Monograph is the counterpart of an SmPC; without it
+        # a Canadian row has no document of its own and borrows another
+        # country's label.
+        "smpc_url": monograph_url,
+        "document_type": "Health Canada product monograph" if monograph_url else "",
     }
 
 
