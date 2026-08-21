@@ -174,11 +174,22 @@ def run_health_canada_search(substance, limit=100):
     query = substance.strip()
     if not query:
         return []
-    try:
-        ingredients = _ingredient_rows(query)
-    except (requests.RequestException, ValueError) as exc:
-        logger.warning("Health Canada request failed: %s", exc)
-        return []
+    # A search that could not be asked is not a search that found nothing.
+    # Swallowing the timeout here returned an empty list, which the harvest
+    # could not tell from a molecule Canada does not register: it recorded
+    # the molecule as harvested and never asked again. Seven molecules were
+    # stamped done with nothing that way, and emtricitabine alone had 28
+    # products waiting. Worse, the harvest counts failures to decide the
+    # registry is down, and an error reported as an empty result is invisible
+    # to that count -- Canada could fail every molecule and the run would end
+    # reporting success.
+    #
+    # So this raises, and its two callers each do the right thing: the harvest
+    # records a failure, leaves the molecule for the next run and stops the
+    # run if failures pile up, while a live search logs it and carries on with
+    # the other registries. Per-product lookups keep returning empty, because
+    # a listing with no monograph really is a listing with no monograph.
+    ingredients = _ingredient_rows(query)
 
     rows_by_code = {}
     for row in ingredients:
