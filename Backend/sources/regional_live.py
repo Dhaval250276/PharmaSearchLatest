@@ -126,7 +126,7 @@ REGIONAL_SOURCES = {
         source="PMDA Japan",
         country="Japan",
         region="JP",
-        search_url="https://www.pmda.go.jp/files/000278243.pdf",
+        search_url="https://www.pmda.go.jp/PmdaSearch/iyakuSearch/",
     ),
     "Ukraine DRLZ": RegionalSourceConfig(
         source="Ukraine DRLZ",

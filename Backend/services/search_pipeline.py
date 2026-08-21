@@ -534,7 +534,7 @@ REGIONAL_REGISTRY_URLS = {
     "South Korea": "https://nedrug.mfds.go.kr/",
     "Thailand": "https://pertento.fda.moph.go.th/FDA_SEARCH_DRUG/SEARCH_DRUG/FRM_SEARCH_DRUG.aspx",
     "Vietnam": "https://dichvucong.dav.gov.vn/congbothuoc/index",
-    "Japan": "https://www.pmda.go.jp/files/000278243.pdf",
+    "Japan": "https://www.pmda.go.jp/PmdaSearch/iyakuSearch/",
     "Hong Kong": "https://www.drugoffice.gov.hk/eps/do/en/consumer/search_drug_database2.html",
     "Ukraine": "http://www.drlz.com.ua/ibp/ddsite.nsf/all/shlist?opendocument",
     "Russia": "https://grls.rosminzdrav.ru/grls.aspx",
@@ -576,8 +576,6 @@ def _lookup_url(substance: str, country: str) -> str:
         return REGIONAL_REGISTRY_URLS[country]
     if country == "Switzerland":
         return "https://www.swissmedic.ch/swissmedic/en/home/services/listen_neu.html"
-    if country == "Japan":
-        return "https://www.pmda.go.jp/PmdaSearch/iyakuSearch/"
     return "https://www.google.com/search?" f"q={quote(country + ' medicine register ' + clean_substance)}"
 
 
