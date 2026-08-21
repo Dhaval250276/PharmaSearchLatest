@@ -586,29 +586,22 @@ def export_search_job_results(job_id: str):
 
 
 def document_cell(row, display_row, field, label):
-    """The product's own document, or the molecule's if it has none.
+    """The document this regulator published for this authorisation, or nothing.
 
-    A row's own document is shown plainly. Where the regulator publishes
-    none, the document another regulator published for the same molecule
-    takes the column, carrying a note naming that regulator and product:
-    the link is the useful thing, but it is not this authorisation's label
-    and the column must not imply that it is.
+    Only the row's own document belongs in the column. Another regulator's
+    document for the same molecule is not this authorisation's label, and a
+    caption naming the lender does not stop a reader taking an MHRA leaflet
+    for the FDA one: the US column showed an MHRA leaflet for NASACORT that
+    way. Where the regulator publishes nothing the column says so, and the
+    reader looks the document up at the source themselves.
+
+    The borrowed link is not lost. It keeps its own Molecule Reference
+    columns in the Excel export, where it is never mistaken for this one.
     """
     own_url = str(display_row.get(field) or "").strip()
     if own_url:
         return f'<a href="{h(own_url)}" target="_blank" rel="noopener">Open {label}</a>'
-
-    reference_url = str(row.get(f"reference_{field}") or "").strip()
-    if not reference_url:
-        return f'<span class="text-muted">{h(missing_field_value(row, field))}</span>'
-
-    origin = str(row.get("reference_source") or "").strip()
-    product = str(row.get("reference_product") or "").strip()
-    attribution = " / ".join(part for part in (origin, product) if part)
-    return (
-        f'<a href="{h(reference_url)}" target="_blank" rel="noopener">Open {label}</a>'
-        f'<div class="small text-muted">Molecule reference from {h(attribution)}</div>'
-    )
+    return f'<span class="text-muted">{h(missing_field_value(row, field))}</span>'
 
 
 @app.get("/search_page", response_class=HTMLResponse)
