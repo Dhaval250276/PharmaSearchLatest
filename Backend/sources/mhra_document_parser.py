@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from io import BytesIO
 import re
+import unicodedata
 from typing import Any
 from urllib.parse import urljoin
 
@@ -69,10 +70,117 @@ def _pdf_page_indices(page_count: int) -> list[int]:
     return sorted(set([*front, *back]))
 
 
+# The section headings that name the authorisation holder and the maker, in
+# the languages the registries publish in. Every registry writes its SmPC in
+# its own language, so looking only for the English heading found nothing at
+# all in a Spanish, French or Belgian document: the parser read MHRA and
+# Ireland and returned empty-handed everywhere else. Accented and unaccented
+# spellings are both listed because PDF text extraction loses accents often
+# enough to matter.
+MA_HOLDER_LABELS = [
+    "Marketing Authorisation Holder",
+    "Marketing Authorization Holder",
+    "MA Holder",
+    "Holder of the marketing authorisation",
+    "Titular de la autorización de comercialización",
+    "Titular de la autorizacion de comercializacion",
+    "Titulaire de l'autorisation de mise sur le marché",
+    "Titulaire de l’autorisation de mise sur le marché",
+    "Titulaire de l'autorisation de mise sur le marche",
+    "Houder van de vergunning voor het in de handel brengen",
+    "Houder van de vergunning",
+    "Pharmazeutischer Unternehmer",
+    "Zulassungsinhaber",
+]
+
+MANUFACTURER_LABELS = [
+    "Manufacturer",
+    "Manufacturers",
+    "Manufacturer responsible for batch release",
+    "Manufacturers responsible for batch release",
+    "Manufacturer of the medicinal product",
+    "Manufacturers of the medicinal product",
+    "Responsable de la fabricación",
+    "Responsable de la fabricacion",
+    "Responsables de la fabricación",
+    "Fabricante",
+    "Fabricantes",
+    "Fabricant",
+    "Fabricants",
+    "Fabrikant",
+    "Fabrikanten",
+    "Hersteller",
+]
+
+# The words that mark the start of a different section, used to stop a block
+# before it swallows the next heading.
+_HOLDER_TERMS = [label.lower() for label in MA_HOLDER_LABELS]
+_MANUFACTURER_TERMS = [label.lower() for label in MANUFACTURER_LABELS]
+
+
+def _squash(value: object) -> str:
+    """A heading reduced to the letters and digits a reader would recognise.
+
+    Extracting a Spanish SmPC gives back
+    "7. TITULAR DE LA AUT     ORIZACI?N DE COMERCI    ALIZACI?N": the accented
+    letters arrive as replacement characters and the words are broken by runs
+    of spaces, so no literal heading can ever match. Comparing only the
+    alphanumerics, with accents folded away, matches the heading as printed.
+    """
+    text = unicodedata.normalize("NFKD", str(value or "")).lower()
+    return "".join(
+        character
+        for character in text
+        if character.isalnum() and not unicodedata.combining(character)
+    )
+
+
+# Accent-free openings of the headings above. A label is matched as a prefix of
+# the squashed heading, so these stop short of the first accented letter: the
+# accent is exactly what PDF extraction tends to destroy.
+_HOLDER_PREFIXES = [_squash(label) for label in MA_HOLDER_LABELS] + [
+    # Spanish loses the accent in "autorización", French in "marché", so each
+    # prefix runs up to that letter and no further. Stopping earlier would
+    # match, but would leave the rest of the heading sitting in the value.
+    _squash("Titular de la autorizaci"),
+    _squash("Titulaire de l'autorisation de mise sur le march"),
+    # The French register's own page shortens the heading to "Titulaire de
+    # l'autorisation : KENVUE France", so the SmPC-length prefix never matches
+    # there. Both forms are listed and the longer wins where both apply.
+    _squash("Titulaire de l'autorisation"),
+]
+_MANUFACTURER_PREFIXES = [_squash(label) for label in MANUFACTURER_LABELS] + [
+    _squash("Responsable de la fabricaci"),
+    _squash("Responsables de la fabricaci"),
+]
+
+
+def _matches_label(line: str, prefixes: list[str]) -> str:
+    """The prefix this heading begins with, or empty if it is not a heading.
+
+    A leading section number is dropped first, since registries number their
+    sections and the number is not part of the heading.
+    """
+    squashed = _squash(re.sub(r"^\s*\d+[\.\)]?\s*", "", line))
+    if not squashed:
+        return ""
+    return next(
+        (prefix for prefix in sorted(prefixes, key=len, reverse=True)
+         if prefix and squashed.startswith(prefix)),
+        "",
+    )
+
+
+def _label_alternation(labels: list[str]) -> str:
+    """A regex alternation of labels, longest first so the fuller heading wins."""
+    return "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
+
+
 def _is_metadata_label(line: str) -> bool:
+    labels = _label_alternation(MA_HOLDER_LABELS + MANUFACTURER_LABELS)
     return bool(
         re.search(
-            r"\b(?:marketing authorisation holder|manufacturer|batch release|contents of the pack|pack sizes?|package sizes?)\b",
+            rf"(?:{labels}|batch release|contents of the pack|pack sizes?|package sizes?)",
             line,
             flags=re.IGNORECASE,
         )
@@ -121,11 +229,16 @@ def _section_after_exact_label(
     lines = [_clean_text(line) for line in text.splitlines()]
     lines = [line for line in lines if line]
     normalized_labels = {label.lower().rstrip(":") for label in labels}
+    label_prefixes = [_squash(label) for label in labels]
+    if labels is MANUFACTURER_LABELS:
+        label_prefixes = _MANUFACTURER_PREFIXES
+    elif labels is MA_HOLDER_LABELS:
+        label_prefixes = _HOLDER_PREFIXES
     excluded_terms = [term.lower() for term in (excluded_terms or [])]
     continuation_terms = [term.lower() for term in (continuation_terms or [])]
     stop_pattern = re.compile(
-        r"^(?:marketing authorisation holder|marketing authorization holder|ma holder|"
-        r"holder of the marketing authorisation|for any information|this leaflet was last revised|"
+        rf"^(?:{_label_alternation(MA_HOLDER_LABELS)}|"
+        r"for any information|this leaflet was last revised|"
         r"date of revision|package leaflet|contents of the pack|what .* contains|"
         r"\d+\.|annex|b\.|c\.)\b",
         flags=re.IGNORECASE,
@@ -136,19 +249,31 @@ def _section_after_exact_label(
         if any(term in line_lower for term in excluded_terms):
             continue
 
-        label = next(
-            (
-                item
-                for item in normalized_labels
-                if line_lower == item or line_lower.startswith(f"{item}:")
-            ),
-            "",
-        )
-        if not label:
+        prefix = _matches_label(line, label_prefixes)
+        if not prefix:
             continue
 
-        remainder = _clean_text(line[len(label) :])
+        # Drop the heading itself, keeping whatever followed it on the line.
+        consumed = 0
+        seen = 0
+        for position, character in enumerate(line):
+            if _squash(character):
+                seen += 1
+            if seen >= len(prefix):
+                consumed = position + 1
+                break
+        remainder = _clean_text(line[consumed:])
         remainder = remainder.lstrip(": ")
+        # A heading that carries its value on the same line is already
+        # complete. The French register writes "Titulaire de l'autorisation :
+        # KENVUE France" and follows it with an unrelated line about
+        # prescription conditions, which reading on would have appended.
+        if (
+            remainder
+            and len(_squash(remainder)) >= 4
+            and not _is_metadata_label(remainder)
+        ):
+            return remainder[:max_chars].strip()
         values = [remainder] if remainder else []
         for next_line in lines[index + 1 : index + 1 + max_lines]:
             if stop_pattern.search(next_line):
@@ -261,36 +386,24 @@ def _invalid_manufacturer_value(value: object) -> bool:
 def _extract_ma_holder(text: str) -> str:
     holder = _section_after_exact_label(
         text,
-        [
-            "Marketing Authorisation Holder",
-            "Marketing authorization holder",
-            "MA Holder",
-            "Holder of the marketing authorisation",
-        ],
+        MA_HOLDER_LABELS,
         max_lines=6,
         max_chars=400,
-        excluded_terms=["manufacturer"],
-        continuation_terms=["marketing authorisation holder", "marketing authorization holder", "ma holder"],
+        excluded_terms=_MANUFACTURER_TERMS,
+        continuation_terms=_HOLDER_TERMS,
     )
     if holder:
         company_names = _company_names_from_block(holder, allow_address_name=True)
         return company_names[0] if company_names else holder
 
-    holder = _value_after_label(
-        text,
-        [
-            "Marketing Authorisation Holder",
-            "Marketing authorisation holder",
-            "Marketing authorization holder",
-            "MA Holder",
-        ],
-    )
+    holder = _value_after_label(text, MA_HOLDER_LABELS)
     if holder and holder.lower() != "and manufacturer":
         return holder
 
     lines = [_clean_text(line) for line in text.splitlines() if _clean_text(line)]
     for index, line in enumerate(lines):
-        if "marketing authorisation holder" not in line.lower():
+        lowered = line.lower()
+        if not any(term in lowered for term in _HOLDER_TERMS):
             continue
         for candidate in lines[index + 1 : index + 5]:
             if _company_like(candidate):
@@ -320,21 +433,14 @@ def _extract_manufacturer(text: str) -> str:
             company_names = _company_names_from_block(value)
             return ("; ".join(company_names) if company_names else value)[:500]
 
-    manufacturer = _value_after_label(
-        text,
-        [
-            "Manufacturer",
-            "Manufacturer responsible for batch release",
-            "Manufacturers responsible for batch release",
-            "Manufacturer of the medicinal product",
-        ],
-    )
+    manufacturer = _value_after_label(text, MANUFACTURER_LABELS)
     if manufacturer:
         return manufacturer
 
     lines = [_clean_text(line) for line in text.splitlines() if _clean_text(line)]
     for index, line in enumerate(lines):
-        if "manufacturer" not in line.lower():
+        lowered = line.lower()
+        if not any(term in lowered for term in _MANUFACTURER_TERMS):
             continue
         for candidate in lines[index + 1 : index + 6]:
             if _company_like(candidate):
@@ -350,25 +456,16 @@ def _extract_manufacturer_block(text: str) -> str:
 def _extract_manufacturer_blocks(text: str) -> list[str]:
     first_block = _section_after_exact_label(
         text,
-        [
-            "Manufacturer",
-            "Manufacturers",
-            "Manufacturer responsible for batch release",
-            "Manufacturers responsible for batch release",
-            "Manufacturer of the medicinal product",
-            "Manufacturers of the medicinal product",
-        ],
-        excluded_terms=["marketing authorisation holder", "marketing authorization holder", "ma holder"],
-        continuation_terms=["manufacturer"],
+        MANUFACTURER_LABELS,
+        excluded_terms=_HOLDER_TERMS,
+        continuation_terms=_MANUFACTURER_TERMS,
     )
     blocks = [first_block] if first_block else []
 
     pattern = re.compile(
-        r"(?:^|\n)\s*(?:Manufacturer|Manufacturers|Manufacturer responsible for batch release|"
-        r"Manufacturers responsible for batch release|Manufacturer of the medicinal product|"
-        r"Manufacturers of the medicinal product)\s*:?\s*\n?"
-        r"(.*?)(?=\n\s*(?:Marketing Authorisation Holder|Marketing Authorization Holder|"
-        r"MA Holder|For any information|This leaflet was last revised|Date of revision|"
+        rf"(?:^|\n)\s*(?:{_label_alternation(MANUFACTURER_LABELS)})\s*:?\s*\n?"
+        rf"(.*?)(?=\n\s*(?:{_label_alternation(MA_HOLDER_LABELS)}|"
+        r"For any information|This leaflet was last revised|Date of revision|"
         r"Package leaflet|Contents of the pack|What .* contains|\d+\.|ANNEX|B\.|C\.)\b|$)",
         flags=re.IGNORECASE | re.DOTALL,
     )
