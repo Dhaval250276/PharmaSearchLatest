@@ -636,7 +636,7 @@ def save_product_detail(record: dict[str, Any]) -> dict[str, Any]:
         "source": record.get("source", ""),
         "source_url": record.get("source_url") or record.get("url", ""),
         "document_type": record.get("document_type", ""),
-        "last_checked": record.get("last_checked", now),
+        "last_checked": record.get("last_checked") or now,
     }
     columns = list(data.keys())
     placeholders = ", ".join(["?"] * len(columns))
