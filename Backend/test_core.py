@@ -1,8 +1,11 @@
 import unittest
 import os
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import requests
+import repository
 from bs4 import BeautifulSoup
 
 from export_service import build_export_rows
@@ -56,7 +59,12 @@ from services.ai_enrichment import enrichment_metadata, missing_enrichment_field
 from services.connector_health import connector_health_rows, record_source_health
 from services.connector_status import connector_status_rows
 from services.english_normalizer import english_row, english_text
-from services.field_availability import NOT_APPLICABLE, PENDING_ENRICHMENT, field_value
+from services.field_availability import (
+    NOT_COLLECTED,
+    NOT_SUPPLIED,
+    PENDING_ENRICHMENT,
+    field_value,
+)
 from services.result_formatter import manufacturer_name_value
 from services.search_pipeline import (
     _country_lookup_rows,
@@ -84,17 +92,77 @@ class CachedResultPreparationTests(unittest.TestCase):
         self.assertIn("data_confidence", prepared[0])
 
 
+class StructuredEvidenceRepositoryTests(unittest.TestCase):
+    def test_persists_multiple_sites_documents_and_field_evidence(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            repository.save_product_detail(
+                {
+                    "substance": "example",
+                    "product": "Example 10 mg tablets",
+                    "country": "Exampleland",
+                    "source": "Example Regulator",
+                    "registration_number": "EX-1",
+                    "product_url": "https://regulator.test/products/1",
+                    "smpc_url": "https://regulator.test/products/1/smpc.pdf",
+                    "manufacturers": [
+                        {
+                            "name": "Example Manufacturing Ltd",
+                            "address": "Site One",
+                            "country": "Germany",
+                            "role": "FINISHED_PRODUCT_MANUFACTURER",
+                            "verification_status": "VERIFIED_OFFICIAL_DOCUMENT",
+                        },
+                        {
+                            "name": "Example Release GmbH",
+                            "address": "Site Two",
+                            "country": "Germany",
+                            "role": "BATCH_RELEASE_MANUFACTURER",
+                            "verification_status": "VERIFIED_OFFICIAL_DOCUMENT",
+                        },
+                    ],
+                    "evidence": [{
+                        "field_name": "manufacturer_name",
+                        "value": "Example Manufacturing Ltd",
+                        "evidence_url": "https://regulator.test/products/1/smpc.pdf",
+                        "evidence_page": "42",
+                        "verification_status": "VERIFIED_OFFICIAL_DOCUMENT",
+                    }],
+                }
+            )
+            row = repository.search_product_details("example")[0]
+            self.assertEqual(len(row["manufacturers"]), 2)
+            self.assertEqual(row["documents"][0]["document_type"], "SMPC")
+            self.assertEqual(row["evidence"][0]["evidence_page"], "42")
+
+    def test_registry_handoff_is_not_persisted_as_a_product(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            result = repository.save_product_detail(
+                {
+                    "substance": "example",
+                    "product": "Example official registry search",
+                    "source": "Example Regulator",
+                    "connector_mode": "manual_registry",
+                }
+            )
+            self.assertEqual(result["persistence_status"], "SOURCE_RUN_ONLY")
+            self.assertEqual(repository.search_product_details("example"), [])
+
+
 class FieldAvailabilityTests(unittest.TestCase):
-    def test_document_fields_are_not_applicable_to_fda_schema(self):
-        self.assertEqual(field_value({"source": "FDA"}, "smpc_url"), NOT_APPLICABLE)
+    def test_missing_document_is_not_claimed_unavailable_without_an_attempt(self):
+        self.assertEqual(field_value({"source": "FDA"}, "smpc_url"), NOT_SUPPLIED)
 
     def test_manufacturer_is_not_pending_for_fda_schema(self):
         row = {"source": "FDA", "product_url": "https://example.test/label"}
-        self.assertEqual(field_value(row, "manufacturer_name"), "Not supplied by regulator")
+        self.assertEqual(field_value(row, "manufacturer_name"), NOT_COLLECTED)
 
     def test_manufacturer_is_not_pending_for_regional_api_schema(self):
         row = {"source": "BPOM Indonesia", "product_url": "https://example.test/product"}
-        self.assertEqual(field_value(row, "manufacturer_name"), "Not supplied by regulator")
+        self.assertEqual(field_value(row, "manufacturer_name"), NOT_COLLECTED)
 
     def test_missing_mhra_manufacturer_is_marked_for_enrichment(self):
         row = {"source": "MHRA", "pil_url": "https://example.test/pil.pdf"}
@@ -106,7 +174,7 @@ class FieldAvailabilityTests(unittest.TestCase):
             "pil_url": "https://example.test/pil.pdf",
             "document_enrichment_attempted": True,
         }
-        self.assertEqual(field_value(row, "manufacturer_name"), "Not supplied by regulator")
+        self.assertEqual(field_value(row, "manufacturer_name"), NOT_SUPPLIED)
 
     def test_export_excludes_registry_handoff_rows(self):
         rows = build_export_rows(
@@ -181,9 +249,9 @@ class SearchPageFilterTests(unittest.TestCase):
         table = soup.select_one("table.results-table")
         header_rows = table.select("thead tr")
 
-        self.assertEqual(len(header_rows[0].select("th")), 22)
+        self.assertEqual(len(header_rows[0].select("th")), 26)
         filter_cells = header_rows[1].select("th")
-        self.assertEqual(len(filter_cells), 22)
+        self.assertEqual(len(filter_cells), 26)
         self.assertTrue(all(cell.select_one("input, select") for cell in filter_cells))
 
 
@@ -812,11 +880,17 @@ class CDSCOIndiaConnectorTests(unittest.TestCase):
         self.assertEqual(row["dosage_form"], "Tablets")
         self.assertEqual(row["registration_number"], "39942")
 
-    def test_first_manufacturing_site_is_kept_apart_from_the_applicant(self):
+    def test_all_manufacturing_sites_are_kept_apart_from_the_applicant(self):
         row = self._search("dapagliflozin")[0]
 
-        self.assertEqual(row["manufacturer_name"], "Precise Chemipharma Pvt.Ltd, Navi Mumbai Maharashtra India-400703")
+        self.assertEqual(row["manufacturer_name"], "PURE & CURE HEALTHCARE Pvt. Ltd.")
         self.assertEqual(row["manufacturer_country"], "India")
+        self.assertEqual(len(row["manufacturers"]), 2)
+        self.assertEqual(
+            row["manufacturers"][0]["address"],
+            "Precise Chemipharma Pvt.Ltd, Navi Mumbai Maharashtra India-400703",
+        )
+        self.assertEqual(row["manufacturers"][0]["role"], "FINISHED_PRODUCT_MANUFACTURER")
 
     def test_bulk_drug_approvals_are_labelled_as_api(self):
         row = self._search("hepatitis b")[0]
