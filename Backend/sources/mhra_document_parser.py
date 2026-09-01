@@ -554,7 +554,10 @@ def _metadata_from_text(text: str) -> dict[str, str]:
         "pack_size": _extract_pack_information(text),
     }
     if manufacturer:
-        metadata["manufacturer_source"] = "MHRA document"
+        # Named per row by the caller, which knows the registry the document
+        # came from. Stamping "MHRA document" on a Spanish or French row was
+        # crediting the wrong regulator for the value.
+        metadata["manufacturer_source"] = "document"
     return metadata
 
 
@@ -689,6 +692,9 @@ def enrich_mhra_document_metadata(rows: list[dict[str, Any]]) -> list[dict[str, 
             if metadata_value and (
                 not current_value or should_replace_holder_copy or should_replace_invalid
             ):
+                if field == "manufacturer_source" and metadata_value == "document":
+                    source = _clean_text(row.get("source", ""))
+                    metadata_value = f"{source} document" if source else "document"
                 row[field] = metadata_value
         if (
             _clean_text(row.get("manufacturer_name", "")).lower()
