@@ -1,0 +1,169 @@
+{% extends "admin/page.html" %}
+{% import "admin/_macros.html" as ui %}
+{% block title %}Dashboard{% endblock %}
+{% block heading %}Operations dashboard{% endblock %}
+{% block subheading %}Generated {{ generated_at }} · every figure is read from the live database{% endblock %}
+
+{% block main %}
+
+
+        <div class="card-grid">
+            <div class="stat"><div class="label">Product rows</div><div class="value">{{ "{:,}".format(overview.products) }}</div><div class="foot">{{ overview.sources }} sources · {{ overview.countries }} countries</div></div>
+            <div class="stat"><div class="label">Molecules</div><div class="value">{{ "{:,}".format(overview.substances) }}</div><div class="foot">distinct normalized keys</div></div>
+            <div class="stat"><div class="label">Evidence</div><div class="value">{{ "{:,}".format(overview.evidence) }}</div><div class="foot">{{ "{:,}".format(overview.documents) }} documents linked</div></div>
+            <div class="stat"><div class="label">Organizations</div><div class="value">{{ "{:,}".format(overview.organizations) }}</div><div class="foot">{{ "{:,}".format(overview.sites) }} sites · {{ "{:,}".format(overview.roles) }} roles</div></div>
+            <div class="stat"><div class="label">Verified rows</div><div class="value">{{ overview.verified_percent }}%</div><div class="foot">{{ "{:,}".format(overview.verified) }} of {{ "{:,}".format(overview.products) }}</div></div>
+            <div class="stat"><div class="label">Source runs</div><div class="value">{{ "{:,}".format(overview.source_runs) }}</div><div class="foot">connector outcomes recorded</div></div>
+        </div>
+
+        <section class="panel">
+            <header>
+                <h2>Connector health</h2>
+                <span class="hint">worst first · rated on runs that could return records</span>
+            </header>
+            <div class="table-scroll">
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th>Source</th><th>State</th><th style="width:180px">Success rate</th>
+                            <th class="num">Runs</th><th class="num">Failed</th>
+                            <th class="num">Unsupported</th><th class="num">Rows stored</th><th>Last run</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for row in source_health %}
+                        <tr>
+                            <td><strong>{{ row.source }}</strong></td>
+                            <td><span class="pill {{ row.state }}">{{ state_labels[row.state] }}</span></td>
+                            <td>{% if row.rate_known %}{{ ui.meter(row.success_rate) }}{% else %}<span class="pct-none">not rated</span>{% endif %}</td>
+                            <td class="num">{{ "{:,}".format(row.runs) }}</td>
+                            <td class="num">{{ "{:,}".format(row.failures) }}</td>
+                            <td class="num">{{ "{:,}".format(row.unsupported) }}</td>
+                            <td class="num">{{ "{:,}".format(row.stored) }}</td>
+                            <td class="mono">{{ row.last_run[:19] }}</td>
+                        </tr>
+                    {% else %}
+                        <tr><td colspan="8" class="empty">No source runs recorded yet. They appear after the next search or harvest.</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <div class="panel-columns">
+            <section class="panel">
+                <header><h2>Field coverage</h2><span class="hint">thinnest first</span></header>
+                <div>
+                    <table class="admin-table">
+                        <thead><tr><th>Field</th><th style="width:170px">Filled</th><th class="num">Missing</th></tr></thead>
+                        <tbody>
+                        {% for row in field_coverage %}
+                            <tr>
+                                <td>{{ row.label }}</td>
+                                <td>{{ ui.meter(row.percent) }}</td>
+                                <td class="num">{{ "{:,}".format(row.missing) }}</td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="panel">
+                <header><h2>Freshness</h2><span class="hint">by last checked</span></header>
+                <div>
+                    <table class="admin-table">
+                        <thead><tr><th>Age</th><th style="width:170px">Share</th><th class="num">Rows</th></tr></thead>
+                        <tbody>
+                        {% for row in staleness %}
+                            <tr>
+                                <td>{{ row.label }}</td>
+                                <td>{{ ui.meter(row.percent, invert=(row.label in ('Over 90 days', 'Never recorded'))) }}</td>
+                                <td class="num">{{ "{:,}".format(row.rows) }}</td>
+                            </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="panel">
+                <header><h2>Rows by source</h2></header>
+                <div>
+                    <table class="admin-table">
+                        <thead><tr><th>Source</th><th style="width:150px">Share</th><th class="num">Rows</th></tr></thead>
+                        <tbody>
+                        {% for row in top_sources %}
+                            <tr><td>{{ row.name }}</td><td>{{ ui.meter(row.percent) }}</td><td class="num">{{ "{:,}".format(row.rows) }}</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="panel">
+                <header><h2>Rows by country</h2></header>
+                <div>
+                    <table class="admin-table">
+                        <thead><tr><th>Country</th><th style="width:150px">Share</th><th class="num">Rows</th></tr></thead>
+                        <tbody>
+                        {% for row in top_countries %}
+                            <tr><td>{{ row.name }}</td><td>{{ ui.meter(row.percent) }}</td><td class="num">{{ "{:,}".format(row.rows) }}</td></tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+
+        <section class="panel">
+            <header><h2>Recent connector failures</h2><span class="hint">most recent first</span></header>
+            <div class="table-scroll">
+                <table class="admin-table">
+                    <thead><tr><th>When</th><th>Source</th><th>Query</th><th>Status</th><th>Error</th></tr></thead>
+                    <tbody>
+                    {% for row in recent_failures %}
+                        <tr>
+                            <td class="mono">{{ row.checked_at[:19] }}</td>
+                            <td>{{ row.source }}</td>
+                            <td>{{ row.query }}</td>
+                            <td><span class="pill down">{{ row.status }}</span></td>
+                            <td class="truncate mono" title="{{ row.error }}">{{ row.error }}</td>
+                        </tr>
+                    {% else %}
+                        <tr><td colspan="5" class="empty">No failures recorded.</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="panel">
+            <header><h2>Applied migrations</h2><span class="hint">one-time repairs, recorded so they never re-run</span></header>
+            <table class="admin-table">
+                <thead><tr><th>Migration</th><th>Applied</th></tr></thead>
+                <tbody>
+                {% for row in migrations %}
+                    <tr><td class="mono">{{ row.name }}</td><td class="mono">{{ row.applied_at[:19] }}</td></tr>
+                {% else %}
+                    <tr><td colspan="2" class="empty">None recorded yet.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </section>
+
+        <section class="panel danger">
+            <header><h2>Danger zone</h2><span class="hint">this cannot be undone</span></header>
+            <div class="panel-body">
+                <p style="font-size:.86rem;margin:0 0 13px">
+                    Clearing removes every stored product row and its evidence. The seed file
+                    repopulates the basics on the next start; anything harvested since is gone.
+                    Type <strong class="mono">{{ confirmation }}</strong> to confirm.
+                </p>
+                <form method="post" action="/admin/reset-database" style="display:flex;gap:10px;flex-wrap:wrap">
+                    <input type="text" name="confirmation" placeholder="{{ confirmation }}" autocomplete="off" required>
+                    <button class="btn-danger-solid" type="submit">Clear the database</button>
+                </form>
+            </div>
+        </section>
+{% endblock %}
