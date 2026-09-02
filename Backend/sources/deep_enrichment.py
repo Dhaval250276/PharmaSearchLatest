@@ -291,6 +291,8 @@ def _manufacturer_from_pdf(text):
         return {
             "manufacturer_name": "; ".join(company_names) if company_names else manufacturer,
             "manufacturer_country": _extract_countries(manufacturer),
+            "manufacturer_address": manufacturer,
+            "manufacturer_role": "MANUFACTURER_OR_BATCH_RELEASE_SITE",
             "manufacturer_source": "Regulatory document",
         }
 
@@ -314,6 +316,8 @@ def _manufacturer_from_pdf(text):
             return {
                 "manufacturer_name": ("; ".join(company_names) if company_names else manufacturer)[:500],
                 "manufacturer_country": _extract_countries(manufacturer),
+                "manufacturer_address": manufacturer[:700],
+                "manufacturer_role": "MANUFACTURER_OR_BATCH_RELEASE_SITE",
                 "manufacturer_source": "Regulatory document",
             }
     return {}
@@ -371,7 +375,7 @@ def _therapeutic_indication_from_pdf(text):
     return ""
 
 
-def _enrich_from_pdf_text(row, text):
+def _enrich_from_pdf_text(row, text, evidence_url=""):
     if not text:
         return row
     product = row.get("product", "")
@@ -403,6 +407,29 @@ def _enrich_from_pdf_text(row, text):
         row["manufacturer_source"] = manufacturer_metadata.get("manufacturer_source", "")
     if manufacturer_metadata.get("manufacturer_country") and not row.get("manufacturer_country"):
         row["manufacturer_country"] = manufacturer_metadata["manufacturer_country"]
+    if manufacturer_name:
+        row.setdefault("manufacturers", []).append(
+            {
+                "name": manufacturer_name,
+                "address": manufacturer_metadata.get("manufacturer_address", ""),
+                "country": manufacturer_metadata.get("manufacturer_country", ""),
+                "role": manufacturer_metadata.get("manufacturer_role", "MANUFACTURER_UNKNOWN_ROLE"),
+                "verification_status": "VERIFIED_OFFICIAL_DOCUMENT",
+            }
+        )
+        row.setdefault("evidence", []).append(
+            {
+                "field_name": "manufacturer_name",
+                "value": manufacturer_name,
+                "role": manufacturer_metadata.get("manufacturer_role", ""),
+                "source_regulator": row.get("source", ""),
+                "document_type": row.get("document_type", "Regulatory document"),
+                "evidence_url": evidence_url,
+                "evidence_section": "Manufacturer / batch release section",
+                "extraction_method": "PDF_TEXT_SECTION_PARSER",
+                "verification_status": "VERIFIED_OFFICIAL_DOCUMENT",
+            }
+        )
     if not row.get("manufacturer_email"):
         row["manufacturer_email"] = _find_email(text)
     if not row.get("manufacturer_phone"):
@@ -487,7 +514,7 @@ def _enrich_pdf_fields(rows):
     for row in rows:
         for pdf_url in _pdf_urls_for_row(row):
             before = dict(row)
-            _enrich_from_pdf_text(row, text_by_url.get(pdf_url, ""))
+            _enrich_from_pdf_text(row, text_by_url.get(pdf_url, ""), evidence_url=pdf_url)
             if (
                 row.get("strength")
                 and row.get("dosage_form")

@@ -210,9 +210,12 @@ def run_fda_search(substance, limit=100):
                 "source_substance": _first(openfda.get("substance_name")) or substance,
                 "product": product,
                 "company": holder,
+                # openFDA's ``manufacturer_name`` and the NDC ``labeler_name``
+                # identify the SPL/NDC labeler. Neither establishes a physical
+                # finished-product manufacturing site.
                 "commercial_company": labeler,
-                "manufacturer_name": holder,
-                "manufacturer_source": "FDA label manufacturer_name" if company else "FDA NDC labeler_name",
+                "labeler_name": holder,
+                "applicant_sponsor": holder,
                 "registration_date": _fda_date(ndc_record.get("marketing_start_date")),
                 "country": "United States",
                 "region": "US",

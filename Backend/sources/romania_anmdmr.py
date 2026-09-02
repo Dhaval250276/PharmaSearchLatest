@@ -187,8 +187,15 @@ def _record(button, substance):
         "product": product,
         "company": holder,
         "manufacturer_name": manufacturer,
-        "manufacturer_country": manufacturer_country or holder_country,
+        # The holder's country is not evidence of the producer's country.
+        "manufacturer_country": manufacturer_country,
         "manufacturer_source": "ANMDMR nomenclator producer field",
+        "manufacturers": ([{
+            "name": manufacturer,
+            "country": manufacturer_country,
+            "role": "MANUFACTURER_UNKNOWN_ROLE",
+            "verification_status": "VERIFIED_REGULATOR_RECORD",
+        }] if manufacturer else []),
         "country": "Romania",
         "region": "EU",
         "status": "Authorised",

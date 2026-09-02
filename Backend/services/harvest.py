@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
 
 from core.logging_config import get_logger
-from repository import get_connection, initialize_database, save_product_detail
+from repository import get_connection, initialize_database, save_product_detail, save_source_run
 from services.harvest_vocabulary import load_vocabulary
 from sources.source_registry import CONNECTORS
 
@@ -168,8 +168,9 @@ def _persist(rows: Iterable[dict[str, Any]], molecule: str) -> int:
             record["substance"] = molecule
         try:
             with _write_lock:
-                save_product_detail(record)
-            stored += 1
+                result = save_product_detail(record)
+            if result.get("persistence_status") != "SOURCE_RUN_ONLY":
+                stored += 1
         except Exception as exc:  # a single malformed row must not end a run
             logger.warning("Could not store a %s row for %s: %s", record.get("source"), molecule, exc)
     return stored
@@ -203,6 +204,7 @@ def _harvest_source(
             outcome.failures += 1
             outcome.last_error = str(exc)
             record_progress(source, molecule, STATUS_FAILED, error=str(exc))
+            save_source_run(source, molecule, "PARSER_FAILED", error=str(exc))
             logger.warning("%s failed on %s: %s", source, molecule, exc)
             if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT:
                 # The registry is down. Leave the rest unrecorded so the next
@@ -216,6 +218,17 @@ def _harvest_source(
 
         consecutive_failures = 0
         stored = _persist(rows, molecule)
+        handoff = next(
+            (row for row in rows if str(row.get("connector_mode") or "") == "manual_registry"),
+            None,
+        )
+        save_source_run(
+            source,
+            molecule,
+            "SOURCE_UNSUPPORTED" if handoff and not stored else ("SUCCESS" if stored else "NOT_PUBLISHED"),
+            records_found=stored,
+            evidence_url=str((handoff or {}).get("source_url") or ""),
+        )
         outcome.molecules += 1
         outcome.rows += stored
         record_progress(source, molecule, STATUS_DONE, row_count=stored)

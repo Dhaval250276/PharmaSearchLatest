@@ -92,6 +92,41 @@ def _record(raw: dict[str, Any], substance: str) -> dict[str, Any] | None:
     form_id = _clean(raw.get("num_form_id"))
     dosage_form = _clean(raw.get("str_dosage"))
     indication = _clean(raw.get("str_indication"))
+    if supply_type == "Bulk Drug":
+        manufacturer_role = "API_MANUFACTURER"
+        manufacturer_scope = "API"
+    elif supply_type == "Finished Formulation":
+        manufacturer_role = "FINISHED_PRODUCT_MANUFACTURER"
+        manufacturer_scope = "FINISHED_PRODUCT"
+    else:
+        manufacturer_role = "MANUFACTURER"
+        manufacturer_scope = "API_AND_FINISHED_PRODUCT"
+
+    manufacturers = [
+        {
+            "name": company,
+            "address": site,
+            "country": "India",
+            "role": manufacturer_role,
+            "scope": manufacturer_scope,
+            "verification_status": "VERIFIED_REGULATOR_RECORD",
+        }
+        for site in sites
+    ]
+    evidence = [
+        {
+            "field_name": "manufacturer_address",
+            "value": site,
+            "role": manufacturer_role,
+            "source_regulator": "CDSCO India",
+            "document_type": "CDSCO SUGAM approval record",
+            "evidence_url": PUBLIC_URL,
+            "evidence_section": "Manufacturing site",
+            "extraction_method": "OFFICIAL_API_FIELD",
+            "verification_status": "VERIFIED_REGULATOR_RECORD",
+        }
+        for site in sites
+    ]
 
     return {
         "substance": substance,
@@ -99,9 +134,15 @@ def _record(raw: dict[str, Any], substance: str) -> dict[str, Any] | None:
         "company": company,
         # The applicant is the licence holder; the sites are where it is made,
         # and they are frequently different companies on loan licence.
-        "manufacturer_name": sites[0] if sites else company,
-        "manufacturer_country": "India",
-        "manufacturer_source": "CDSCO SUGAM approval record",
+        # Do not turn the applicant into a manufacturer when CDSCO did not
+        # publish a manufacturing site. The normalized list preserves every
+        # site instead of retaining only the first address.
+        "manufacturer_name": company if sites else "",
+        "manufacturer_country": "India" if sites else "",
+        "manufacturer_source": "CDSCO SUGAM manufacturing-site record" if sites else "",
+        "manufacturers": manufacturers,
+        "evidence": evidence,
+        "applicant_sponsor": company,
         "country": "India",
         "region": "AS",
         "status": SUPPLY_TYPE_STATUS.get(supply_type, "Approved by CDSCO"),

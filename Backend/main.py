@@ -7,8 +7,12 @@ from typing import Any
 from urllib.parse import quote, urlencode
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+
+from admin_routes import router as admin_router
+from services.admin_auth import SESSION_COOKIE_NAME, read_session
 
 from config import BASE_DIR, DB_PATH, EXPORT_DIR
 from core.logging_config import configure_logging, get_logger
@@ -56,6 +60,35 @@ configure_logging()
 logger = get_logger(__name__)
 app = FastAPI(title="PharmaSearch", version="0.2.0")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+app.include_router(admin_router)
+
+# The sign-in page is the only way in. Everything below it needs a session:
+# the search pages, the exports and the JSON endpoints alike.
+PUBLIC_PATHS = {"/admin/login", "/favicon.ico"}
+PUBLIC_PREFIXES = ("/static",)
+
+
+@app.middleware("http")
+async def require_sign_in(request: Request, call_next):
+    path = request.url.path
+    if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
+        return await call_next(request)
+    if read_session(request.cookies.get(SESSION_COOKIE_NAME)):
+        return await call_next(request)
+    # A browser gets sent to the door and returned to where it was heading.
+    # Anything programmatic gets told plainly, rather than handed a login page
+    # it would try to parse as data.
+    if path.startswith("/api") or path.startswith("/admin/api") or "application/json" in (
+        request.headers.get("accept") or ""
+    ):
+        return JSONResponse({"detail": "Sign in required"}, status_code=401)
+    destination = request.url.path
+    if request.url.query:
+        destination = f"{destination}?{request.url.query}"
+    return RedirectResponse(
+        f"/admin/login?next={quote(destination, safe='')}", status_code=303
+    )
 SEARCH_RESULT_CACHE: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
 APP_BUILD = "UAT-2026-08-01-platform-core"
 
@@ -939,8 +972,12 @@ def search_page(
                 <td>{h(display_row["atc_code"])}</td>
                 <td>{h(display_row["therapeutic_category"])}</td>
                 <td>{h(display_row["ma_holder"])}</td>
+                <td>{h(display_row["applicant_sponsor"])}</td>
                 <td>{h(display_row["manufacturer_name"])}</td>
                 <td>{h(display_row["manufacturer_country"])}</td>
+                <td>{h(display_row["manufacturer_address"])}</td>
+                <td>{h(display_row["manufacturer_role"])}</td>
+                <td>{h(display_row["verification_status"])}</td>
                 <td>{h(display_row["registration_status"])}</td>
                 <td>{h(display_row["registration_number"])}</td>
                 <td>{h(display_row["registration_date"])}</td>
@@ -954,7 +991,7 @@ def search_page(
         body_rows.append(
             """
             <tr>
-                <td colspan="22" class="text-center text-muted py-4">
+                <td colspan="26" class="text-center text-muted py-4">
                     No direct product records on this page. Use the official source links above for manual verification.
                 </td>
             </tr>
@@ -1242,8 +1279,12 @@ def search_page(
                     <th>{sort_label("atc_code", "ATC Code")}</th>
                     <th>{sort_label("therapeutic_category", "Therapeutic Category")}</th>
                     <th>{sort_label("ma_holder", "MA Holder Name")}</th>
+                    <th>Applicant / Sponsor</th>
                     <th>{sort_label("manufacturer_name", "Manufacturer Name")}</th>
                     <th>{sort_label("manufacturer_country", "Manufacturer Country")}</th>
+                    <th>Manufacturer Address / Site</th>
+                    <th>Manufacturer Role</th>
+                    <th>Verification</th>
                     <th>Registration Status</th>
                     <th>{sort_label("registration_number", "Registration Number")}</th>
                     <th>{sort_label("registration_date", "Registration Date")}</th>
@@ -1266,14 +1307,18 @@ def search_page(
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="atc_code_filter" value="{h(atc_code_filter)}" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="therapeutic_category_filter" value="{h(therapeutic_category_filter)}" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="ma_holder_filter" value="{h(ma_holder_filter)}" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="14" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="manufacturer_name_filter" value="{h(manufacturer_name_filter)}" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="manufacturer_country_filter" value="{h(manufacturer_country_filter)}" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="17" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="18" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="19" placeholder="Filter"></th>
                     <th><select form="result-filter-form" class="form-select form-select-sm" name="status">{status_options}</select></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="registration_number_filter" value="{h(registration_number_filter)}" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="registration_date_filter" value="{h(registration_date_filter)}" placeholder="Filter"></th>
-                    <th><input class="form-control form-control-sm page-column-filter" data-column="19" placeholder="Filter"></th>
-                    <th><input class="form-control form-control-sm page-column-filter" data-column="20" placeholder="Filter"></th>
-                    <th><input class="form-control form-control-sm page-column-filter" data-column="21" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="23" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="24" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="25" placeholder="Filter"></th>
                 </tr>
             </thead>
             <tbody>{"".join(body_rows)}</tbody>
@@ -1733,8 +1778,9 @@ def catalogue(
 
 @app.get("/reset_db")
 def reset_db():
-    reset_database()
-    return {"message": "Database cleared"}
+    # This used to clear the database on a bare GET, which any crawler or link
+    # prefetcher could trigger. Clearing now lives behind the admin sign-in.
+    return RedirectResponse("/admin", status_code=308)
 
 
 @app.get("/connector_status")
