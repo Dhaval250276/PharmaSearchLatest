@@ -9,7 +9,6 @@
         <a class="nav-item {% if active == 'records' %}active{% endif %}" href="/admin/records">Records</a>
         <a class="nav-item {% if active == 'data' %}active{% endif %}" href="/admin/data">Data</a>
         <a class="nav-item" href="/">Search app</a>
-        <a class="nav-item" href="/admin/api/dashboard">Dashboard JSON</a>
         <div class="rail-foot">
             <div style="margin-bottom:9px">Signed in as <strong style="color:#fff">{{ user }}</strong></div>
             <form method="post" action="/admin/logout"><button class="btn-quiet" type="submit">Sign out</button></form>
