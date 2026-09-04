@@ -17,6 +17,7 @@ from repository import (
     save_search_job_progress,
     save_search_job_results,
 )
+from services.evidence_backfill import backfill_evidence, missing_reason_for_row
 from sources.ema import _ema_result_from_record, _expand_xlsx_records
 from sources.eu_mri import _parse_table_rows, run_eu_mri_search
 from sources.medsafe import (
@@ -1687,6 +1688,143 @@ class FieldCompletionTests(unittest.TestCase):
 
         self.assertEqual(changes["reference_source"], "EMA")
         self.assertEqual(changes["reference_pil_url"], "https://ema/pil")
+
+
+class EvidenceBackfillTests(unittest.TestCase):
+    """The provenance reconstructed for rows saved before evidence existed."""
+
+    def _backfill(self, *records):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            for record in records:
+                repository.save_product_detail(record)
+            summary = backfill_evidence()
+            rows = repository.search_product_details("example")
+            return summary, {row["registration_number"]: row for row in rows}
+
+    def test_register_values_point_at_the_record_they_were_read_from(self):
+        _, rows = self._backfill({
+            "substance": "example",
+            "product": "Example 10 mg tablets",
+            "country": "Exampleland",
+            "source": "Example Regulator",
+            "registration_number": "EX-1",
+            "product_url": "https://regulator.test/products/1",
+            "strength": "10 mg",
+        })
+
+        assertions = {item["field_name"]: item for item in rows["EX-1"]["evidence"]}
+        self.assertEqual(assertions["strength"]["value"], "10 mg")
+        self.assertEqual(
+            assertions["strength"]["evidence_url"], "https://regulator.test/products/1"
+        )
+        self.assertEqual(
+            assertions["strength"]["verification_status"], "VERIFIED_REGULATOR_RECORD"
+        )
+        self.assertEqual(assertions["strength"]["source_regulator"], "Example Regulator")
+
+    def test_a_completed_field_credits_the_lenders_and_stays_unverified(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            repository.save_product_detail({
+                "substance": "example",
+                "product": "Example 10 mg tablets",
+                "source": "Example Regulator",
+                "registration_number": "EX-2",
+                "product_url": "https://regulator.test/products/2",
+                "atc_code": "N02",
+            })
+            # completion_source is only ever stamped by field_completion, so
+            # seed it the way the completion pass does.
+            with repository.get_connection() as conn:
+                conn.execute("UPDATE product_details SET completion_source = ?", ("MHRA, EMA",))
+            backfill_evidence()
+            rows = {
+                row["registration_number"]: row
+                for row in repository.search_product_details("example")
+            }
+
+        atc = next(
+            item for item in rows["EX-2"]["evidence"] if item["field_name"] == "atc_code"
+        )
+        # Agreed across a molecule group, so it must not borrow this
+        # register's authority for a value the register never published.
+        self.assertEqual(atc["source_regulator"], "MHRA, EMA")
+        self.assertEqual(atc["verification_status"], "UNVERIFIED")
+
+    def test_a_manufacturer_read_from_a_document_cites_the_document(self):
+        _, rows = self._backfill({
+            "substance": "example",
+            "product": "Example 10 mg tablets",
+            "source": "MHRA",
+            "registration_number": "EX-3",
+            "product_url": "https://regulator.test/products/3",
+            "smpc_url": "https://regulator.test/products/3/smpc.pdf",
+            "manufacturer_name": "Example Manufacturing Ltd",
+            "manufacturer_source": "MHRA document",
+        })
+
+        manufacturer = next(
+            item for item in rows["EX-3"]["evidence"]
+            if item["field_name"] == "manufacturer_name"
+        )
+        self.assertEqual(
+            manufacturer["evidence_url"], "https://regulator.test/products/3/smpc.pdf"
+        )
+        self.assertEqual(
+            manufacturer["verification_status"], "VERIFIED_OFFICIAL_DOCUMENT"
+        )
+
+    def test_a_row_with_no_address_asserts_nothing(self):
+        summary, rows = self._backfill({
+            "substance": "example",
+            "product": "Example 10 mg tablets",
+            "source": "Example Regulator",
+            "registration_number": "EX-4",
+            "strength": "10 mg",
+        })
+
+        self.assertEqual(summary["rows_without_source_url"], 1)
+        self.assertEqual(rows["EX-4"]["evidence"], [])
+
+    def test_only_a_parsed_registry_is_told_its_documents_are_pending(self):
+        parsed = {
+            "source": "MHRA",
+            "smpc_url": "https://regulator.test/smpc.pdf",
+            "manufacturer_name": "",
+        }
+        unparsed = {**parsed, "source": "Health Canada"}
+        undocumented = {"source": "MHRA", "manufacturer_name": ""}
+
+        self.assertEqual(missing_reason_for_row(parsed), "Pending document enrichment")
+        self.assertEqual(missing_reason_for_row(unparsed), "Not collected for this source")
+        self.assertEqual(missing_reason_for_row(undocumented), "NOT_PUBLISHED")
+
+    def test_a_second_pass_refreshes_rather_than_duplicates(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            repository.save_product_detail({
+                "substance": "example",
+                "product": "Example 10 mg tablets",
+                "source": "Example Regulator",
+                "registration_number": "EX-5",
+                "product_url": "https://regulator.test/products/5",
+                "strength": "10 mg",
+            })
+            first = backfill_evidence()
+            with repository.get_connection() as conn:
+                after_first = conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0]
+
+            second = backfill_evidence()
+            with repository.get_connection() as conn:
+                after_second = conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0]
+
+        self.assertGreater(first["assertions_written"], 0)
+        self.assertEqual(second["rows_scanned"], 0)
+        self.assertEqual(after_first, after_second)
 
 
 if __name__ == "__main__":
