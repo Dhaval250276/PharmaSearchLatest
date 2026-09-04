@@ -21,10 +21,18 @@ mistaken for something the local regulator published.
 """
 
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any
 
 from core.logging_config import get_logger
-from repository import get_connection, initialize_database
+from repository import EVIDENCE_INSERT_SQL, get_connection, initialize_database
+from services.evidence_assertions import (
+    COMPLETABLE_FIELDS,
+    COMPLETION_METHOD,
+    COMPLETION_SECTION,
+    UNVERIFIED,
+    register_url,
+)
 from services.field_availability import DOCUMENT_CAPABLE_SOURCES
 from services.harvest_vocabulary import molecule_group_key
 from services.therapeutic_category import short_therapeutic_category
@@ -269,8 +277,45 @@ def _load_rows() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def _apply(updates: list[tuple[int, dict[str, str]]]) -> int:
+def _record_completion_evidence(
+    connection: Any, row_id: int, changes: dict[str, str], row: dict[str, Any], now: str
+) -> None:
+    """State that a lent value rests on the lenders, not on this register.
+
+    The row may already carry an assertion naming its own regulator, from when
+    the value was saved or backfilled. Where completion replaces the value that
+    assertion no longer describes the column, so it is dropped rather than left
+    to contradict the new one in the export.
+    """
+    url = register_url(row)
+    if not url:
+        return
+    lenders = changes.get("completion_source", "")
+    for field in COMPLETABLE_FIELDS:
+        if field not in changes:
+            continue
+        connection.execute(
+            "DELETE FROM evidence WHERE product_detail_id = ? AND field_name = ?",
+            (row_id, field),
+        )
+        connection.execute(
+            EVIDENCE_INSERT_SQL,
+            (
+                row_id, None, field, changes[field], "",
+                lenders or str(row.get("source") or ""),
+                str(row.get("document_type") or ""), url, "",
+                COMPLETION_SECTION, COMPLETION_METHOD, now, UNVERIFIED, "",
+            ),
+        )
+
+
+def _apply(
+    updates: list[tuple[int, dict[str, str]]],
+    rows_by_id: dict[int, dict[str, Any]] | None = None,
+) -> int:
     applied = 0
+    now = datetime.now(timezone.utc).isoformat()
+    rows_by_id = rows_by_id or {}
     with get_connection() as connection:
         for row_id, changes in updates:
             assignments = ", ".join(f"{column} = ?" for column in changes)
@@ -278,6 +323,9 @@ def _apply(updates: list[tuple[int, dict[str, str]]]) -> int:
                 f"UPDATE product_details SET {assignments} WHERE id = ?",
                 (*changes.values(), row_id),
             )
+            row = rows_by_id.get(row_id)
+            if row is not None:
+                _record_completion_evidence(connection, row_id, changes, row, now)
             applied += 1
     return applied
 
@@ -309,7 +357,9 @@ def complete_fields(dry_run: bool = False) -> dict[str, Any]:
             if not column.endswith("_source") and column != "reference_product":
                 filled[column] += 1
 
-    applied = 0 if dry_run else _apply(updates)
+    applied = 0 if dry_run else _apply(
+        updates, {int(row["id"]): row for row in rows if row.get("id")}
+    )
     logger.info(
         "Field completion %s %s rows across %s molecules",
         "would update" if dry_run else "updated",

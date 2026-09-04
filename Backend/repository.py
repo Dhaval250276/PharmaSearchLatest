@@ -7,6 +7,13 @@ import re
 import json
 
 from config import BASE_DIR, DB_PATH
+from services.evidence_assertions import (
+    REGISTER_SECTION,
+    VERIFIED_RECORD,
+    assertions_for_row,
+    missing_reason_for_row,
+    register_url,
+)
 from services.harvest_vocabulary import molecule_group_key
 
 
@@ -951,6 +958,16 @@ def save_product_detail(record: dict[str, Any]) -> dict[str, Any]:
         "evidence_section": record.get("evidence_section", ""),
         "missing_reason": record.get("missing_reason", ""),
     }
+    # A connector that says nothing about provenance still has some: the
+    # register it read the row from, and the reason its blank fields are blank.
+    row_url = register_url(data)
+    if row_url and not data["evidence_url"]:
+        data["evidence_url"] = row_url
+        data["evidence_section"] = data["evidence_section"] or REGISTER_SECTION
+        if data["verification_status"] == "UNVERIFIED":
+            data["verification_status"] = VERIFIED_RECORD
+    if not data["missing_reason"]:
+        data["missing_reason"] = missing_reason_for_row(data)
     columns = list(data.keys())
     placeholders = ", ".join(["?"] * len(columns))
     with get_connection() as conn:
@@ -997,7 +1014,7 @@ def save_product_detail(record: dict[str, Any]) -> dict[str, Any]:
                 """,
                 [data[column] for column in columns],
             ).lastrowid
-        _save_structured_regulatory_data(conn, product_detail_id, record, now)
+        _save_structured_regulatory_data(conn, product_detail_id, record, now, data)
     return data
 
 
@@ -1053,11 +1070,33 @@ def _organization_id(
     return row["id"] if row else None
 
 
+EVIDENCE_INSERT_SQL = """
+    INSERT INTO evidence(
+        product_detail_id, document_id, field_name, value, role,
+        source_regulator, document_type, evidence_url, evidence_page,
+        evidence_section, extraction_method, extracted_at,
+        verification_status, missing_reason
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(
+        product_detail_id, field_name, role, value,
+        evidence_url, evidence_page, evidence_section
+    ) DO UPDATE SET
+        document_id=excluded.document_id,
+        source_regulator=excluded.source_regulator,
+        document_type=excluded.document_type,
+        extraction_method=excluded.extraction_method,
+        extracted_at=excluded.extracted_at,
+        verification_status=excluded.verification_status,
+        missing_reason=excluded.missing_reason
+"""
+
+
 def _save_structured_regulatory_data(
     conn: sqlite3.Connection,
     product_detail_id: int,
     record: dict[str, Any],
     now: str,
+    stored: dict[str, Any] | None = None,
 ) -> None:
     document_ids: dict[str, int] = {}
     documents = list(record.get("documents") or [])
@@ -1100,28 +1139,12 @@ def _save_structured_regulatory_data(
         if row:
             document_ids[url] = row["id"]
 
+    asserted_fields: set[str] = set()
     for assertion in record.get("evidence", []) or []:
         evidence_url = str(assertion.get("evidence_url") or assertion.get("url") or "").strip()
+        asserted_fields.add(_text(assertion.get("field_name")))
         conn.execute(
-            """
-            INSERT INTO evidence(
-                product_detail_id, document_id, field_name, value, role,
-                source_regulator, document_type, evidence_url, evidence_page,
-                evidence_section, extraction_method, extracted_at,
-                verification_status, missing_reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(
-                product_detail_id, field_name, role, value,
-                evidence_url, evidence_page, evidence_section
-            ) DO UPDATE SET
-                document_id=excluded.document_id,
-                source_regulator=excluded.source_regulator,
-                document_type=excluded.document_type,
-                extraction_method=excluded.extraction_method,
-                extracted_at=excluded.extracted_at,
-                verification_status=excluded.verification_status,
-                missing_reason=excluded.missing_reason
-            """,
+            EVIDENCE_INSERT_SQL,
             (
                 product_detail_id, document_ids.get(evidence_url), _text(assertion.get("field_name")),
                 _text(assertion.get("value")), _text(assertion.get("role")),
@@ -1133,6 +1156,18 @@ def _save_structured_regulatory_data(
                 assertion.get("missing_reason", ""),
             ),
         )
+
+    # Most connectors state no evidence of their own. Rather than leave their
+    # rows unsourced -- which is what left fifty thousand stored rows with
+    # nothing to cite -- record what the row's own columns already support,
+    # leaving alone any field the connector has spoken for itself.
+    synthesized = assertions_for_row(
+        stored if stored is not None else record,
+        product_detail_id=product_detail_id,
+        skip_fields=asserted_fields,
+    )
+    if synthesized:
+        conn.executemany(EVIDENCE_INSERT_SQL, synthesized)
 
     manufacturers = list(record.get("manufacturers") or [])
     for manufacturer in manufacturers:

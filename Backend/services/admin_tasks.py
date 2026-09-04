@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from core.logging_config import get_logger
+from services.evidence_backfill import backfill_evidence
 from services.harvest import run_harvest
 
 
@@ -172,4 +173,48 @@ def start_harvest(
 
     threading.Thread(target=worker, name=f"admin-harvest-{task_id}", daemon=True).start()
     logger.info("Admin %s started harvest %s (%s)", started_by, task_id, task.label)
+    return task_id
+
+
+def start_evidence_backfill(started_by: str) -> str:
+    """Reconstruct provenance for stored rows that were saved without it.
+
+    Rows saved now record their own, so this is only needed for what was
+    harvested before that -- and for a database restored from an older export.
+    """
+    task_id = uuid.uuid4().hex[:12]
+    task = Task(
+        task_id=task_id,
+        kind="evidence-backfill",
+        label="Evidence for rows saved without it",
+        started_by=started_by,
+        started_at=_now(),
+    )
+    with _lock:
+        _tasks[task_id] = task
+        _trim()
+
+    def on_progress(scanned: int, total: int) -> None:
+        with _lock:
+            task.pairs_done = scanned
+            task.last_source = f"{scanned}/{total} rows"
+
+    def worker() -> None:
+        try:
+            result = backfill_evidence(progress=on_progress)
+            with _lock:
+                task.result = result
+                task.rows = result["assertions_written"]
+                task.status = STATUS_FINISHED
+        except Exception as exc:  # a failed run must still report why
+            logger.exception("Admin evidence backfill %s failed", task_id)
+            with _lock:
+                task.status = STATUS_FAILED
+                task.error = str(exc)[:1000]
+        finally:
+            with _lock:
+                task.finished_at = _now()
+
+    threading.Thread(target=worker, name=f"admin-backfill-{task_id}", daemon=True).start()
+    logger.info("Admin %s started evidence backfill %s", started_by, task_id)
     return task_id

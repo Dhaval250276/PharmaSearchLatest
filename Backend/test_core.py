@@ -17,7 +17,8 @@ from repository import (
     save_search_job_progress,
     save_search_job_results,
 )
-from services.evidence_backfill import backfill_evidence, missing_reason_for_row
+from services.evidence_assertions import missing_reason_for_row
+from services.evidence_backfill import backfill_evidence
 from sources.ema import _ema_result_from_record, _expand_xlsx_records
 from sources.eu_mri import _parse_table_rows, run_eu_mri_search
 from sources.medsafe import (
@@ -44,6 +45,7 @@ from sources.regional_live import (
 from services.field_completion import (
     _completions_for_group,
     attach_reference_documents,
+    complete_fields,
     molecule_group_key,
 )
 from services.harvest import CONSECUTIVE_FAILURE_LIMIT, run_harvest
@@ -1728,19 +1730,24 @@ class EvidenceBackfillTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.object(
             repository, "DB_PATH", Path(directory) / "test.db"
         ):
+            # A row with no ATC code of its own, and a lender in the same
+            # molecule group for completion to borrow one from.
             repository.save_product_detail({
                 "substance": "example",
                 "product": "Example 10 mg tablets",
                 "source": "Example Regulator",
                 "registration_number": "EX-2",
                 "product_url": "https://regulator.test/products/2",
-                "atc_code": "N02",
             })
-            # completion_source is only ever stamped by field_completion, so
-            # seed it the way the completion pass does.
-            with repository.get_connection() as conn:
-                conn.execute("UPDATE product_details SET completion_source = ?", ("MHRA, EMA",))
-            backfill_evidence()
+            repository.save_product_detail({
+                "substance": "example",
+                "product": "Example lender 10 mg tablets",
+                "source": "EMA",
+                "registration_number": "EX-2-LENDER",
+                "product_url": "https://ema.test/products/2",
+                "atc_code": "N02BE01",
+            })
+            complete_fields()
             rows = {
                 row["registration_number"]: row
                 for row in repository.search_product_details("example")
@@ -1751,8 +1758,46 @@ class EvidenceBackfillTests(unittest.TestCase):
         )
         # Agreed across a molecule group, so it must not borrow this
         # register's authority for a value the register never published.
-        self.assertEqual(atc["source_regulator"], "MHRA, EMA")
+        self.assertEqual(atc["value"], "N02BE01")
+        self.assertEqual(atc["source_regulator"], "EMA")
         self.assertEqual(atc["verification_status"], "UNVERIFIED")
+
+    def test_completion_replaces_the_assertion_it_makes_stale(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            repository.save_product_detail({
+                "substance": "example",
+                "product": "Example 10 mg tablets",
+                "source": "Example Regulator",
+                "registration_number": "EX-6",
+                "product_url": "https://regulator.test/products/6",
+                "atc_code": "N02BE01",
+                "therapeutic_category": "Hipocolesterolemiante",
+            })
+            repository.save_product_detail({
+                "substance": "example",
+                "product": "Example lender 10 mg tablets",
+                "source": "EMA",
+                "registration_number": "EX-6-LENDER",
+                "product_url": "https://ema.test/products/6",
+                "atc_code": "N02BE01",
+            })
+            complete_fields()
+            rows = {
+                row["registration_number"]: row
+                for row in repository.search_product_details("example")
+            }
+
+        row = rows["EX-6"]
+        categories = [
+            item for item in row["evidence"]
+            if item["field_name"] == "therapeutic_category"
+        ]
+        # Completion rewrites the category, so exactly one assertion should
+        # describe it -- the superseded one would contradict the column.
+        self.assertEqual(len(categories), 1)
+        self.assertEqual(categories[0]["value"], row["therapeutic_category"])
 
     def test_a_manufacturer_read_from_a_document_cites_the_document(self):
         _, rows = self._backfill({

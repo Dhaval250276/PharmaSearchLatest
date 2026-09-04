@@ -242,6 +242,8 @@ def operations_page(request: Request):
         notices = _notice("warn", "Cancellation requested. The molecule in flight finishes first.")
     elif started == "busy":
         notices = _notice("warn", "A harvest is already running. Cancel it before starting another.")
+    elif started == "backfill":
+        notices = _notice("ok", "Rebuilding evidence. Progress appears in the task list below.")
     return _render(
         request, "operations.html", active="operations", notices=notices,
         connectors=connector_metadata(), tasks=admin_tasks.list_tasks(),
@@ -290,6 +292,19 @@ async def start_search_route(request: Request) -> Response:
     job_id = create_search_job(substance, None, mode=("full" if form.get("mode") == "full" else "fast"))
     logger.info("Admin %s started search job %s for %s", _signed_in_user(request), job_id, substance)
     return RedirectResponse(f"/search_jobs/{job_id}", status_code=303)
+
+
+@router.post("/operations/evidence-backfill")
+async def start_evidence_backfill_route(request: Request) -> Response:
+    redirect = _login_required(request)
+    if redirect:
+        return redirect
+    # It walks every stored row, so let it have the machine to itself rather
+    # than compete with a harvest writing the rows it is reading.
+    if admin_tasks.running_count():
+        return RedirectResponse("/admin/operations?started=busy", status_code=303)
+    admin_tasks.start_evidence_backfill(started_by=_signed_in_user(request) or "unknown")
+    return RedirectResponse("/admin/operations?started=backfill", status_code=303)
 
 
 @router.post("/operations/cancel")

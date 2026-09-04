@@ -53,6 +53,21 @@
             </form>
         </div>
     </section>
+
+    <section class="panel">
+        <header><h2>Rebuild evidence</h2><span class="hint">reads no source</span></header>
+        <div class="panel-body">
+            <form method="post" action="/admin/operations/evidence-backfill" class="stack">
+                <p class="field-hint">
+                    Records what each stored value rests on for rows saved before the
+                    save path did it itself. Rows saved since already carry their own,
+                    and a second pass refreshes rather than duplicates, so this is safe
+                    to re-run.
+                </p>
+                <button class="btn-primary" type="submit">Rebuild evidence</button>
+            </form>
+        </div>
+    </section>
 </div>
 
 <section class="panel">
