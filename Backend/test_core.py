@@ -20,6 +20,7 @@ from repository import (
 from services.evidence_assertions import missing_reason_for_row
 from services.evidence_backfill import backfill_evidence
 from sources.ema import _ema_result_from_record, _expand_xlsx_records
+from sources.synonyms import get_substance_search_terms
 from sources.eu_mri import _parse_table_rows, run_eu_mri_search
 from sources.medsafe import (
     _fallback_rows as _medsafe_fallback_rows,
@@ -1224,9 +1225,12 @@ class AIEnrichmentTests(unittest.TestCase):
 
 class SearchJobTests(unittest.TestCase):
     def test_background_job_orders_fast_sources_before_slow_sources(self):
-        sources = order_sources_for_job(["GRLS Russia", "FDA", "Health Canada"])
-        self.assertEqual(sources[:2], ["FDA", "Health Canada"])
+        # Health Canada was the quick source here until it was measured at
+        # ~19s and moved to SLOW_SOURCES; Spain CIMA answers in ~5s.
+        sources = order_sources_for_job(["GRLS Russia", "FDA", "Spain CIMA"])
+        self.assertEqual(sources[:2], ["FDA", "Spain CIMA"])
         self.assertIn("GRLS Russia", SLOW_SOURCES)
+        self.assertIn("Health Canada", SLOW_SOURCES)
 
     def test_fast_background_job_skips_heavy_sources(self):
         self.assertTrue(source_skipped_in_mode("GRLS Russia", "fast"))
@@ -1690,6 +1694,65 @@ class FieldCompletionTests(unittest.TestCase):
 
         self.assertEqual(changes["reference_source"], "EMA")
         self.assertEqual(changes["reference_pil_url"], "https://ema/pil")
+
+
+class SubstanceSynonymTests(unittest.TestCase):
+    def test_a_us_adopted_name_is_reached_from_the_inn_and_back(self):
+        for inn, usan in [
+            ("salbutamol", "albuterol"),
+            ("adrenaline", "epinephrine"),
+            ("glibenclamide", "glyburide"),
+            ("rifampicin", "rifampin"),
+        ]:
+            self.assertIn(usan, get_substance_search_terms(inn))
+            self.assertIn(inn, get_substance_search_terms(usan))
+
+    def test_the_term_typed_is_always_searched_first(self):
+        self.assertEqual(get_substance_search_terms("salbutamol")[0], "salbutamol")
+        self.assertEqual(get_substance_search_terms("Albuterol")[0], "Albuterol")
+
+    def test_a_molecule_with_no_alias_searches_only_itself(self):
+        self.assertEqual(get_substance_search_terms("tirzepatide"), ["tirzepatide"])
+
+    def test_a_combination_reaches_its_parts_but_not_the_reverse(self):
+        combination = get_substance_search_terms("lidocaine+prilocaine")
+        self.assertIn("lidocaine", combination)
+        self.assertIn("prilocaine", combination)
+        # A search for one molecule must not drag in every combination it
+        # appears in, or paracetamol would search half the register.
+        self.assertNotIn("prilocaine", get_substance_search_terms("lidocaine"))
+
+
+class SearchJobTimeoutTests(unittest.TestCase):
+    def test_a_slow_term_does_not_discard_the_terms_that_answered(self):
+        import time as _time
+        from services import search_jobs
+
+        def fake_connector(source, term, substance):
+            if term == "slow-term":
+                _time.sleep(10)
+                return [{"product": "Late", "source": source}]
+            return [{"product": "Answered", "source": source, "country": "X"}]
+
+        with patch.object(search_jobs, "_run_connector_once", fake_connector), \
+             patch.object(search_jobs, "get_substance_search_terms",
+                          lambda s: [s, "slow-term"]), \
+             patch.object(search_jobs, "_source_timeout", lambda s: 1), \
+             patch.object(search_jobs, "_set_source_progress", lambda *a, **k: None), \
+             patch.object(search_jobs, "record_source_health", lambda *a, **k: None):
+            _source, rows, error = search_jobs._run_source_for_job("job", "example", "FDA")
+
+        self.assertEqual([row["product"] for row in rows], ["Answered"])
+        # Rows arrived, so the source did not fail even though a term ran on.
+        self.assertEqual(error, "")
+
+    def test_the_registries_measured_slower_than_the_default_are_given_longer(self):
+        from services.search_jobs import (
+            JOB_SLOW_SOURCE_TIMEOUT_SECONDS,
+            _source_timeout,
+        )
+        for source in ("Health Canada", "France BDPM", "CDSCO India"):
+            self.assertEqual(_source_timeout(source), JOB_SLOW_SOURCE_TIMEOUT_SECONDS)
 
 
 class EvidenceBackfillTests(unittest.TestCase):
