@@ -98,14 +98,21 @@ def document_url(row: dict[str, Any]) -> str:
 
 
 def missing_reason_for_row(row: dict[str, Any]) -> str:
-    """Why this row's document-derived fields are still blank.
+    """Why this row has no manufacturer.
 
     The reasoning field_availability applies at display time, over the columns
-    a stored row actually has. It matters most for the manufacturer fields,
-    which only a document parser fills and only for the registries that have
-    one -- calling the rest "pending" would promise a job that will never run.
+    a stored row actually has. It answers for the manufacturer, which only a
+    document parser fills and only for the registries that have one -- calling
+    the rest "pending" would promise a job that will never run.
+
+    It turns on the manufacturer's name alone. Asking for every manufacturer
+    column would put a reason on rows that plainly name their manufacturer,
+    because role and batch release site are almost never published, and a
+    "Missing Reason" contradicting a filled "Manufacturer Name" in the same
+    export row reads as a bug. Which individual columns are absent is
+    field_availability's account to give, per field, at display time.
     """
-    if all(_text(row.get(field)) for field in MANUFACTURER_FIELDS):
+    if _text(row.get("manufacturer_name")):
         return ""
     if not document_url(row):
         return NOT_SUPPLIED

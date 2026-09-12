@@ -12,7 +12,7 @@
             <div class="stat"><div class="label">Molecules</div><div class="value">{{ "{:,}".format(overview.substances) }}</div><div class="foot">distinct normalized keys</div></div>
             <div class="stat"><div class="label">Evidence</div><div class="value">{{ "{:,}".format(overview.evidence) }}</div><div class="foot">{{ "{:,}".format(overview.documents) }} documents linked</div></div>
             <div class="stat"><div class="label">Organizations</div><div class="value">{{ "{:,}".format(overview.organizations) }}</div><div class="foot">{{ "{:,}".format(overview.sites) }} sites · {{ "{:,}".format(overview.roles) }} roles</div></div>
-            <div class="stat"><div class="label">Verified rows</div><div class="value">{{ overview.verified_percent }}%</div><div class="foot">{{ "{:,}".format(overview.verified) }} of {{ "{:,}".format(overview.products) }}</div></div>
+            <div class="stat"><div class="label">Document-verified rows</div><div class="value">{{ overview.verified_percent }}%</div><div class="foot">{{ "{:,}".format(overview.verified) }} of {{ "{:,}".format(overview.products) }} &middot; {{ "{:,}".format(overview.register_sourced) }} rest on a register entry</div></div>
             <div class="stat"><div class="label">Source runs</div><div class="value">{{ "{:,}".format(overview.source_runs) }}</div><div class="foot">connector outcomes recorded</div></div>
         </div>
 

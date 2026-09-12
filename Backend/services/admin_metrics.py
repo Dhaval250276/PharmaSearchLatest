@@ -13,6 +13,16 @@ from typing import Any
 from repository import get_connection, initialize_database
 
 
+# Rows carrying at least one assertion that someone read a document or a
+# product page for, as opposed to taking the register's word for it.
+_DOCUMENT_VERIFIED_SQL = """
+    SELECT COUNT(DISTINCT product_detail_id) FROM evidence
+    WHERE verification_status IN (
+        'VERIFIED_OFFICIAL_DOCUMENT', 'VERIFIED_PRODUCT_PAGE', 'VERIFIED_MANUAL_ENTRY'
+    )
+"""
+
+
 # The fields a regulatory row is judged complete on, in the order an analyst
 # tends to look for them.
 COVERAGE_FIELDS = [
@@ -71,16 +81,16 @@ def overview() -> dict[str, Any]:
             "sites": _scalar(conn, "SELECT COUNT(*) FROM manufacturing_sites"),
             "roles": _scalar(conn, "SELECT COUNT(*) FROM registration_organization_roles"),
             "source_runs": _scalar(conn, "SELECT COUNT(*) FROM source_runs"),
-            "verified": _scalar(
+            # Counted from the assertions rather than the row's own status.
+            # Every harvested row rests on a register entry, so a status of
+            # "not unverified" is now true of nearly all of them and says
+            # nothing. What is worth watching is how many rows anyone has
+            # actually opened a document to confirm.
+            "verified": _scalar(conn, _DOCUMENT_VERIFIED_SQL),
+            "verified_percent": _percent(_scalar(conn, _DOCUMENT_VERIFIED_SQL), products),
+            "register_sourced": _scalar(
                 conn,
-                "SELECT COUNT(*) FROM product_details WHERE COALESCE(verification_status,'') NOT IN ('','UNVERIFIED')",
-            ),
-            "verified_percent": _percent(
-                _scalar(
-                    conn,
-                    "SELECT COUNT(*) FROM product_details WHERE COALESCE(verification_status,'') NOT IN ('','UNVERIFIED')",
-                ),
-                products,
+                "SELECT COUNT(*) FROM product_details WHERE COALESCE(evidence_url,'') <> ''",
             ),
         }
 

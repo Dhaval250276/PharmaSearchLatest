@@ -1847,6 +1847,19 @@ class EvidenceBackfillTests(unittest.TestCase):
         self.assertEqual(missing_reason_for_row(unparsed), "Not collected for this source")
         self.assertEqual(missing_reason_for_row(undocumented), "NOT_PUBLISHED")
 
+    def test_a_row_that_names_its_manufacturer_is_given_no_reason(self):
+        # Role and batch release site are almost never published, so asking
+        # for every manufacturer column would contradict the name in the
+        # export row beside it.
+        named = {
+            "source": "Health Canada",
+            "smpc_url": "https://regulator.test/smpc.pdf",
+            "manufacturer_name": "Example Manufacturing Ltd",
+            "manufacturer_role": "",
+            "batch_release_manufacturer": "",
+        }
+        self.assertEqual(missing_reason_for_row(named), "")
+
     def test_a_second_pass_refreshes_rather_than_duplicates(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
             repository, "DB_PATH", Path(directory) / "test.db"
