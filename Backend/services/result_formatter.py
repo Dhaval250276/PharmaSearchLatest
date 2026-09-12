@@ -159,6 +159,17 @@ def manufacturer_country_value(item: dict[str, Any]) -> str:
     return manufacturer_country
 
 
+def structured_manufacturer_value(item: dict[str, Any], field: str) -> str:
+    values = []
+    for manufacturer in item.get("manufacturers") or []:
+        if not isinstance(manufacturer, dict):
+            continue
+        value = first_value(manufacturer.get(field))
+        if value and value not in values:
+            values.append(value)
+    return "; ".join(values)
+
+
 def formatted_result_row(item: dict[str, Any], searched_substance: str = "") -> dict[str, str]:
     item = english_row(item)
     product = clean_brand_name(item.get("product", ""))
@@ -190,8 +201,20 @@ def formatted_result_row(item: dict[str, Any], searched_substance: str = "") -> 
         ),
         "company": field_value(item, "company", company_display_value(item)),
         "ma_holder": field_value(item, "company", company),
-        "manufacturer_name": field_value(item, "manufacturer_name", manufacturer_name_value(item)),
-        "manufacturer_country": field_value(item, "manufacturer_country", manufacturer_country_value(item)),
+        "manufacturer_name": field_value(
+            item, "manufacturer_name", structured_manufacturer_value(item, "name"), manufacturer_name_value(item)
+        ),
+        "manufacturer_country": field_value(
+            item, "manufacturer_country", structured_manufacturer_value(item, "country"), manufacturer_country_value(item)
+        ),
+        "manufacturer_address": field_value(
+            item, "manufacturer_address", structured_manufacturer_value(item, "address")
+        ),
+        "manufacturer_role": field_value(
+            item, "manufacturer_role", structured_manufacturer_value(item, "role")
+        ),
+        "applicant_sponsor": display_value(item.get("applicant_sponsor")),
+        "verification_status": display_value(item.get("verification_status"), "UNVERIFIED"),
         "registration_status": display_value(item.get("status")),
         "registration_number": display_value(
             item.get("registration_number"),
@@ -200,8 +223,7 @@ def formatted_result_row(item: dict[str, Any], searched_substance: str = "") -> 
         "registration_date": display_value(
             item.get("registration_date"),
             item.get("approval_date"),
-            item.get("created"),
-            item.get("last_checked"),
+            item.get("authorisation_date"),
         ),
         "country": display_value(country),
         "region": display_value(item.get("region"), region_for_country(country)),

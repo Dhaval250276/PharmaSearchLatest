@@ -9,6 +9,7 @@ from repository import (
 from sources.deep_enrichment import enrich_deep_results
 from sources.ema import EU_COUNTRIES
 from sources.mhra_document_parser import enrich_mhra_document_metadata
+from sources.parser import clean_product_name
 from sources.search_engine import LIVE_SEARCH_TIMEOUT_SECONDS, search_substance
 from services.ai_enrichment import attach_ai_enrichment_metadata
 from services.result_formatter import formatted_result_row
@@ -21,6 +22,7 @@ DEFAULT_SOURCES = [
     "France BDPM",
     "Ireland medicines.ie",
     "Spain CIMA",
+    "ANMDMR Romania",
     "MHRA",
     "FDA",
     "FDA Orange Book",
@@ -53,6 +55,7 @@ EU_NATIONAL_SOURCES = [
     "France BDPM",
     "Ireland medicines.ie",
     "Spain CIMA",
+    "ANMDMR Romania",
     "Cyprus Pharmaceutical Services",
     "Ukraine DRLZ",
 ]
@@ -462,6 +465,7 @@ COUNTRY_SOURCE_DEFAULTS = {
     "Ukraine": "Ukraine DRLZ",
     "Russia": "GRLS Russia",
     "Cyprus": "Cyprus Pharmaceutical Services",
+    "Romania": "ANMDMR Romania",
 }
 REGION_SOURCE_DEFAULTS = {
     "AU": "TGA Australia",
@@ -530,15 +534,21 @@ REGIONAL_REGISTRY_URLS = {
     "South Korea": "https://nedrug.mfds.go.kr/",
     "Thailand": "https://pertento.fda.moph.go.th/FDA_SEARCH_DRUG/SEARCH_DRUG/FRM_SEARCH_DRUG.aspx",
     "Vietnam": "https://dichvucong.dav.gov.vn/congbothuoc/index",
-    "Japan": "https://www.pmda.go.jp/files/000278243.pdf",
+    "Japan": "https://www.pmda.go.jp/PmdaSearch/iyakuSearch/",
     "Hong Kong": "https://www.drugoffice.gov.hk/eps/do/en/consumer/search_drug_database2.html",
     "Ukraine": "http://www.drlz.com.ua/ibp/ddsite.nsf/all/shlist?opendocument",
     "Russia": "https://grls.rosminzdrav.ru/grls.aspx",
     "Cyprus": "https://www.phs.moh.gov.cy/human-search/home.xhtml?lang=en",
 }
+# Therapeutic category describes the molecule, so every row of a search can share
+# it. An ATC code describes the product: plain metformin is A10BA02 while its
+# combinations are A10BD/A10BK codes, so it may only be shared between rows for
+# the same product.
 SHARED_MOLECULE_FIELDS = [
-    "atc_code",
     "therapeutic_category",
+]
+SHARED_PRODUCT_FIELDS = [
+    "atc_code",
 ]
 
 
@@ -566,8 +576,6 @@ def _lookup_url(substance: str, country: str) -> str:
         return REGIONAL_REGISTRY_URLS[country]
     if country == "Switzerland":
         return "https://www.swissmedic.ch/swissmedic/en/home/services/listen_neu.html"
-    if country == "Japan":
-        return "https://www.pmda.go.jp/PmdaSearch/iyakuSearch/"
     return "https://www.google.com/search?" f"q={quote(country + ' medicine register ' + clean_substance)}"
 
 
@@ -740,6 +748,16 @@ def molecule_key(item: dict[str, Any]) -> str:
     return ""
 
 
+def product_key(item: dict[str, Any]) -> str:
+    """Identify one marketed product, so product-level values are not shared
+    between a plain molecule and its combination products."""
+    product = clean_product_name(item.get("product", ""))
+    normalized = " ".join(str(product or "").strip().lower().split())
+    if not normalized:
+        return ""
+    return f"{molecule_key(item)}|{normalized}"
+
+
 def normalized_tokens(value: object) -> list[str]:
     import re
 
@@ -811,23 +829,33 @@ def is_connector_lookup_fallback(item: dict[str, Any]) -> bool:
     )
 
 
-def propagate_molecule_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    values_by_molecule: dict[str, dict[str, Any]] = {}
+def _propagate_shared_fields(
+    rows: list[dict[str, Any]],
+    fields: list[str],
+    key_for_row,
+) -> None:
+    values_by_key: dict[str, dict[str, Any]] = {}
     for row in rows:
-        key = molecule_key(row)
+        key = key_for_row(row)
         if not key:
             continue
-        bucket = values_by_molecule.setdefault(key, {})
-        for field in SHARED_MOLECULE_FIELDS:
+        bucket = values_by_key.setdefault(key, {})
+        for field in fields:
             if row.get(field) and not bucket.get(field):
                 bucket[field] = row[field]
 
     for row in rows:
-        key = molecule_key(row)
-        values = values_by_molecule.get(key, {})
-        for field, value in values.items():
+        key = key_for_row(row)
+        if not key:
+            continue
+        for field, value in values_by_key.get(key, {}).items():
             if value and not row.get(field):
                 row[field] = value
+
+
+def propagate_molecule_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    _propagate_shared_fields(rows, SHARED_MOLECULE_FIELDS, molecule_key)
+    _propagate_shared_fields(rows, SHARED_PRODUCT_FIELDS, product_key)
     return rows
 
 

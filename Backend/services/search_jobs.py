@@ -29,7 +29,12 @@ logger = get_logger(__name__)
 JOB_WORKERS = 4
 JOB_FAST_WORKERS = 10
 JOB_SLOW_WORKERS = 3
-JOB_SOURCE_TIMEOUT_SECONDS = 10
+# A source now runs a term per synonym, so the budget has to cover the slowest
+# of them rather than the one that was typed. openFDA takes ~11s to hand over
+# the 100 rows it holds for albuterol, which the old 10s ceiling cut off --
+# leaving a search for salbutamol reporting no US products at all. Sources run
+# concurrently, so this is the wait for the slowest, not the sum.
+JOB_SOURCE_TIMEOUT_SECONDS = 20
 JOB_SLOW_SOURCE_TIMEOUT_SECONDS = 40
 FAST_BACKGROUND_SOURCES = {
     "FDA",
@@ -37,6 +42,10 @@ FAST_BACKGROUND_SOURCES = {
     "FDA Purple Book",
     "Spain CIMA",
 }
+# Registries that answer in more than the default budget. Measured against a
+# live search rather than guessed: Health Canada takes ~19s, CDSCO ~22s and
+# France BDPM ~27s, and on the 10s default all three timed out and reported
+# nothing for molecules they hold hundreds of rows for.
 SLOW_SOURCES = {
     "GRLS Russia",
     "TGA Australia",
@@ -46,6 +55,10 @@ SLOW_SOURCES = {
     "EU MRI Product Index",
     "Belgium FAMHP",
     "Ireland medicines.ie",
+    "Health Canada",
+    "France BDPM",
+    "CDSCO India",
+    "SFDA Saudi Arabia",
 }
 _executor = ThreadPoolExecutor(max_workers=JOB_WORKERS)
 _lock = Lock()
@@ -278,6 +291,7 @@ def _run_source_for_job(job_id: str, substance: str, source: str) -> tuple[str, 
         source_key = source.strip().lower()
         search_terms = [substance] if source_key in SINGLE_TERM_SOURCES else get_substance_search_terms(substance)
         rows = []
+        timed_out = False
         executor = ThreadPoolExecutor(max_workers=min(4, len(search_terms)))
         futures = [
             executor.submit(_run_connector_once, source, search_term, substance)
@@ -286,15 +300,21 @@ def _run_source_for_job(job_id: str, substance: str, source: str) -> tuple[str, 
         try:
             for future in as_completed(futures, timeout=_source_timeout(source)):
                 rows.extend(future.result())
+        except TimeoutError:
+            # One slow term must not throw away the terms that did answer. A
+            # synonym search runs several, and returning the register's rows
+            # late beats reporting it holds none.
+            timed_out = True
+            logger.warning("Search job %s source %s timed out", job_id, source)
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
         unique_rows = _dedupe_rows(rows)
-        record_source_health(source, "done", len(unique_rows), time.perf_counter() - started)
-        return source, unique_rows, ""
-    except TimeoutError:
-        logger.warning("Search job %s source %s timed out", job_id, source)
-        record_source_health(source, "timeout", 0, time.perf_counter() - started, "timeout")
-        return source, [], "timeout"
+        status = "timeout" if timed_out else "done"
+        record_source_health(
+            source, status, len(unique_rows), time.perf_counter() - started,
+            "timeout" if timed_out else "",
+        )
+        return source, unique_rows, "timeout" if timed_out and not unique_rows else ""
     except Exception as exc:
         logger.exception("Search job %s source %s failed", job_id, source)
         record_source_health(source, "failed", 0, time.perf_counter() - started, str(exc))

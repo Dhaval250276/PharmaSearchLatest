@@ -53,8 +53,12 @@ EXPORT_COLUMNS = [
     "ATC Code",
     "Therapeutic Category",
     "MA Holder Name",
+    "Applicant / Sponsor",
     "Manufacturer Name",
     "Manufacturer Country",
+    "Manufacturer Address / Site",
+    "Manufacturer Role",
+    "Batch Release Manufacturer",
     "Registration Status",
     "Registration Number",
     "Registration Date",
@@ -65,6 +69,7 @@ EXPORT_COLUMNS = [
     "PIL URL",
     "PIL / Assessment Report",
     "Assessment Report URL",
+    "Other Regulatory Document URLs",
     "Manufacturer Website",
     "Manufacturer Contact Us Phone Number",
     "Manufacturer Contact Us Email ID",
@@ -74,10 +79,18 @@ EXPORT_COLUMNS = [
     "SMPC",
     "Source",
     "Source URL",
+    "Evidence URL",
+    "Evidence Page / Section",
+    "Verification Status",
     "Document Type",
     "Data Confidence",
     "Enrichment Status",
     "Missing Fields",
+    "Missing Reason",
+    "Molecule Reference SMPC URL",
+    "Molecule Reference PIL URL",
+    "Molecule Reference Assessment Report URL",
+    "Molecule Reference Source",
     "AI Next Action",
     "Last Checked",
 ]
@@ -135,6 +148,52 @@ def infer_document_type(item: dict[str, Any]) -> str:
     return ""
 
 
+def _structured_manufacturer_values(item: dict[str, Any]) -> dict[str, str]:
+    manufacturers = item.get("manufacturers") or []
+    if not isinstance(manufacturers, list):
+        manufacturers = []
+    values = {key: [] for key in ("names", "countries", "addresses", "roles", "batch_release")}
+    for manufacturer in manufacturers:
+        if not isinstance(manufacturer, dict):
+            continue
+        candidates = {
+            "names": first_value(manufacturer.get("name")),
+            "countries": first_value(manufacturer.get("country")),
+            "addresses": first_value(manufacturer.get("address"), manufacturer.get("site_name")),
+            "roles": first_value(manufacturer.get("role")),
+        }
+        for key, value in candidates.items():
+            if value and value not in values[key]:
+                values[key].append(value)
+        if (
+            "BATCH_RELEASE" in candidates["roles"].upper()
+            and candidates["names"]
+            and candidates["names"] not in values["batch_release"]
+        ):
+            values["batch_release"].append(candidates["names"])
+    return {key: "; ".join(value) for key, value in values.items()}
+
+
+def _evidence_values(item: dict[str, Any]) -> dict[str, str]:
+    assertions = item.get("evidence") or []
+    if not isinstance(assertions, list):
+        assertions = []
+    values = {key: [] for key in ("urls", "locations", "statuses", "reasons")}
+    for assertion in assertions:
+        if not isinstance(assertion, dict):
+            continue
+        candidates = {
+            "urls": first_value(assertion.get("evidence_url"), assertion.get("url")),
+            "locations": first_value(assertion.get("evidence_page"), assertion.get("evidence_section")),
+            "statuses": first_value(assertion.get("verification_status")),
+            "reasons": first_value(assertion.get("missing_reason")),
+        }
+        for key, value in candidates.items():
+            if value and value not in values[key]:
+                values[key].append(value)
+    return {key: "; ".join(value) for key, value in values.items()}
+
+
 def build_export_rows(substance: str, results: list[dict[str, Any]]) -> list[dict[str, str]]:
     rows = []
     generated_at = datetime.now().isoformat(timespec="seconds")
@@ -152,11 +211,21 @@ def build_export_rows(substance: str, results: list[dict[str, Any]]) -> list[dic
         company = item.get("company", "")
         product_url = product_details_url(item)
         source_url = item.get("source_url") or item.get("url", "")
-        pdf_url = first_value(item.get("document_url"), item.get("pdf_url"), item.get("url"))
+        pdf_url = first_value(item.get("document_url"), item.get("pdf_url"))
         smpc_url = smpc_document_url(item)
         pil_url = item.get("pil_url", "")
         pil_or_assessment_document_url = pil_or_assessment_url(item)
         assessment_document_url = formatted_assessment_report_url(item)
+        manufacturer_values = _structured_manufacturer_values(item)
+        evidence_values = _evidence_values(item)
+        other_documents = "; ".join(
+            first_value(document.get("url"))
+            for document in (item.get("documents") or [])
+            if isinstance(document, dict)
+            and first_value(document.get("document_type")).upper()
+            not in {"SMPC", "SPC", "PIL", "ASSESSMENT_REPORT"}
+            and first_value(document.get("url"))
+        )
         rows.append(
             {
                 "Country": export_value(country),
@@ -196,11 +265,22 @@ def build_export_rows(substance: str, results: list[dict[str, Any]]) -> list[dic
                     default_category,
                 ),
                 "MA Holder Name": field_value(item, "company", company),
-                "Manufacturer Name": field_value(item, "manufacturer_name", manufacturer_name_value(item)),
+                "Applicant / Sponsor": export_value(item.get("applicant_sponsor")),
+                "Manufacturer Name": field_value(item, "manufacturer_name", manufacturer_values["names"], manufacturer_name_value(item)),
                 "Manufacturer Country": field_value(
                     item,
                     "manufacturer_country",
+                    manufacturer_values["countries"],
                     manufacturer_country_value(item),
+                ),
+                "Manufacturer Address / Site": export_value(
+                    manufacturer_values["addresses"], item.get("manufacturer_address")
+                ),
+                "Manufacturer Role": export_value(
+                    manufacturer_values["roles"], item.get("manufacturer_role")
+                ),
+                "Batch Release Manufacturer": export_value(
+                    manufacturer_values["batch_release"], item.get("batch_release_manufacturer")
                 ),
                 "Registration Status": export_value(item.get("status")),
                 "Registration Number": export_value(
@@ -219,7 +299,10 @@ def build_export_rows(substance: str, results: list[dict[str, Any]]) -> list[dic
                     "assessment_report_url",
                     assessment_document_url,
                 ),
-                "Manufacturer Website": export_value(item.get("manufacturer_website"), product_url),
+                "Other Regulatory Document URLs": export_value(
+                    item.get("other_regulatory_document_urls"), other_documents
+                ),
+                "Manufacturer Website": export_value(item.get("manufacturer_website")),
                 "Manufacturer Contact Us Phone Number": export_value(item.get("manufacturer_phone")),
                 "Manufacturer Contact Us Email ID": export_value(item.get("manufacturer_email")),
                 "Box Artwork": export_value(item.get("box_artwork_url")),
@@ -231,6 +314,13 @@ def build_export_rows(substance: str, results: list[dict[str, Any]]) -> list[dic
                 "SMPC": export_value(smpc_url),
                 "Source": export_value(item.get("source")),
                 "Source URL": export_value(source_url),
+                "Evidence URL": export_value(evidence_values["urls"], item.get("evidence_url")),
+                "Evidence Page / Section": export_value(
+                    evidence_values["locations"], item.get("evidence_page"), item.get("evidence_section")
+                ),
+                "Verification Status": export_value(
+                    evidence_values["statuses"], item.get("verification_status"), "UNVERIFIED"
+                ),
                 "Document Type": export_value(infer_document_type(item)),
                 "Data Confidence": export_value(item.get("data_confidence"), ai_metadata["data_confidence"]),
                 "Enrichment Status": export_value(
@@ -238,6 +328,16 @@ def build_export_rows(substance: str, results: list[dict[str, Any]]) -> list[dic
                     ai_metadata["enrichment_status"],
                 ),
                 "Missing Fields": export_value(item.get("missing_fields"), ai_metadata["missing_fields"]),
+                "Missing Reason": export_value(evidence_values["reasons"], item.get("missing_reason")),
+                # Documents another regulator published for the same molecule.
+                # Exported in their own columns, never merged into the SmPC and
+                # PIL columns above, which hold this authorisation's own label.
+                "Molecule Reference SMPC URL": export_value(item.get("reference_smpc_url")),
+                "Molecule Reference PIL URL": export_value(item.get("reference_pil_url")),
+                "Molecule Reference Assessment Report URL": export_value(
+                    item.get("reference_assessment_report_url")
+                ),
+                "Molecule Reference Source": export_value(item.get("reference_source")),
                 "AI Next Action": export_value(item.get("ai_next_action"), ai_metadata["ai_next_action"]),
                 "Last Checked": export_value(item.get("last_checked"), generated_at),
             }
@@ -303,6 +403,29 @@ def _coverage_rows(results: list[dict[str, Any]]) -> list[dict[str, object]]:
     return rows
 
 
+def _related_export_rows(results: list[dict[str, Any]], field: str) -> list[dict[str, str]]:
+    rows = []
+    for item in results:
+        values = item.get(field) or []
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            # Name the registration's own columns apart from the nested ones.
+            # A manufacturer carries its own country, and titling it "Country"
+            # would overwrite the country the product is registered in.
+            row = {
+                "Product Source": first_value(item.get("source")),
+                "Product Country": first_value(item.get("country")),
+                "Product": first_value(item.get("product")),
+                "Registration Number": first_value(item.get("registration_number")),
+            }
+            row.update({str(key).replace("_", " ").title(): first_value(cell) for key, cell in value.items()})
+            rows.append(row)
+    return rows
+
+
 def write_excel_export(substance: str, results: list[dict[str, Any]], deep: bool = False) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = "_deep" if deep else ""
@@ -327,6 +450,13 @@ def write_excel_export(substance: str, results: list[dict[str, Any]], deep: bool
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Products")
         provenance.to_excel(writer, index=False, sheet_name="Provenance")
+        for field, sheet_name in (
+            ("manufacturers", "Manufacturers and Sites"),
+            ("documents", "Documents"),
+            ("evidence", "Field Evidence"),
+        ):
+            related_rows = _related_export_rows(results, field)
+            pd.DataFrame(related_rows).to_excel(writer, index=False, sheet_name=sheet_name)
         if deep:
             pd.DataFrame(_coverage_rows(results)).to_excel(
                 writer,

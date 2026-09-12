@@ -90,10 +90,17 @@
             </div>
         </div>
 
-        <div>
-            <button class="btn btn-primary" type="submit" name="search_mode" value="fast">
-                Search
+        <div class="d-flex align-items-center gap-2">
+            <button class="btn btn-primary" type="submit" name="search_mode" value="full">
+                Search all selected sources
             </button>
+            <button class="btn btn-outline-primary" type="submit" name="search_mode" value="fast">
+                Quick search
+            </button>
+            <span class="text-muted small">
+                Quick search only queries {{ fast_background_sources|sort|join(", ") }}.
+                Use the first button to query every source ticked above.
+            </span>
         </div>
     </form>
 </div>

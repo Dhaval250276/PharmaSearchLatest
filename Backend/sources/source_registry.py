@@ -14,9 +14,9 @@ from sources.health_canada import run_health_canada_search
 from sources.ireland_medicines_ie import run_ireland_medicines_search
 from sources.medsafe import run_medsafe_search
 from sources.mhra import run_mhra_search
+from sources.cdsco_india import run_cdsco_india_search
 from sources.regional_live import (
     run_bpom_indonesia_search,
-    run_cdsco_india_search,
     run_dav_vietnam_search,
     run_cyprus_pharmaceutical_services_search,
     run_fda_orange_book_search,
@@ -36,6 +36,7 @@ from sources.regional_live import (
     run_thai_fda_search,
     run_ukraine_drlz_search,
 )
+from sources.romania_anmdmr import run_romania_anmdmr_search
 from sources.spain_cima import run_spain_cima_search
 from sources.swissmedic import run_swissmedic_search
 from sources.tga import run_tga_search
@@ -49,7 +50,7 @@ CONNECTORS: list[SourceConnector] = [
             countries=("United States",),
             supports_documents=True,
         ),
-        lambda substance: run_fda_search(substance, limit=25),
+        lambda substance: run_fda_search(substance, limit=100),
     ),
     FunctionSourceConnector(
         SourceMetadata(
@@ -159,7 +160,7 @@ CONNECTORS: list[SourceConnector] = [
             countries=("Canada",),
             supports_documents=False,
         ),
-        lambda substance: run_health_canada_search(substance, limit=25),
+        lambda substance: run_health_canada_search(substance, limit=50),
     ),
     FunctionSourceConnector(
         SourceMetadata(
@@ -359,6 +360,15 @@ CONNECTORS: list[SourceConnector] = [
             supports_documents=True,
         ),
         run_spain_cima_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="ANMDMR Romania",
+            region="EU",
+            countries=("Romania",),
+            supports_documents=True,
+        ),
+        run_romania_anmdmr_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(

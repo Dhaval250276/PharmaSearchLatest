@@ -10,7 +10,13 @@ from sources.parser import extract_dosage_form, extract_strength
 
 
 OPENFDA_LABEL_URL = "https://api.fda.gov/drug/label.json"
+# openFDA serves the label as JSON; DailyMed serves the same SPL as the
+# readable Prescribing Information, keyed by the set id the API already returns.
+DAILYMED_LABEL_URL = "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm"
 OPENFDA_NDC_URL = "https://api.fda.gov/drug/ndc.json"
+# NDC records carry pack size, marketing start date and the labeler, so it is
+# worth waiting for them rather than dropping the enrichment after one second.
+NDC_ENRICHMENT_TIMEOUT = 6
 logger = get_logger(__name__)
 
 
@@ -38,13 +44,14 @@ def _label_text(item, *fields):
 
 
 def _fda_strength(item, product):
-    text = _label_text(
-        item,
-        "active_ingredient",
-        "spl_product_data_elements",
-        "description",
+    # Only the active ingredient section states the strength. The description and
+    # SPL data elements also carry excipient and total-weight figures, which the
+    # strength pattern happily matches (e.g. "1231.46 g" for an atorvastatin tablet).
+    return (
+        extract_strength(_label_text(item, "active_ingredient"))
+        or extract_strength(product)
+        or extract_strength(_label_text(item, "spl_product_data_elements"))
     )
-    return extract_strength(text) or extract_strength(product)
 
 
 def _fda_dosage_form(openfda, item, product):
@@ -90,6 +97,14 @@ def _fetch_ndc_records(substance):
         return []
 
 
+def _fda_date(value):
+    """openFDA dates arrive as YYYYMMDD."""
+    text = str(value or "").strip()
+    if len(text) != 8 or not text.isdigit():
+        return ""
+    return f"{text[0:4]}-{text[4:6]}-{text[6:8]}"
+
+
 def _pack_size_from_ndc(record):
     packages = record.get("packaging") or []
     descriptions = [
@@ -102,11 +117,12 @@ def _pack_size_from_ndc(record):
 
 def _strength_from_ndc(record):
     ingredients = record.get("active_ingredients") or []
-    strengths = [
-        ingredient.get("strength", "")
-        for ingredient in ingredients
-        if ingredient.get("strength")
-    ]
+    strengths = []
+    for ingredient in ingredients:
+        # openFDA writes unit-dose strengths as "500 mg/1"; the denominator is noise.
+        strength = re.sub(r"/1\b", "", str(ingredient.get("strength") or "")).strip()
+        if strength:
+            strengths.append(strength)
     return "; ".join(strengths)
 
 
@@ -160,7 +176,7 @@ def run_fda_search(substance, limit=100):
         return []
 
     try:
-        ndc_records = ndc_future.result(timeout=1)
+        ndc_records = ndc_future.result(timeout=NDC_ENRICHMENT_TIMEOUT)
     except FutureTimeoutError:
         logger.info("FDA NDC packaging enrichment deferred for %s", substance)
         ndc_records = []
@@ -175,7 +191,11 @@ def run_fda_search(substance, limit=100):
         if not product:
             continue
         company = _first(openfda.get("manufacturer_name"))
-        ndc_record = _best_ndc_record(product, company, ndc_records)
+        ndc_record = _best_ndc_record(product, company, ndc_records) or {}
+        labeler = str(ndc_record.get("labeler_name", "")).strip()
+        holder = company or labeler
+        set_id = str(item.get("set_id") or _first(openfda.get("spl_set_id")) or "").strip()
+        dailymed_url = f"{DAILYMED_LABEL_URL}?setid={set_id}" if set_id else ""
         product_query_url = url
         if application_number:
             product_query = quote(f'openfda.application_number:"{application_number}"')
@@ -183,25 +203,41 @@ def run_fda_search(substance, limit=100):
         results.append(
             {
                 "substance": substance,
+                # The label names the exact salt -- "TRIAMCINOLONE ACETONIDE"
+                # where the search term was just "triamcinolone". A brand like
+                # KENALOG-40 states it nowhere else, and without it a document
+                # can only be matched to the molecule, not to the salt.
+                "source_substance": _first(openfda.get("substance_name")) or substance,
                 "product": product,
-                "company": company or (ndc_record or {}).get("labeler_name", ""),
-                "manufacturer_name": company,
-                "manufacturer_source": "FDA label manufacturer_name",
+                "company": holder,
+                # openFDA's ``manufacturer_name`` and the NDC ``labeler_name``
+                # identify the SPL/NDC labeler. Neither establishes a physical
+                # finished-product manufacturing site.
+                "commercial_company": labeler,
+                "labeler_name": holder,
+                "applicant_sponsor": holder,
+                "registration_date": _fda_date(ndc_record.get("marketing_start_date")),
                 "country": "United States",
                 "region": "US",
                 "status": "Label available",
-                "strength": _fda_strength(item, product) or _strength_from_ndc(ndc_record or {}),
+                "strength": _strength_from_ndc(ndc_record) or _fda_strength(item, product),
                 "dosage_form": _fda_dosage_form(openfda, item, product)
-                or str((ndc_record or {}).get("dosage_form", "")).title(),
-                "pack_size": _pack_size_from_ndc(ndc_record or {}),
-                "expiry_date": (ndc_record or {}).get("listing_expiration_date", ""),
+                or str(ndc_record.get("dosage_form", "")).title(),
+                "pack_size": _pack_size_from_ndc(ndc_record),
+                "expiry_date": ndc_record.get("listing_expiration_date", ""),
                 "route": route,
                 "therapeutic_category": _fda_therapeutic_category(item),
                 "registration_number": application_number,
                 "source": "FDA",
                 "source_url": url,
-                "product_url": product_query_url,
-                "url": product_query_url,
+                "product_url": dailymed_url or product_query_url,
+                "url": dailymed_url or product_query_url,
+                # The FDA's Prescribing Information is the US counterpart of an
+                # SmPC, and DailyMed is where it is published for people rather
+                # than for the API. Without it a US row has no document of its
+                # own and ends up borrowing another country's label.
+                "smpc_url": dailymed_url,
+                "document_type": "FDA prescribing information" if dailymed_url else "",
             }
         )
     return results

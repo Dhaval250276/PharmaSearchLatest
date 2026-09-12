@@ -1,7 +1,11 @@
 import unittest
 import os
-from unittest.mock import patch
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+import requests
+import repository
 from bs4 import BeautifulSoup
 
 from export_service import build_export_rows
@@ -13,7 +17,10 @@ from repository import (
     save_search_job_progress,
     save_search_job_results,
 )
+from services.evidence_assertions import missing_reason_for_row
+from services.evidence_backfill import backfill_evidence
 from sources.ema import _ema_result_from_record, _expand_xlsx_records
+from sources.synonyms import get_substance_search_terms
 from sources.eu_mri import _parse_table_rows, run_eu_mri_search
 from sources.medsafe import (
     _fallback_rows as _medsafe_fallback_rows,
@@ -36,6 +43,19 @@ from sources.regional_live import (
     run_cdsco_india_search,
     run_nmpa_china_search,
 )
+from services.field_completion import (
+    _completions_for_group,
+    attach_reference_documents,
+    complete_fields,
+    molecule_group_key,
+)
+from services.harvest import CONSECUTIVE_FAILURE_LIMIT, run_harvest
+from services.harvest_vocabulary import (
+    _Accumulator,
+    normalize_molecule,
+    split_combination,
+)
+from sources.connectors.base import SourceMetadata
 from sources.source_registry import CONNECTORS, SOURCES, connector_metadata
 from sources.tga import _fallback_rows, _merge_detail, _parse_artg_detail, _parse_artg_search_results
 from services.ai_client import ai_extract_regulatory_fields, ai_status
@@ -43,7 +63,12 @@ from services.ai_enrichment import enrichment_metadata, missing_enrichment_field
 from services.connector_health import connector_health_rows, record_source_health
 from services.connector_status import connector_status_rows
 from services.english_normalizer import english_row, english_text
-from services.field_availability import NOT_APPLICABLE, PENDING_ENRICHMENT, field_value
+from services.field_availability import (
+    NOT_COLLECTED,
+    NOT_SUPPLIED,
+    PENDING_ENRICHMENT,
+    field_value,
+)
 from services.result_formatter import manufacturer_name_value
 from services.search_pipeline import (
     _country_lookup_rows,
@@ -71,17 +96,77 @@ class CachedResultPreparationTests(unittest.TestCase):
         self.assertIn("data_confidence", prepared[0])
 
 
+class StructuredEvidenceRepositoryTests(unittest.TestCase):
+    def test_persists_multiple_sites_documents_and_field_evidence(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            repository.save_product_detail(
+                {
+                    "substance": "example",
+                    "product": "Example 10 mg tablets",
+                    "country": "Exampleland",
+                    "source": "Example Regulator",
+                    "registration_number": "EX-1",
+                    "product_url": "https://regulator.test/products/1",
+                    "smpc_url": "https://regulator.test/products/1/smpc.pdf",
+                    "manufacturers": [
+                        {
+                            "name": "Example Manufacturing Ltd",
+                            "address": "Site One",
+                            "country": "Germany",
+                            "role": "FINISHED_PRODUCT_MANUFACTURER",
+                            "verification_status": "VERIFIED_OFFICIAL_DOCUMENT",
+                        },
+                        {
+                            "name": "Example Release GmbH",
+                            "address": "Site Two",
+                            "country": "Germany",
+                            "role": "BATCH_RELEASE_MANUFACTURER",
+                            "verification_status": "VERIFIED_OFFICIAL_DOCUMENT",
+                        },
+                    ],
+                    "evidence": [{
+                        "field_name": "manufacturer_name",
+                        "value": "Example Manufacturing Ltd",
+                        "evidence_url": "https://regulator.test/products/1/smpc.pdf",
+                        "evidence_page": "42",
+                        "verification_status": "VERIFIED_OFFICIAL_DOCUMENT",
+                    }],
+                }
+            )
+            row = repository.search_product_details("example")[0]
+            self.assertEqual(len(row["manufacturers"]), 2)
+            self.assertEqual(row["documents"][0]["document_type"], "SMPC")
+            self.assertEqual(row["evidence"][0]["evidence_page"], "42")
+
+    def test_registry_handoff_is_not_persisted_as_a_product(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            result = repository.save_product_detail(
+                {
+                    "substance": "example",
+                    "product": "Example official registry search",
+                    "source": "Example Regulator",
+                    "connector_mode": "manual_registry",
+                }
+            )
+            self.assertEqual(result["persistence_status"], "SOURCE_RUN_ONLY")
+            self.assertEqual(repository.search_product_details("example"), [])
+
+
 class FieldAvailabilityTests(unittest.TestCase):
-    def test_document_fields_are_not_applicable_to_fda_schema(self):
-        self.assertEqual(field_value({"source": "FDA"}, "smpc_url"), NOT_APPLICABLE)
+    def test_missing_document_is_not_claimed_unavailable_without_an_attempt(self):
+        self.assertEqual(field_value({"source": "FDA"}, "smpc_url"), NOT_SUPPLIED)
 
     def test_manufacturer_is_not_pending_for_fda_schema(self):
         row = {"source": "FDA", "product_url": "https://example.test/label"}
-        self.assertEqual(field_value(row, "manufacturer_name"), "Not supplied by regulator")
+        self.assertEqual(field_value(row, "manufacturer_name"), NOT_COLLECTED)
 
     def test_manufacturer_is_not_pending_for_regional_api_schema(self):
         row = {"source": "BPOM Indonesia", "product_url": "https://example.test/product"}
-        self.assertEqual(field_value(row, "manufacturer_name"), "Not supplied by regulator")
+        self.assertEqual(field_value(row, "manufacturer_name"), NOT_COLLECTED)
 
     def test_missing_mhra_manufacturer_is_marked_for_enrichment(self):
         row = {"source": "MHRA", "pil_url": "https://example.test/pil.pdf"}
@@ -93,7 +178,7 @@ class FieldAvailabilityTests(unittest.TestCase):
             "pil_url": "https://example.test/pil.pdf",
             "document_enrichment_attempted": True,
         }
-        self.assertEqual(field_value(row, "manufacturer_name"), "Not supplied by regulator")
+        self.assertEqual(field_value(row, "manufacturer_name"), NOT_SUPPLIED)
 
     def test_export_excludes_registry_handoff_rows(self):
         rows = build_export_rows(
@@ -168,9 +253,9 @@ class SearchPageFilterTests(unittest.TestCase):
         table = soup.select_one("table.results-table")
         header_rows = table.select("thead tr")
 
-        self.assertEqual(len(header_rows[0].select("th")), 25)
+        self.assertEqual(len(header_rows[0].select("th")), 26)
         filter_cells = header_rows[1].select("th")
-        self.assertEqual(len(filter_cells), 25)
+        self.assertEqual(len(filter_cells), 26)
         self.assertTrue(all(cell.select_one("input, select") for cell in filter_cells))
 
 
@@ -708,7 +793,7 @@ class RegionalLiveConnectorTests(unittest.TestCase):
         self.assertEqual(rows[0]["product"], "acetaminophen official India registry search")
         self.assertEqual(rows[0]["connector_mode"], "manual_registry")
 
-    def test_cdsco_india_search_uses_pdf_parser(self):
+    def test_cdsco_india_search_delegates_to_approvals_connector(self):
         expected = [
             {
                 "substance": "dapagliflozin",
@@ -718,11 +803,143 @@ class RegionalLiveConnectorTests(unittest.TestCase):
             }
         ]
 
-        with patch("sources.regional_live._run_cdsco_india_pdf_search", return_value=expected) as parser:
+        with patch("sources.regional_live._run_cdsco_india_search", return_value=expected) as connector:
             rows = run_cdsco_india_search("dapagliflozin")
 
-        parser.assert_called_once_with("dapagliflozin")
+        connector.assert_called_once_with("dapagliflozin")
         self.assertEqual(rows, expected)
+
+    def test_cdsco_india_search_falls_back_when_no_approvals_match(self):
+        with patch("sources.regional_live._run_cdsco_india_search", return_value=[]):
+            rows = run_cdsco_india_search("acetaminophen")
+
+        self.assertEqual(rows[0]["connector_mode"], "manual_registry")
+        self.assertEqual(rows[0]["country"], "India")
+
+
+class CDSCOIndiaConnectorTests(unittest.TestCase):
+    PAYLOAD = {
+        "iTotalRecords": 2,
+        "aaData": [
+            {
+                "num_form_id": 39942,
+                "str_man_unit_name": "PURE & CURE HEALTHCARE Pvt. Ltd.",
+                "str_address": "305, Mohan Place, Saraswati Vihar, , Delhi, India, 110034",
+                "str_drug_name": "Dapagliflozin+Metoprolol Succinate (Er)",
+                "str_composition": "Dapagliflozin Propanediol Monohydrate Eq. To Dapagliflozin 10.0000 Milligram (Mg)",
+                "manuf_addr": "Precise Chemipharma Pvt.Ltd, Navi Mumbai Maharashtra India-400703"
+                "<br>Reine Lifescience, Ankleshwar Gujarat India-393002",
+                "str_dosage": "Tablets",
+                "str_indication": "Indicated In Patients With Heart Failure",
+                "dt_closure_dt": "09-JAN-2026",
+                "str_applied_for": "Finished Formulation",
+            },
+            {
+                "num_form_id": 54683,
+                "str_man_unit_name": "Serum Institute Of India Pvt. Ltd.",
+                "str_address": "212/2, Hadapsar, , Maharashtra, India, 411028",
+                "str_drug_name": "Hepatitis B Surface Antigen Concentrate Bulk",
+                "str_composition": "Hepatitis B Protein 0.2000 Mg/Ml",
+                "manuf_addr": "Serum Institute Of India Pvt Ltd.., Pune Maharashtra India-411028",
+                "str_dosage": "NA",
+                "str_indication": "NA",
+                "dt_closure_dt": "13-AUG-2026",
+                "str_applied_for": "Bulk Drug",
+            },
+        ],
+    }
+
+    def setUp(self):
+        from sources import cdsco_india
+
+        # The connector caches the corpus on disk and in memory; both have to be
+        # bypassed so a real cache file cannot mask the payload under test.
+        cdsco_india._MEMORY_CACHE.clear()
+        self.addCleanup(cdsco_india._MEMORY_CACHE.clear)
+        for target in ("_read_cache", "_write_cache"):
+            patcher = patch.object(
+                cdsco_india, target, return_value=None if target == "_read_cache" else None
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _search(self, substance, payload=None):
+        from sources import cdsco_india
+
+        response = MagicMock()
+        response.json.return_value = payload or self.PAYLOAD
+        response.raise_for_status.return_value = None
+        with patch.object(cdsco_india.requests, "get", return_value=response):
+            return cdsco_india.run_cdsco_india_search(substance)
+
+    def test_maps_company_and_supply_type(self):
+        rows = self._search("dapagliflozin")
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["company"], "PURE & CURE HEALTHCARE Pvt. Ltd.")
+        self.assertEqual(row["country"], "India")
+        self.assertEqual(row["source"], "CDSCO India")
+        self.assertEqual(row["status"], "Approved (finished formulation)")
+        self.assertEqual(row["dosage_form"], "Tablets")
+        self.assertEqual(row["registration_number"], "39942")
+
+    def test_all_manufacturing_sites_are_kept_apart_from_the_applicant(self):
+        row = self._search("dapagliflozin")[0]
+
+        self.assertEqual(row["manufacturer_name"], "PURE & CURE HEALTHCARE Pvt. Ltd.")
+        self.assertEqual(row["manufacturer_country"], "India")
+        self.assertEqual(len(row["manufacturers"]), 2)
+        self.assertEqual(
+            row["manufacturers"][0]["address"],
+            "Precise Chemipharma Pvt.Ltd, Navi Mumbai Maharashtra India-400703",
+        )
+        self.assertEqual(row["manufacturers"][0]["role"], "FINISHED_PRODUCT_MANUFACTURER")
+
+    def test_bulk_drug_approvals_are_labelled_as_api(self):
+        row = self._search("hepatitis b")[0]
+
+        self.assertEqual(row["company"], "Serum Institute Of India Pvt. Ltd.")
+        self.assertEqual(row["status"], "Approved (bulk drug / API)")
+        # "NA" placeholders must not leak into the output.
+        self.assertEqual(row["therapeutic_category"], "")
+
+    def test_ignores_rows_that_only_mention_the_substance_in_the_indication(self):
+        payload = {
+            "aaData": [
+                {
+                    "num_form_id": 1,
+                    "str_man_unit_name": "Some Pharma Ltd",
+                    "str_drug_name": "Ramipril Tablets",
+                    "str_composition": "Ramipril 5mg",
+                    "str_indication": "Used alongside dapagliflozin therapy",
+                    "str_applied_for": "Finished Formulation",
+                    "manuf_addr": "",
+                    "str_dosage": "Tablets",
+                    "dt_closure_dt": "01-JAN-2026",
+                }
+            ]
+        }
+        self.assertEqual(self._search("dapagliflozin", payload), [])
+
+    def test_serves_repeat_searches_from_the_cached_corpus(self):
+        from sources import cdsco_india
+
+        response = MagicMock()
+        response.json.return_value = self.PAYLOAD
+        response.raise_for_status.return_value = None
+        with patch.object(cdsco_india, "_read_cache", side_effect=[None, self.PAYLOAD["aaData"]]):
+            with patch.object(cdsco_india.requests, "get", return_value=response) as fetch:
+                cdsco_india.run_cdsco_india_search("dapagliflozin")
+                cdsco_india.run_cdsco_india_search("hepatitis b")
+
+        self.assertEqual(fetch.call_count, 1)
+
+    def test_returns_empty_when_the_endpoint_is_unavailable(self):
+        from sources import cdsco_india
+
+        with patch.object(cdsco_india.requests, "get", side_effect=requests.RequestException("boom")):
+            self.assertEqual(cdsco_india.run_cdsco_india_search("dapagliflozin"), [])
 
 
 class TGAConnectorTests(unittest.TestCase):
@@ -1008,9 +1225,12 @@ class AIEnrichmentTests(unittest.TestCase):
 
 class SearchJobTests(unittest.TestCase):
     def test_background_job_orders_fast_sources_before_slow_sources(self):
-        sources = order_sources_for_job(["GRLS Russia", "FDA", "Health Canada"])
-        self.assertEqual(sources[:2], ["FDA", "Health Canada"])
+        # Health Canada was the quick source here until it was measured at
+        # ~19s and moved to SLOW_SOURCES; Spain CIMA answers in ~5s.
+        sources = order_sources_for_job(["GRLS Russia", "FDA", "Spain CIMA"])
+        self.assertEqual(sources[:2], ["FDA", "Spain CIMA"])
         self.assertIn("GRLS Russia", SLOW_SOURCES)
+        self.assertIn("Health Canada", SLOW_SOURCES)
 
     def test_fast_background_job_skips_heavy_sources(self):
         self.assertTrue(source_skipped_in_mode("GRLS Russia", "fast"))
@@ -1105,6 +1325,627 @@ class TherapeuticCategoryTests(unittest.TestCase):
 
     def test_uses_atc_category_when_available(self):
         self.assertEqual(short_therapeutic_category("", "", "N02BE01"), "Analgesic")
+
+
+class HarvestVocabularyTests(unittest.TestCase):
+    def test_reduces_a_registry_substance_string_to_its_molecule(self):
+        self.assertEqual(
+            normalize_molecule(
+                "Dapagliflozin Propanediol Monohydrate IP eq. To Dapagliflozin 10.0000 Milligram (Mg)"
+            ),
+            "dapagliflozin",
+        )
+
+    def test_strips_a_trailing_salt(self):
+        self.assertEqual(normalize_molecule("DICLOFENAC SODIUM"), "diclofenac")
+        self.assertEqual(normalize_molecule("ATORVASTATIN CALCIUM"), "atorvastatin")
+
+    def test_keeps_a_salt_that_is_itself_the_molecule(self):
+        self.assertEqual(normalize_molecule("SODIUM CHLORIDE"), "sodium chloride")
+        self.assertEqual(normalize_molecule("MAGNESIUM SULFATE"), "magnesium sulfate")
+
+    def test_rejects_containers_and_excipients(self):
+        for value in ("Vial", "Water For Injection", "Tablets", "Polysorbate 80"):
+            self.assertEqual(normalize_molecule(value), "", value)
+
+    def test_splits_a_fixed_dose_combination_into_its_molecules(self):
+        self.assertEqual(
+            split_combination("Amoxycillin Trihydrate Ip Eq. To Amoxycillin+Vonoprazan Fumarate"),
+            ["amoxycillin", "vonoprazan"],
+        )
+
+    def test_ranks_multi_registry_molecules_before_high_count_singletons(self):
+        accumulator = _Accumulator()
+        # A US-only monograph ingredient with an enormous label count.
+        accumulator.add("ZINC OXIDE", "openfda", evidence=4148)
+        # A prescription molecule attested by two registries.
+        accumulator.add("METFORMIN", "openfda", evidence=200)
+        accumulator.add("Metformin Hydrochloride IP", "cdsco")
+
+        self.assertEqual(
+            [entry["molecule"] for entry in accumulator.entries()],
+            ["metformin", "zinc oxide"],
+        )
+
+
+class _StubConnector:
+    """Stands in for a registry connector in harvest tests."""
+
+    def __init__(self, name, rows=None, error=None):
+        self.metadata = SourceMetadata(
+            name=name, region="EU", countries=("Germany",), rate_limit_per_minute=6000
+        )
+        self._rows = rows or []
+        self._error = error
+        self.calls = []
+
+    def search(self, substance):
+        self.calls.append(substance)
+        if self._error:
+            raise self._error
+        return [dict(row) for row in self._rows]
+
+
+class HarvestRunnerTests(unittest.TestCase):
+    def setUp(self):
+        self.persisted = []
+        persist = patch(
+            "services.harvest.save_product_detail",
+            side_effect=lambda record: self.persisted.append(record) or record,
+        )
+        # Progress is a database write; the runner's logic is what is under test.
+        progress = patch("services.harvest.record_progress")
+        tables = patch("services.harvest.initialize_harvest_tables")
+        self.record_progress = progress.start()
+        persist.start()
+        tables.start()
+        self.addCleanup(patch.stopall)
+
+    def test_harvests_every_molecule_and_stores_the_rows(self):
+        connector = _StubConnector("Stub", rows=[{"product": "Glucophage", "source": "Stub"}])
+
+        with patch("services.harvest.CONNECTORS", [connector]), patch(
+            "services.harvest.completed_pairs", return_value=set()
+        ):
+            result = run_harvest(molecules=["metformin", "atorvastatin"])
+
+        self.assertEqual(connector.calls, ["metformin", "atorvastatin"])
+        self.assertEqual(result.rows, 2)
+        # A connector row without a substance is filed under the molecule that
+        # produced it, or the harvested row could never be found again.
+        self.assertEqual([row["substance"] for row in self.persisted], ["metformin", "atorvastatin"])
+
+    def test_skips_pairs_already_harvested(self):
+        connector = _StubConnector("Stub", rows=[{"product": "Glucophage"}])
+
+        with patch("services.harvest.CONNECTORS", [connector]), patch(
+            "services.harvest.completed_pairs", return_value={("Stub", "metformin")}
+        ):
+            result = run_harvest(molecules=["metformin", "atorvastatin"])
+
+        self.assertEqual(connector.calls, ["atorvastatin"])
+        self.assertEqual(result.outcomes["Stub"].skipped, 1)
+
+    def test_one_failing_registry_does_not_stop_the_others(self):
+        broken = _StubConnector("Broken", error=requests.RequestException("down"))
+        working = _StubConnector("Working", rows=[{"product": "Glucophage"}])
+
+        with patch("services.harvest.CONNECTORS", [broken, working]), patch(
+            "services.harvest.completed_pairs", return_value=set()
+        ):
+            result = run_harvest(molecules=["metformin", "atorvastatin"])
+
+        self.assertEqual(result.outcomes["Broken"].failures, 2)
+        self.assertEqual(result.outcomes["Broken"].rows, 0)
+        self.assertEqual(result.outcomes["Working"].rows, 2)
+
+    def test_stops_a_registry_that_has_gone_down(self):
+        broken = _StubConnector("Broken", error=requests.RequestException("down"))
+        molecules = [f"molecule-{index}" for index in range(CONSECUTIVE_FAILURE_LIMIT + 5)]
+
+        with patch("services.harvest.CONNECTORS", [broken]), patch(
+            "services.harvest.completed_pairs", return_value=set()
+        ):
+            result = run_harvest(molecules=molecules)
+
+        outcome = result.outcomes["Broken"]
+        self.assertTrue(outcome.stopped_early)
+        self.assertEqual(len(broken.calls), CONSECUTIVE_FAILURE_LIMIT)
+        # The molecules never attempted stay unrecorded, so the next run retries
+        # them rather than treating a dead registry as covered.
+        recorded = {call.args[1] for call in self.record_progress.call_args_list}
+        self.assertEqual(recorded, set(molecules[:CONSECUTIVE_FAILURE_LIMIT]))
+
+
+class FieldCompletionTests(unittest.TestCase):
+    def _group(self, *rows):
+        return {row_id: changes for row_id, changes in _completions_for_group(list(rows))}
+
+    def test_lends_a_molecule_level_code_to_a_registry_that_omits_it(self):
+        ema = {"id": 1, "source": "EMA", "substance": "metformin", "atc_code": "A10BA02"}
+        cdsco = {"id": 2, "source": "CDSCO India", "substance": "Metformin Hydrochloride IP"}
+
+        changes = self._group(ema, cdsco)
+
+        self.assertEqual(changes[2]["atc_code"], "A10BA02")
+        self.assertEqual(changes[2]["completion_source"], "EMA")
+        # The lender keeps its own code and gains nothing from itself.
+        self.assertNotIn("atc_code", changes.get(1, {}))
+
+    def test_groups_a_molecule_across_languages_and_registers(self):
+        # France files IBUPROFÈNE and the Latin INN keeps a final "e" English
+        # drops, so grouping on the plain name leaves the French rows with
+        # nobody to lend them a document.
+        for french, english in (
+            ("IBUPROFÈNE", "ibuprofen"),
+            ("AMOXICILLINE, AMOXICILLINE TRIHYDRATE", "amoxicillin"),
+            ("ATORVASTATINE, ATORVASTATINE CALCIUM", "ATORVASTATIN CALCIUM"),
+            ("CHLORHYDRATE DE METFORMINE, METFORMINE", "metformin"),
+            ("ÉSOMÉPRAZOLE, ÉSOMÉPRAZOLE MAGNÉSIQUE", "esomeprazole"),
+        ):
+            self.assertEqual(
+                molecule_group_key(french), molecule_group_key(english), french
+            )
+
+    def test_groups_a_semicolon_combination_under_its_first_molecule(self):
+        self.assertEqual(
+            molecule_group_key("sitagliptin;metformin hydrochloride"),
+            molecule_group_key("Sitagliptin"),
+        )
+
+    def test_lends_stored_documents_to_a_live_row(self):
+        # A live search builds rows from the connectors, so they carry no
+        # completion at all even when the database holds the molecule.
+        live_row = {"source": "CDSCO India", "substance": "QUÉTIAPINE"}
+        stored = [
+            {
+                "substance_key": "quetiapin",
+                "source": "MHRA",
+                "product": "Seroquel 25mg",
+                "smpc_url": "https://mhra/seroquel-smpc",
+                "pil_url": "",
+                "assessment_report_url": "",
+            }
+        ]
+
+        connection = MagicMock()
+        connection.execute.return_value.fetchall.return_value = stored
+        with patch("services.field_completion.get_connection") as get_connection:
+            get_connection.return_value.__enter__.return_value = connection
+            rows = attach_reference_documents([live_row])
+
+        self.assertEqual(rows[0]["reference_smpc_url"], "https://mhra/seroquel-smpc")
+        self.assertEqual(rows[0]["reference_source"], "MHRA")
+        # Nothing is written into the row's own column, in memory or otherwise.
+        self.assertNotIn("smpc_url", rows[0])
+
+    def test_does_not_overwrite_a_live_rows_own_document(self):
+        live_row = {"source": "MHRA", "substance": "quetiapine", "smpc_url": "https://mhra/own"}
+
+        with patch("services.field_completion.get_connection") as get_connection:
+            rows = attach_reference_documents([live_row])
+
+        get_connection.assert_not_called()
+        self.assertEqual(rows[0]["smpc_url"], "https://mhra/own")
+        self.assertNotIn("reference_smpc_url", rows[0])
+
+    def test_keeps_different_molecules_apart(self):
+        self.assertNotEqual(molecule_group_key("metformin"), molecule_group_key("metoprolol"))
+        self.assertNotEqual(molecule_group_key("ibuprofen"), molecule_group_key("naproxen"))
+
+    def test_derives_the_category_instead_of_lending_another_registrys_wording(self):
+        # Romania states the ATC class in Romanian and would win a majority
+        # vote; lending that text would put it on every other country's rows.
+        romania = {
+            "id": 1,
+            "source": "ANMDMR Romania",
+            "substance": "metformin",
+            "atc_code": "A10BA02",
+            "therapeutic_category": "Medicamente De Scadere A Glucozei Din Sang, Excl. Insuline",
+        }
+        cdsco = {"id": 2, "source": "CDSCO India", "substance": "metformin"}
+
+        changes = self._group(romania, cdsco)
+
+        self.assertEqual(changes[2]["therapeutic_category"], "Antidiabetic")
+        # And the Romanian regulator's own text is left on the Romanian row.
+        self.assertNotIn(
+            "Medicamente",
+            " ".join(value for row in changes.values() for value in row.values()),
+        )
+
+    def test_takes_the_code_most_registries_agree_on(self):
+        rows = [
+            {"id": 1, "source": "EMA", "substance": "metformin", "atc_code": "A10BA02"},
+            {"id": 2, "source": "MHRA", "substance": "metformin", "atc_code": "A10BA02"},
+            # A single mis-parsed value must not be lent to the whole molecule.
+            {"id": 3, "source": "Thai FDA", "substance": "metformin", "atc_code": "XXXX"},
+            {"id": 4, "source": "CDSCO India", "substance": "metformin"},
+        ]
+
+        self.assertEqual(self._group(*rows)[4]["atc_code"], "A10BA02")
+
+    def test_never_writes_another_countrys_document_into_the_products_own_column(self):
+        ema = {
+            "id": 1,
+            "source": "EMA",
+            "substance": "metformin",
+            "product": "Glucophage",
+            "smpc_url": "https://ema.europa.eu/glucophage-smpc",
+        }
+        cdsco = {"id": 2, "source": "CDSCO India", "substance": "metformin"}
+
+        changes = self._group(ema, cdsco)[2]
+
+        self.assertNotIn("smpc_url", changes)
+        self.assertEqual(changes["reference_smpc_url"], "https://ema.europa.eu/glucophage-smpc")
+        self.assertEqual(changes["reference_source"], "EMA")
+        self.assertEqual(changes["reference_product"], "Glucophage")
+
+    def test_never_lends_an_assessment_report(self):
+        # An assessment report evaluates one licence application -- it is
+        # headed with that procedure and licence number -- so it describes a
+        # decision about another country's authorisation, not this medicine.
+        ema = {
+            "id": 1,
+            "source": "EMA",
+            "substance": "metformin",
+            "product": "Glucophage",
+            "smpc_url": "https://ema/smpc",
+            "assessment_report_url": "https://ema/glucophage-assessment",
+        }
+        cdsco = {"id": 2, "source": "CDSCO India", "substance": "metformin"}
+
+        changes = self._group(ema, cdsco)[2]
+
+        self.assertEqual(changes["reference_smpc_url"], "https://ema/smpc")
+        self.assertNotIn("reference_assessment_report_url", changes)
+        self.assertNotIn("assessment_report_url", changes)
+
+    def test_leaves_a_row_that_has_its_own_document_alone(self):
+        ema = {"id": 1, "source": "EMA", "substance": "metformin", "smpc_url": "https://ema/one"}
+        mhra = {"id": 2, "source": "MHRA", "substance": "metformin", "smpc_url": "https://mhra/two"}
+
+        changes = self._group(ema, mhra)
+
+        self.assertNotIn("reference_smpc_url", changes.get(2, {}))
+
+    def test_lends_from_the_same_dosage_form(self):
+        # Triamcinolone is a nasal spray in one country and an injectable
+        # suspension in another; the injection's assessment report describes a
+        # different medicine and must not be lent to the spray.
+        injection = {
+            "id": 1,
+            "source": "MHRA",
+            "substance": "triamcinolone",
+            "product": "TRIAMCINOLONE HEXACETONIDE SUSPENSION FOR INJECTION",
+            "dosage_form": "Suspension for injection",
+            "smpc_url": "https://mhra/injection-smpc",
+            "pil_url": "https://mhra/injection-pil",
+            "assessment_report_url": "https://mhra/injection-par",
+        }
+        spray = {
+            "id": 2,
+            "source": "MHRA",
+            "substance": "triamcinolone",
+            "product": "NASACORT ALLERGY NASAL SPRAY",
+            "dosage_form": "Nasal spray",
+            "smpc_url": "https://mhra/spray-smpc",
+        }
+        us_spray = {
+            "id": 3,
+            "source": "FDA",
+            "substance": "triamcinolone",
+            "product": "Good Sense Nasal Allergy",
+            "dosage_form": "Spray",
+        }
+
+        changes = self._group(injection, spray, us_spray)[3]
+
+        self.assertEqual(changes["reference_smpc_url"], "https://mhra/spray-smpc")
+        self.assertEqual(changes["reference_product"], "NASACORT ALLERGY NASAL SPRAY")
+
+    def test_lends_from_the_same_salt(self):
+        # Kenalog is triamcinolone acetonide and Aristospan is hexacetonide:
+        # same molecule, same injectable suspension, different medicines. The
+        # FDA states the salt in substance_name while the product is a brand.
+        hexacetonide = {
+            "id": 1,
+            "source": "MHRA",
+            "substance": "Triamcinolone",
+            "product": "TRIAMCINOLONE HEXACETONIDE 20MG/ML SUSPENSION FOR INJECTION",
+            "dosage_form": "Suspension for injection",
+            "smpc_url": "https://mhra/hexacetonide-smpc",
+            "pil_url": "https://mhra/hexacetonide-pil",
+        }
+        acetonide = {
+            "id": 2,
+            "source": "MHRA",
+            "substance": "Triamcinolone",
+            "product": "KENALOG INTRA-ARTICULAR TRIAMCINOLONE ACETONIDE",
+            "dosage_form": "Suspension for injection",
+            "smpc_url": "https://mhra/acetonide-smpc",
+        }
+        kenalog = {
+            "id": 3,
+            "source": "FDA",
+            "substance": "triamcinolone",
+            "source_substance": "TRIAMCINOLONE ACETONIDE",
+            "product": "KENALOG-10",
+            "dosage_form": "Suspension",
+        }
+
+        changes = self._group(hexacetonide, acetonide, kenalog)[3]
+
+        self.assertEqual(changes["reference_smpc_url"], "https://mhra/acetonide-smpc")
+
+    def test_prefers_the_regulator_that_publishes_a_full_document_set(self):
+        stray = {"id": 1, "source": "Thai FDA", "substance": "metformin", "pil_url": "https://thai/pil"}
+        ema = {
+            "id": 2,
+            "source": "EMA",
+            "substance": "metformin",
+            "smpc_url": "https://ema/smpc",
+            "pil_url": "https://ema/pil",
+        }
+        cdsco = {"id": 3, "source": "CDSCO India", "substance": "metformin"}
+
+        changes = self._group(stray, ema, cdsco)[3]
+
+        self.assertEqual(changes["reference_source"], "EMA")
+        self.assertEqual(changes["reference_pil_url"], "https://ema/pil")
+
+
+class SubstanceSynonymTests(unittest.TestCase):
+    def test_a_us_adopted_name_is_reached_from_the_inn_and_back(self):
+        for inn, usan in [
+            ("salbutamol", "albuterol"),
+            ("adrenaline", "epinephrine"),
+            ("glibenclamide", "glyburide"),
+            ("rifampicin", "rifampin"),
+        ]:
+            self.assertIn(usan, get_substance_search_terms(inn))
+            self.assertIn(inn, get_substance_search_terms(usan))
+
+    def test_the_term_typed_is_always_searched_first(self):
+        self.assertEqual(get_substance_search_terms("salbutamol")[0], "salbutamol")
+        self.assertEqual(get_substance_search_terms("Albuterol")[0], "Albuterol")
+
+    def test_a_molecule_with_no_alias_searches_only_itself(self):
+        self.assertEqual(get_substance_search_terms("tirzepatide"), ["tirzepatide"])
+
+    def test_a_combination_reaches_its_parts_but_not_the_reverse(self):
+        combination = get_substance_search_terms("lidocaine+prilocaine")
+        self.assertIn("lidocaine", combination)
+        self.assertIn("prilocaine", combination)
+        # A search for one molecule must not drag in every combination it
+        # appears in, or paracetamol would search half the register.
+        self.assertNotIn("prilocaine", get_substance_search_terms("lidocaine"))
+
+
+class SearchJobTimeoutTests(unittest.TestCase):
+    def test_a_slow_term_does_not_discard_the_terms_that_answered(self):
+        import time as _time
+        from services import search_jobs
+
+        def fake_connector(source, term, substance):
+            if term == "slow-term":
+                _time.sleep(10)
+                return [{"product": "Late", "source": source}]
+            return [{"product": "Answered", "source": source, "country": "X"}]
+
+        with patch.object(search_jobs, "_run_connector_once", fake_connector), \
+             patch.object(search_jobs, "get_substance_search_terms",
+                          lambda s: [s, "slow-term"]), \
+             patch.object(search_jobs, "_source_timeout", lambda s: 1), \
+             patch.object(search_jobs, "_set_source_progress", lambda *a, **k: None), \
+             patch.object(search_jobs, "record_source_health", lambda *a, **k: None):
+            _source, rows, error = search_jobs._run_source_for_job("job", "example", "FDA")
+
+        self.assertEqual([row["product"] for row in rows], ["Answered"])
+        # Rows arrived, so the source did not fail even though a term ran on.
+        self.assertEqual(error, "")
+
+    def test_the_registries_measured_slower_than_the_default_are_given_longer(self):
+        from services.search_jobs import (
+            JOB_SLOW_SOURCE_TIMEOUT_SECONDS,
+            _source_timeout,
+        )
+        for source in ("Health Canada", "France BDPM", "CDSCO India"):
+            self.assertEqual(_source_timeout(source), JOB_SLOW_SOURCE_TIMEOUT_SECONDS)
+
+
+class EvidenceBackfillTests(unittest.TestCase):
+    """The provenance reconstructed for rows saved before evidence existed."""
+
+    def _backfill(self, *records):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            for record in records:
+                repository.save_product_detail(record)
+            summary = backfill_evidence()
+            rows = repository.search_product_details("example")
+            return summary, {row["registration_number"]: row for row in rows}
+
+    def test_register_values_point_at_the_record_they_were_read_from(self):
+        _, rows = self._backfill({
+            "substance": "example",
+            "product": "Example 10 mg tablets",
+            "country": "Exampleland",
+            "source": "Example Regulator",
+            "registration_number": "EX-1",
+            "product_url": "https://regulator.test/products/1",
+            "strength": "10 mg",
+        })
+
+        assertions = {item["field_name"]: item for item in rows["EX-1"]["evidence"]}
+        self.assertEqual(assertions["strength"]["value"], "10 mg")
+        self.assertEqual(
+            assertions["strength"]["evidence_url"], "https://regulator.test/products/1"
+        )
+        self.assertEqual(
+            assertions["strength"]["verification_status"], "VERIFIED_REGULATOR_RECORD"
+        )
+        self.assertEqual(assertions["strength"]["source_regulator"], "Example Regulator")
+
+    def test_a_completed_field_credits_the_lenders_and_stays_unverified(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            # A row with no ATC code of its own, and a lender in the same
+            # molecule group for completion to borrow one from.
+            repository.save_product_detail({
+                "substance": "example",
+                "product": "Example 10 mg tablets",
+                "source": "Example Regulator",
+                "registration_number": "EX-2",
+                "product_url": "https://regulator.test/products/2",
+            })
+            repository.save_product_detail({
+                "substance": "example",
+                "product": "Example lender 10 mg tablets",
+                "source": "EMA",
+                "registration_number": "EX-2-LENDER",
+                "product_url": "https://ema.test/products/2",
+                "atc_code": "N02BE01",
+            })
+            complete_fields()
+            rows = {
+                row["registration_number"]: row
+                for row in repository.search_product_details("example")
+            }
+
+        atc = next(
+            item for item in rows["EX-2"]["evidence"] if item["field_name"] == "atc_code"
+        )
+        # Agreed across a molecule group, so it must not borrow this
+        # register's authority for a value the register never published.
+        self.assertEqual(atc["value"], "N02BE01")
+        self.assertEqual(atc["source_regulator"], "EMA")
+        self.assertEqual(atc["verification_status"], "UNVERIFIED")
+
+    def test_completion_replaces_the_assertion_it_makes_stale(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            repository.save_product_detail({
+                "substance": "example",
+                "product": "Example 10 mg tablets",
+                "source": "Example Regulator",
+                "registration_number": "EX-6",
+                "product_url": "https://regulator.test/products/6",
+                "atc_code": "N02BE01",
+                "therapeutic_category": "Hipocolesterolemiante",
+            })
+            repository.save_product_detail({
+                "substance": "example",
+                "product": "Example lender 10 mg tablets",
+                "source": "EMA",
+                "registration_number": "EX-6-LENDER",
+                "product_url": "https://ema.test/products/6",
+                "atc_code": "N02BE01",
+            })
+            complete_fields()
+            rows = {
+                row["registration_number"]: row
+                for row in repository.search_product_details("example")
+            }
+
+        row = rows["EX-6"]
+        categories = [
+            item for item in row["evidence"]
+            if item["field_name"] == "therapeutic_category"
+        ]
+        # Completion rewrites the category, so exactly one assertion should
+        # describe it -- the superseded one would contradict the column.
+        self.assertEqual(len(categories), 1)
+        self.assertEqual(categories[0]["value"], row["therapeutic_category"])
+
+    def test_a_manufacturer_read_from_a_document_cites_the_document(self):
+        _, rows = self._backfill({
+            "substance": "example",
+            "product": "Example 10 mg tablets",
+            "source": "MHRA",
+            "registration_number": "EX-3",
+            "product_url": "https://regulator.test/products/3",
+            "smpc_url": "https://regulator.test/products/3/smpc.pdf",
+            "manufacturer_name": "Example Manufacturing Ltd",
+            "manufacturer_source": "MHRA document",
+        })
+
+        manufacturer = next(
+            item for item in rows["EX-3"]["evidence"]
+            if item["field_name"] == "manufacturer_name"
+        )
+        self.assertEqual(
+            manufacturer["evidence_url"], "https://regulator.test/products/3/smpc.pdf"
+        )
+        self.assertEqual(
+            manufacturer["verification_status"], "VERIFIED_OFFICIAL_DOCUMENT"
+        )
+
+    def test_a_row_with_no_address_asserts_nothing(self):
+        summary, rows = self._backfill({
+            "substance": "example",
+            "product": "Example 10 mg tablets",
+            "source": "Example Regulator",
+            "registration_number": "EX-4",
+            "strength": "10 mg",
+        })
+
+        self.assertEqual(summary["rows_without_source_url"], 1)
+        self.assertEqual(rows["EX-4"]["evidence"], [])
+
+    def test_only_a_parsed_registry_is_told_its_documents_are_pending(self):
+        parsed = {
+            "source": "MHRA",
+            "smpc_url": "https://regulator.test/smpc.pdf",
+            "manufacturer_name": "",
+        }
+        unparsed = {**parsed, "source": "Health Canada"}
+        undocumented = {"source": "MHRA", "manufacturer_name": ""}
+
+        self.assertEqual(missing_reason_for_row(parsed), "Pending document enrichment")
+        self.assertEqual(missing_reason_for_row(unparsed), "Not collected for this source")
+        self.assertEqual(missing_reason_for_row(undocumented), "NOT_PUBLISHED")
+
+    def test_a_row_that_names_its_manufacturer_is_given_no_reason(self):
+        # Role and batch release site are almost never published, so asking
+        # for every manufacturer column would contradict the name in the
+        # export row beside it.
+        named = {
+            "source": "Health Canada",
+            "smpc_url": "https://regulator.test/smpc.pdf",
+            "manufacturer_name": "Example Manufacturing Ltd",
+            "manufacturer_role": "",
+            "batch_release_manufacturer": "",
+        }
+        self.assertEqual(missing_reason_for_row(named), "")
+
+    def test_a_second_pass_refreshes_rather_than_duplicates(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            repository.save_product_detail({
+                "substance": "example",
+                "product": "Example 10 mg tablets",
+                "source": "Example Regulator",
+                "registration_number": "EX-5",
+                "product_url": "https://regulator.test/products/5",
+                "strength": "10 mg",
+            })
+            first = backfill_evidence()
+            with repository.get_connection() as conn:
+                after_first = conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0]
+
+            second = backfill_evidence()
+            with repository.get_connection() as conn:
+                after_second = conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0]
+
+        self.assertGreater(first["assertions_written"], 0)
+        self.assertEqual(second["rows_scanned"], 0)
+        self.assertEqual(after_first, after_second)
 
 
 if __name__ == "__main__":

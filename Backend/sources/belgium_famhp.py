@@ -44,6 +44,17 @@ def _xsrf_token(secret_key: str) -> str:
     return f"{signature}.{jti}{expiry}"
 
 
+def _apply_token(session: requests.Session) -> None:
+    """Mint a fresh xsrf token onto the session.
+
+    A token is accepted for only about two calls before the registry starts
+    answering 401, so a paged search has to re-mint rather than sign once and
+    reuse. The signing key comes from the site's own config endpoint.
+    """
+    config = session.get(CONFIG_URL, timeout=REQUEST_TIMEOUT).json()
+    session.headers.update({"xsrf-token": _xsrf_token(config["key"])})
+
+
 def _session() -> requests.Session:
     session = requests.Session()
     session.headers.update(
@@ -53,8 +64,7 @@ def _session() -> requests.Session:
             "Accept-Language": "en",
         }
     )
-    config = session.get(CONFIG_URL, timeout=REQUEST_TIMEOUT).json()
-    session.headers.update({"xsrf-token": _xsrf_token(config["key"])})
+    _apply_token(session)
     return session
 
 
@@ -124,20 +134,23 @@ def run_belgium_famhp_search(substance: str, limit: int = 200) -> list[dict[str,
     start_row = 0
     total_rows = None
     while len(rows) < limit:
+        params = {
+            "startRow": start_row,
+            "RPP": PAGE_SIZE,
+            "activeSubstance": substance,
+            "usage": "human",
+        }
         try:
-            response = session.get(
-                PRODUCTS_URL,
-                params={
-                    "startRow": start_row,
-                    "RPP": PAGE_SIZE,
-                    "activeSubstance": substance,
-                    "usage": "human",
-                },
-                timeout=REQUEST_TIMEOUT,
-            )
+            response = session.get(PRODUCTS_URL, params=params, timeout=REQUEST_TIMEOUT)
+            if response.status_code == 401:
+                # The token this session signed has been spent. Sign another
+                # and ask again: a 401 here means the page is unsigned, not
+                # that the search is over.
+                _apply_token(session)
+                response = session.get(PRODUCTS_URL, params=params, timeout=REQUEST_TIMEOUT)
             response.raise_for_status()
             payload = response.json()
-        except (requests.RequestException, ValueError) as exc:
+        except (requests.RequestException, ValueError, KeyError) as exc:
             logger.warning("Belgium FAMHP request failed: %s", exc)
             break
 

@@ -1,6 +1,4 @@
 from dataclasses import dataclass
-from functools import lru_cache
-from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode, urljoin
@@ -11,17 +9,14 @@ import sys
 
 import requests
 from bs4 import BeautifulSoup
-from pypdf import PdfReader
 
 from core.logging_config import get_logger
+from sources.cdsco_india import run_cdsco_india_search as _run_cdsco_india_search
 from sources.parser import extract_dosage_form, extract_pack_size, extract_strength
 
 
 REQUEST_TIMEOUT = 5
-MAX_RESULTS = 50
-MAX_CDSCO_PDFS = 1
-MAX_CDSCO_PAGES_PER_PDF = 4
-MAX_CDSCO_LIVE_PDF_KB = 600
+MAX_RESULTS = 150
 logger = get_logger(__name__)
 
 RUSSIAN_INN_TERMS = {
@@ -131,7 +126,7 @@ REGIONAL_SOURCES = {
         source="PMDA Japan",
         country="Japan",
         region="JP",
-        search_url="https://www.pmda.go.jp/files/000278243.pdf",
+        search_url="https://www.pmda.go.jp/PmdaSearch/iyakuSearch/",
     ),
     "Ukraine DRLZ": RegionalSourceConfig(
         source="Ukraine DRLZ",
@@ -220,116 +215,6 @@ def _clean_company_country(value: object) -> tuple[str, str]:
         return text, ""
     name, country = text.rsplit(" - ", 1)
     return _clean_text(name), _clean_text(country)
-
-
-def _cdsco_pdf_url(wrapper_html: str, wrapper_url: str) -> str:
-    match = re.search(r"iframe\s+src=['\"]([^'\"]+)", wrapper_html, flags=re.IGNORECASE)
-    if match:
-        return urljoin("https://cdsco.gov.in", match.group(1))
-    comment_match = re.search(r"<!--\s*([^>]+?\.pdf)\s*-->", wrapper_html, flags=re.IGNORECASE)
-    if comment_match:
-        return urljoin("https://cdsco.gov.in", comment_match.group(1).strip())
-    return wrapper_url
-
-
-def _text_windows_for_query(text: str, query: str, radius: int = 420) -> list[str]:
-    windows = []
-    seen = set()
-    for match in re.finditer(re.escape(query), text or "", flags=re.IGNORECASE):
-        start = max(0, match.start() - radius)
-        end = min(len(text), match.end() + radius)
-        snippet = _clean_text(text[start:end])
-        key = snippet.lower()
-        if snippet and key not in seen:
-            seen.add(key)
-            windows.append(snippet)
-    return windows
-
-
-def _size_kb(value: str) -> int:
-    match = re.search(r"(\d+)\s*KB", value or "", flags=re.IGNORECASE)
-    return int(match.group(1)) if match else 0
-
-
-@lru_cache(maxsize=64)
-def _cdsco_pdf_text(pdf_url: str) -> str:
-    response = requests.get(pdf_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
-    response.raise_for_status()
-    reader = PdfReader(BytesIO(response.content), strict=False)
-    return "\n".join((page.extract_text() or "") for page in reader.pages[:MAX_CDSCO_PAGES_PER_PDF])
-
-
-def _run_cdsco_india_pdf_search(substance: str, limit: int = MAX_RESULTS) -> list[dict[str, Any]]:
-    config = REGIONAL_SOURCES["CDSCO India"]
-    clean_substance = substance.strip()
-    if not clean_substance:
-        return []
-
-    try:
-        response = requests.get(config.search_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=REQUEST_TIMEOUT)
-        response.raise_for_status()
-    except requests.RequestException as exc:
-        logger.warning("%s PDF list unavailable: %s", config.source, exc)
-        return _fallback_rows(config, clean_substance, limit)
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    pdf_entries = []
-    for table_row in soup.select("table tr")[1:]:
-        cells = [_clean_text(cell.get_text(" ", strip=True)) for cell in table_row.select("td")]
-        link = table_row.select_one("a[href]")
-        if len(cells) < 5 or not link:
-            continue
-        title = cells[1]
-        release_date = cells[2]
-        pdf_size_kb = _size_kb(cells[4])
-        if pdf_size_kb and pdf_size_kb > MAX_CDSCO_LIVE_PDF_KB:
-            continue
-        wrapper_url = urljoin(config.search_url, link.get("href", ""))
-        pdf_entries.append((title, release_date, wrapper_url))
-    pdf_entries.sort(key=lambda item: "since 1961" in item[0].lower())
-
-    rows = []
-    seen = set()
-    for title, release_date, wrapper_url in pdf_entries[:MAX_CDSCO_PDFS]:
-        if len(rows) >= limit:
-            break
-        try:
-            wrapper = requests.get(wrapper_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=REQUEST_TIMEOUT)
-            wrapper.raise_for_status()
-            pdf_url = _cdsco_pdf_url(wrapper.text, wrapper_url)
-            text = _cdsco_pdf_text(pdf_url)
-        except Exception as exc:
-            logger.warning("%s PDF scan skipped %s: %s", config.source, title, exc)
-            continue
-        for snippet in _text_windows_for_query(text, clean_substance):
-            key = (title.lower(), snippet.lower()[:160])
-            if key in seen:
-                continue
-            seen.add(key)
-            product = snippet[:240]
-            rows.append(
-                {
-                    "substance": clean_substance,
-                    "product": product,
-                    "company": "",
-                    "country": config.country,
-                    "region": config.region,
-                    "status": "Listed in CDSCO approval PDF",
-                    "strength": extract_strength(snippet),
-                    "dosage_form": extract_dosage_form(snippet),
-                    "pack_size": extract_pack_size(snippet),
-                    "registration_number": "",
-                    "registration_date": release_date,
-                    "document_type": "CDSCO approval PDF",
-                    "source": config.source,
-                    "source_url": config.search_url,
-                    "product_url": pdf_url,
-                    "url": pdf_url,
-                }
-            )
-            if len(rows) >= limit:
-                break
-    return rows or _fallback_rows(config, clean_substance, limit)
 
 
 def _bpom_detail_url(row: dict[str, Any]) -> str:
@@ -429,8 +314,25 @@ def _run_bpom_indonesia_json_search(substance: str, limit: int = MAX_RESULTS) ->
                 "registration_date": _clean_text(item.get("PRODUCT_DATE")),
                 "expiry_date": _clean_text(item.get("PRODUCT_EXPIRED")),
                 "manufacturer_name": manufacturer,
-                "manufacturer_country": manufacturer_country or "Indonesia",
+                "manufacturer_country": manufacturer_country,
                 "manufacturer_source": "BPOM JSON",
+                "manufacturers": ([{
+                    "name": manufacturer,
+                    "country": manufacturer_country,
+                    "role": "MANUFACTURER_UNKNOWN_ROLE",
+                    "verification_status": "VERIFIED_REGULATOR_RECORD",
+                }] if manufacturer else []),
+                "evidence": ([{
+                    "field_name": "manufacturer_name",
+                    "value": manufacturer,
+                    "role": "MANUFACTURER_UNKNOWN_ROLE",
+                    "source_regulator": config.source,
+                    "document_type": "BPOM product record",
+                    "evidence_url": product_url,
+                    "evidence_section": "Manufacturer",
+                    "extraction_method": "OFFICIAL_API_FIELD",
+                    "verification_status": "VERIFIED_REGULATOR_RECORD",
+                }] if manufacturer else []),
                 "source": config.source,
                 "source_url": page.url,
                 "product_url": product_url,
@@ -608,6 +510,25 @@ def _run_dav_vietnam_api_search(substance: str, limit: int = MAX_RESULTS) -> lis
                 "expiry_date": _iso_date(registration.get("ngayHetHanSoDangKy")),
                 "manufacturer_name": _clean_text(manufacturer.get("tenCongTySanXuat")),
                 "manufacturer_country": _clean_text(manufacturer.get("nuocSanXuat")),
+                "manufacturer_source": "DAV public registration API",
+                "manufacturers": ([{
+                    "name": _clean_text(manufacturer.get("tenCongTySanXuat")),
+                    "country": _clean_text(manufacturer.get("nuocSanXuat")),
+                    "role": "FINISHED_PRODUCT_MANUFACTURER",
+                    "scope": "FINISHED_PRODUCT",
+                    "verification_status": "VERIFIED_REGULATOR_RECORD",
+                }] if _clean_text(manufacturer.get("tenCongTySanXuat")) else []),
+                "evidence": ([{
+                    "field_name": "manufacturer_name",
+                    "value": _clean_text(manufacturer.get("tenCongTySanXuat")),
+                    "role": "FINISHED_PRODUCT_MANUFACTURER",
+                    "source_regulator": config.source,
+                    "document_type": "DAV public registration record",
+                    "evidence_url": product_url,
+                    "evidence_section": "Manufacturing company",
+                    "extraction_method": "OFFICIAL_API_FIELD",
+                    "verification_status": "VERIFIED_REGULATOR_RECORD",
+                }] if _clean_text(manufacturer.get("tenCongTySanXuat")) else []),
                 "pil_url": pil_url,
                 "label_url": label_url,
                 "source": config.source,
@@ -1055,7 +976,10 @@ def run_fda_ghana_search(substance: str) -> list[dict[str, Any]]:
 
 
 def run_cdsco_india_search(substance: str) -> list[dict[str, Any]]:
-    return _run_cdsco_india_pdf_search(substance)
+    """CDSCO is served by its own connector; fall back to the registry handoff
+    only when the approvals endpoint returns nothing."""
+    rows = _run_cdsco_india_search(substance)
+    return rows or _fallback_rows(REGIONAL_SOURCES["CDSCO India"], substance.strip())
 
 
 def run_nmpa_china_search(substance: str) -> list[dict[str, Any]]:
