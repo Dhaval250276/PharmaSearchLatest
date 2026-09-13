@@ -22,7 +22,6 @@ from repository import (
     initialize_database,
     list_search_jobs,
     list_product_details,
-    reset_database,
     save_product_detail,
     seed_product_details_if_needed,
 )
@@ -1933,38 +1932,6 @@ def connector_health_page():
     </html>
     """
     return HTMLResponse(content=html)
-
-
-@app.get("/load_demo_data")
-def load_demo_data():
-    reset_database()
-    demo_data = [
-        ("Dapagliflozin", "Forxiga", "AstraZeneca AB", "Sweden", "Authorised", "Demo"),
-        (
-            "Dapagliflozin",
-            "FORXIGA 10MG FILM COATED TABLETS",
-            "AstraZeneca UK Limited",
-            "United Kingdom",
-            "Authorised",
-            "Demo",
-        ),
-        ("Dapagliflozin", "Dapagliflozin Viatris", "Viatris", "France", "Authorised", "Demo"),
-        ("Empagliflozin", "Jardiance", "Boehringer Ingelheim International GmbH", "Germany", "Authorised", "Demo"),
-        ("Semaglutide", "Ozempic", "Novo Nordisk A/S", "Denmark", "Authorised", "Demo"),
-        ("Metformin", "Glucophage", "Merck", "Spain", "Authorised", "Demo"),
-    ]
-    for substance, product, company, country, status, source in demo_data:
-        save_product_detail(
-            {
-                "substance": substance,
-                "product": product,
-                "company": company,
-                "country": country,
-                "status": status,
-                "source": source,
-            }
-        )
-    return {"message": "Demo data loaded", "count": len(demo_data)}
 
 
 @app.get("/crawl/{substance}")
