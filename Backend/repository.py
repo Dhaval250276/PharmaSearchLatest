@@ -188,6 +188,7 @@ def initialize_database():
                 source TEXT,
                 status TEXT,
                 records INTEGER DEFAULT 0,
+                available INTEGER DEFAULT 0,
                 error TEXT,
                 started_at TEXT,
                 finished_at TEXT,
@@ -377,6 +378,11 @@ def initialize_database():
         }
         for column in PRODUCT_DETAIL_COLUMNS - existing_columns - {"id"}:
             cursor.execute(f"ALTER TABLE product_details ADD COLUMN {column} TEXT")
+        progress_columns = {
+            row["name"] for row in cursor.execute("PRAGMA table_info(search_job_progress)")
+        }
+        if "available" not in progress_columns:
+            cursor.execute("ALTER TABLE search_job_progress ADD COLUMN available INTEGER DEFAULT 0")
         cursor.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_product_details_substance
@@ -661,12 +667,13 @@ def save_search_job_progress(job_id: str, progress: dict[str, Any]) -> None:
         conn.execute(
             """
             INSERT INTO search_job_progress (
-                job_id, source, status, records, error, started_at, finished_at
+                job_id, source, status, records, available, error, started_at, finished_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(job_id, source) DO UPDATE SET
                 status=excluded.status,
                 records=excluded.records,
+                available=excluded.available,
                 error=excluded.error,
                 started_at=excluded.started_at,
                 finished_at=excluded.finished_at
@@ -676,6 +683,7 @@ def save_search_job_progress(job_id: str, progress: dict[str, Any]) -> None:
                 progress.get("source", ""),
                 progress.get("status", ""),
                 int(progress.get("records") or 0),
+                int(progress.get("available") or 0),
                 progress.get("error", ""),
                 progress.get("started_at", ""),
                 progress.get("finished_at", ""),
@@ -741,7 +749,7 @@ def get_persisted_search_job(job_id: str) -> dict[str, Any] | None:
             return None
         progress = conn.execute(
             """
-            SELECT source, status, records, error, started_at, finished_at
+            SELECT source, status, records, available, error, started_at, finished_at
             FROM search_job_progress
             WHERE job_id=?
             ORDER BY source

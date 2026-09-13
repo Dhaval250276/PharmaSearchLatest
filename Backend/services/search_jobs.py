@@ -75,6 +75,10 @@ class SourceProgress:
     source: str
     status: str = "queued"
     records: int = 0
+    # How many the registry holds, where it says so and holds more than it
+    # returned; 0 means it did not say. FDA and Health Canada stop at a fixed
+    # number, and without this a capped count reads as the complete one.
+    available: int = 0
     error: str = ""
     started_at: str = ""
     finished_at: str = ""
@@ -84,6 +88,7 @@ class SourceProgress:
             "source": self.source,
             "status": self.status,
             "records": self.records,
+            "available": self.available,
             "error": self.error,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -201,6 +206,7 @@ def _set_source_progress(
     status: str,
     records: int = 0,
     error: str = "",
+    available: int = 0,
 ) -> None:
     with _lock:
         job = _jobs.get(job_id)
@@ -209,6 +215,7 @@ def _set_source_progress(
         progress = job.progress[source]
         progress.status = status
         progress.records = records
+        progress.available = available
         progress.error = error
         if status == "running" and not progress.started_at:
             progress.started_at = _now()
@@ -363,7 +370,10 @@ def _run_job(job_id: str) -> None:
                     _set_source_progress(job_id, source_name, status, error=error)
                     continue
                 _append_results(job_id, rows)
-                _set_source_progress(job_id, source_name, "done", records=len(rows))
+                _set_source_progress(
+                    job_id, source_name, "done", records=len(rows),
+                    available=max((int(row.get("available_total") or 0) for row in rows), default=0),
+                )
         _set_job_status(job_id, "done", finished=True)
     except Exception as exc:
         logger.exception("Search job %s failed", job_id)

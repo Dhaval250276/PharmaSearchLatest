@@ -199,9 +199,17 @@ def run_health_canada_search(substance, limit=100):
     if not rows_by_code:
         return []
 
+    # The ingredient lookup already lists every drug code; only the first
+    # ``limit`` are looked up, because each costs six more requests. The count
+    # travels with the rows so a capped search can say it was capped.
+    available_total = len(rows_by_code)
     codes = list(rows_by_code)[:limit]
     with ThreadPoolExecutor(max_workers=DETAIL_WORKERS) as executor:
         records = executor.map(
             lambda code: _drug_record(query, code, rows_by_code[code]), codes
         )
-        return [record for record in records if record]
+        return [
+            {**record, "available_total": available_total}
+            for record in records
+            if record
+        ]

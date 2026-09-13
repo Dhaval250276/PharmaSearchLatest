@@ -182,6 +182,10 @@ def run_fda_search(substance, limit=100):
         ndc_records = []
     finally:
         ndc_executor.shutdown(wait=False, cancel_futures=True)
+    # openFDA says how many labels match, in the same response. This search
+    # asks for the first ``limit`` of them, so the total is what tells a reader
+    # that acetaminophen's 100 rows are 100 of 3,276 rather than all there are.
+    available_total = int(((data.get("meta") or {}).get("results") or {}).get("total") or 0)
     results = []
     for item in data.get("results", []):
         openfda = item.get("openfda", {})
@@ -238,6 +242,7 @@ def run_fda_search(substance, limit=100):
                 # own and ends up borrowing another country's label.
                 "smpc_url": dailymed_url,
                 "document_type": "FDA prescribing information" if dailymed_url else "",
+                "available_total": available_total,
             }
         )
     return results

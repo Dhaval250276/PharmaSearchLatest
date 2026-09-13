@@ -384,6 +384,58 @@ def recent_search_jobs_page():
     return HTMLResponse(content=html)
 
 
+def records_with_total(records: object, available: object) -> str:
+    """ "100 of 3,276" where a registry holds more than it returned."""
+    shown = int(records or 0)
+    total = int(available or 0)
+    return f"{shown:,} of {total:,}" if total > shown else f"{shown:,}"
+
+
+def _capped_counts(pairs: list[tuple[str, int, int]]) -> list[str]:
+    return [f"{source} returned {shown:,} of {total:,}" for source, shown, total in pairs if total > shown]
+
+
+def capped_job_note(progress: list[dict[str, Any]]) -> str:
+    capped = _capped_counts(
+        [(item["source"], int(item.get("records") or 0), int(item.get("available") or 0)) for item in progress]
+    )
+    if not capped:
+        return ""
+    return (
+        '<p class="alert alert-warning py-2">'
+        f'Not every product was fetched: {h("; ".join(capped))}. '
+        "These registries stop at a fixed number per search for now, so their counts are partial."
+        "</p>"
+    )
+
+
+def capped_sources_note(rows: list[dict[str, Any]]) -> str:
+    """Name the registries whose results stopped short of what they hold.
+
+    FDA returns its first 100 labels and Health Canada its first 50 products;
+    acetaminophen has 3,276 labels and 1,348 Canadian products. A results page
+    that says nothing reads as the complete list.
+    """
+    shown: Counter[str] = Counter()
+    totals: dict[str, int] = {}
+    for row in rows:
+        total = int(row.get("available_total") or 0)
+        if not total:
+            continue
+        source = str(row.get("source") or "")
+        shown[source] += 1
+        totals[source] = max(totals.get(source, 0), total)
+    capped = _capped_counts([(source, shown[source], totals[source]) for source in totals])
+    if not capped:
+        return ""
+    return (
+        '<p class="alert alert-warning py-2">'
+        f'Partial results: {h("; ".join(capped))}. '
+        "These registries stop at a fixed number per search for now."
+        "</p>"
+    )
+
+
 @app.get("/search_jobs/{job_id}", response_class=HTMLResponse)
 def search_job_page(job_id: str):
     job = get_search_job(job_id)
@@ -415,7 +467,7 @@ def search_job_page(job_id: str):
             <tr>
                 <td>{h(progress["source"])}</td>
                 <td><span class="badge text-bg-{badge}">{h(progress["status"])}</span></td>
-                <td>{h(progress["records"])}</td>
+                <td>{h(records_with_total(progress.get("records"), progress.get("available")))}</td>
                 <td>{h(progress["error"])}</td>
             </tr>
             """
@@ -465,6 +517,7 @@ def search_job_page(job_id: str):
             </thead>
             <tbody>{"".join(rows)}</tbody>
         </table>
+        {capped_job_note(job["progress"])}
     </div>
     </body>
     </html>
@@ -566,6 +619,7 @@ def search_job_results_page(job_id: str):
                 <h2>Search Job Results</h2>
                 <p class="mb-0">Active Substance: <strong>{h(job["substance"])}</strong></p>
                 <p class="text-muted small mb-0">Showing {len(rows)} of {len(saved_rows)} records from this background job.</p>
+                {capped_sources_note(saved_rows)}
             </div>
             <div class="d-flex gap-2">
                 <a class="btn btn-secondary" href="/search_jobs/{h(job_id)}">Progress</a>
@@ -1137,6 +1191,7 @@ def search_page(
         for row in rows
         if row.get("region") == "EU" and row.get("country") in EU_COUNTRIES
     }
+    capped_note = capped_sources_note(all_rows)
     eu_coverage_note = ""
     if region == "EU":
         note_class = "success" if len(eu_countries_in_results) == len(EU_COUNTRIES) else "warning"
@@ -1237,6 +1292,7 @@ def search_page(
         <p class="small text-muted mb-1">By source: {source_summary}</p>
         <p class="small text-muted">By country: {country_summary}</p>
         <p class="small">Active filters: {active_filter_summary}</p>
+        {capped_note}
         {eu_coverage_note}
         {registry_links_section}
         <div class="d-flex justify-content-between align-items-center mb-3">

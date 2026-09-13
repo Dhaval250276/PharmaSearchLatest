@@ -1698,6 +1698,80 @@ class FieldCompletionTests(unittest.TestCase):
         self.assertEqual(changes["reference_pil_url"], "https://ema/pil")
 
 
+class CappedResultTests(unittest.TestCase):
+    """Registries that stop at a fixed number say how many they hold."""
+
+    def test_the_fda_passes_on_how_many_labels_match(self):
+        from sources import fda
+
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "meta": {"results": {"total": 3276}},
+            "results": [{"openfda": {"brand_name": ["TYLENOL"], "manufacturer_name": ["Kenvue"]}}],
+        }
+        with patch.object(fda.requests, "get", return_value=response), \
+             patch.object(fda, "_fetch_ndc_records", return_value=[]):
+            rows = fda.run_fda_search("acetaminophen", limit=100)
+        self.assertEqual(rows[0]["available_total"], 3276)
+
+    def test_health_canada_passes_on_how_many_drug_codes_it_found(self):
+        from sources import health_canada
+
+        ingredients = [{"drug_code": str(code)} for code in range(1, 8)]
+        with patch.object(health_canada, "_ingredient_rows", return_value=ingredients), \
+             patch.object(health_canada, "_drug_record",
+                          side_effect=lambda substance, code, rows: {"product": f"P{code}"}):
+            rows = health_canada.run_health_canada_search("acetaminophen", limit=3)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual({row["available_total"] for row in rows}, {7})
+
+    def test_a_count_shows_the_total_only_when_it_is_larger(self):
+        from main import records_with_total
+
+        self.assertEqual(records_with_total(100, 3276), "100 of 3,276")
+        self.assertEqual(records_with_total(8, 8), "8")
+        self.assertEqual(records_with_total(21, 0), "21")
+
+    def test_the_results_page_names_only_the_registries_that_were_capped(self):
+        from main import capped_sources_note
+
+        rows = [{"source": "FDA", "available_total": 3276}] * 100
+        rows += [{"source": "FDA", "available_total": 0}]           # a synonym term that found nothing
+        rows += [{"source": "Spain CIMA"}] * 20                      # says no total
+        rows += [{"source": "Health Canada", "available_total": 3}] * 3  # returned all it holds
+        note = capped_sources_note(rows)
+        self.assertIn("FDA returned 100 of 3,276", note)
+        self.assertNotIn("Spain CIMA", note)
+        self.assertNotIn("Health Canada", note)
+        self.assertEqual(capped_sources_note([{"source": "Spain CIMA"}]), "")
+
+    def test_a_job_records_and_keeps_the_registry_total(self):
+        from services import search_jobs
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            job = search_jobs.SearchJob(
+                job_id="capped-job",
+                substance="acetaminophen",
+                sources=["FDA"],
+                progress={"FDA": search_jobs.SourceProgress(source="FDA")},
+            )
+            with search_jobs._lock:
+                search_jobs._jobs[job.job_id] = job
+            rows = [{"source": "FDA", "product": f"P{i}", "available_total": 3276} for i in range(100)]
+            with patch.object(search_jobs, "_run_source_for_job", return_value=("FDA", rows, "")):
+                search_jobs._run_job(job.job_id)
+            live = search_jobs.get_search_job(job.job_id)
+            with search_jobs._lock:
+                search_jobs._jobs.pop(job.job_id, None)
+            persisted = repository.get_persisted_search_job(job.job_id)
+
+        self.assertEqual((live["progress"][0]["records"], live["progress"][0]["available"]), (100, 3276))
+        # Read back from the database, as a job looks after a restart.
+        self.assertEqual(persisted["progress"][0]["available"], 3276)
+
+
 ITALY_FIXTURE = (
     "CODICE_AIC;COD_FARMACO;COD_CONFEZIONE;DENOMINAZIONE;DESCRIZIONE;CODICE_DITTA;RAGIONE_SOCIALE;"
     "STATO_AMMINISTRATIVO;TIPO_PROCEDURA;FORMA;CODICE_ATC;PA_ASSOCIATI;LINK\n"
