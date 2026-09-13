@@ -1697,6 +1697,81 @@ class FieldCompletionTests(unittest.TestCase):
         self.assertEqual(changes["reference_pil_url"], "https://ema/pil")
 
 
+class ExportSpeedTests(unittest.TestCase):
+    """Saving a large search's rows is what made its export take an hour."""
+
+    def test_the_schema_is_checked_once_per_database_not_once_per_call(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ), patch.object(repository, "_create_and_migrate_schema",
+                        wraps=repository._create_and_migrate_schema) as schema:
+            for _ in range(5):
+                repository.initialize_database()
+            self.assertEqual(schema.call_count, 1)
+
+    def test_a_replaced_database_file_is_checked_again(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            repository.initialize_database()
+            Path(repository.DB_PATH).unlink()
+            repository.initialize_database()
+            with repository.get_connection() as conn:
+                tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertIn("product_details", tables)
+
+    def test_many_rows_are_saved_together_and_returned_in_order(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            records = [
+                {"substance": "example", "product": f"Example {index} mg", "source": "Example Regulator",
+                 "registration_number": f"EX-{index}", "product_url": f"https://regulator.test/{index}"}
+                for index in range(30)
+            ]
+            stored = repository.save_product_details(records)
+            again = repository.save_product_details(records[:5])
+            with repository.get_connection() as conn:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM product_details WHERE source = 'Example Regulator'"
+                ).fetchone()[0]
+        self.assertEqual([row["product"] for row in stored], [record["product"] for record in records])
+        self.assertEqual(count, 30)          # saving the same rows again updates them
+        self.assertEqual(len(again), 5)
+
+    def test_the_duplicate_lookup_uses_an_index(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            repository.initialize_database()
+            with repository.get_connection() as conn:
+                plan = " ".join(
+                    str(step[-1]) for step in conn.execute(
+                        "EXPLAIN QUERY PLAN SELECT id FROM product_details "
+                        "WHERE COALESCE(source,'') = COALESCE(?,'') AND COALESCE(product,'') = COALESCE(?,'') "
+                        "AND COALESCE(country,'') = COALESCE(?,'')",
+                        ("FDA", "X", "United States"),
+                    )
+                )
+        self.assertIn("idx_product_details_identity", plan)
+
+    def test_an_exported_row_carries_the_provenance_its_save_recorded(self):
+        from services import search_pipeline
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ), patch.object(search_pipeline, "enrich_deep_results", lambda rows: rows), \
+             patch.object(search_pipeline, "attach_ai_enrichment_metadata", lambda rows: rows):
+            rows = search_pipeline.enriched_cached_results([{
+                "substance": "example", "product": "Example 10 mg", "source": "Example Regulator",
+                "registration_number": "EX-1", "product_url": "https://regulator.test/products/1",
+            }])
+        # Before, the export wrote this row without the evidence its save stamped,
+        # and every row read "Evidence URL: Not available".
+        self.assertEqual(rows[0]["evidence_url"], "https://regulator.test/products/1")
+        self.assertEqual(rows[0]["verification_status"], "VERIFIED_REGULATOR_RECORD")
+
+
 def _ndc_record(**overrides):
     record = {
         "product_ndc": "33342-409",

@@ -1,7 +1,9 @@
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 import re
 import json
@@ -118,7 +120,32 @@ def get_connection() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def initialize_database():
+_initialized_databases: set[str] = set()
+_initialize_lock = threading.Lock()
+
+
+def initialize_database() -> None:
+    """Create and migrate the schema -- once per database file, per process.
+
+    Nearly every repository call starts here, and it used to run the whole
+    schema check each time: some eighteen statements of CREATE IF NOT EXISTS,
+    column checks and migration look-ups. Saving a row cost 0.25 s, 0.21 s of it
+    this check, so exporting a search of 6,146 rows spent 26 minutes confirming
+    tables that existed. The schema cannot change underneath a running process
+    except by the file being replaced, so it is checked once per database path
+    and again only if that file has gone.
+    """
+    key = str(DB_PATH)
+    if key in _initialized_databases and Path(DB_PATH).exists():
+        return
+    with _initialize_lock:
+        if key in _initialized_databases and Path(DB_PATH).exists():
+            return
+        _create_and_migrate_schema()
+        _initialized_databases.add(key)
+
+
+def _create_and_migrate_schema() -> None:
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -397,6 +424,18 @@ def initialize_database():
             """
             CREATE INDEX IF NOT EXISTS idx_product_details_substance
             ON product_details (substance)
+            """
+        )
+        # Every save first looks for the row it may already be, matching on
+        # COALESCE(source, ''), COALESCE(product, '') and COALESCE(country, '').
+        # An index on the columns cannot serve those expressions, so each save
+        # scanned all 50,000-odd products -- 30 ms a row, three minutes for a
+        # large search. An index on the very same expressions turns the scan
+        # into a lookup without changing which rows count as the same.
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_product_details_identity
+            ON product_details (COALESCE(source, ''), COALESCE(product, ''), COALESCE(country, ''))
             """
         )
         cursor.execute(
@@ -919,6 +958,24 @@ def list_product_details() -> list[dict[str, Any]]:
 
 def save_product_detail(record: dict[str, Any]) -> dict[str, Any]:
     initialize_database()
+    with get_connection() as conn:
+        return _save_product_detail(conn, record)
+
+
+def save_product_details(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Save many rows in one connection and one transaction.
+
+    Opening a connection and committing for every row made a save cost what a
+    schema check and a disk flush cost; across a search's thousands of rows that
+    is minutes. The rows are written together, and the stored form of each is
+    returned in the same order.
+    """
+    initialize_database()
+    with get_connection() as conn:
+        return [_save_product_detail(conn, record) for record in records]
+
+
+def _save_product_detail(conn: sqlite3.Connection, record: dict[str, Any]) -> dict[str, Any]:
     if (
         str(record.get("connector_mode") or "").strip().lower() == "manual_registry"
         or "registry search handoff" in str(record.get("document_type") or "").strip().lower()
@@ -1000,51 +1057,50 @@ def save_product_detail(record: dict[str, Any]) -> dict[str, Any]:
         data["missing_reason"] = missing_reason_for_row(data)
     columns = list(data.keys())
     placeholders = ", ".join(["?"] * len(columns))
-    with get_connection() as conn:
-        existing = conn.execute(
-            """
-            SELECT id
-            FROM product_details
-            WHERE
-                COALESCE(source, '') = COALESCE(?, '')
-                AND COALESCE(product, '') = COALESCE(?, '')
-                AND COALESCE(country, '') = COALESCE(?, '')
-                AND (
-                    (? != '' AND COALESCE(registration_number, '') = ?)
-                    OR (? != '' AND COALESCE(product_url, '') = ?)
-                    OR (? = '' AND ? = '')
-                )
-            ORDER BY id
-            LIMIT 1
-            """,
-            [
-                data["source"],
-                data["product"],
-                data["country"],
-                data["registration_number"],
-                data["registration_number"],
-                data["product_url"],
-                data["product_url"],
-                data["registration_number"],
-                data["product_url"],
-            ],
-        ).fetchone()
-        if existing:
-            product_detail_id = existing["id"]
-            assignments = ", ".join(f"{column}=?" for column in columns)
-            conn.execute(
-                f"UPDATE product_details SET {assignments} WHERE id=?",
-                [data[column] for column in columns] + [existing["id"]],
+    existing = conn.execute(
+        """
+        SELECT id
+        FROM product_details
+        WHERE
+            COALESCE(source, '') = COALESCE(?, '')
+            AND COALESCE(product, '') = COALESCE(?, '')
+            AND COALESCE(country, '') = COALESCE(?, '')
+            AND (
+                (? != '' AND COALESCE(registration_number, '') = ?)
+                OR (? != '' AND COALESCE(product_url, '') = ?)
+                OR (? = '' AND ? = '')
             )
-        else:
-            product_detail_id = conn.execute(
-                f"""
-                INSERT INTO product_details ({", ".join(columns)})
-                VALUES ({placeholders})
-                """,
-                [data[column] for column in columns],
-            ).lastrowid
-        _save_structured_regulatory_data(conn, product_detail_id, record, now, data)
+        ORDER BY id
+        LIMIT 1
+        """,
+        [
+            data["source"],
+            data["product"],
+            data["country"],
+            data["registration_number"],
+            data["registration_number"],
+            data["product_url"],
+            data["product_url"],
+            data["registration_number"],
+            data["product_url"],
+        ],
+    ).fetchone()
+    if existing:
+        product_detail_id = existing["id"]
+        assignments = ", ".join(f"{column}=?" for column in columns)
+        conn.execute(
+            f"UPDATE product_details SET {assignments} WHERE id=?",
+            [data[column] for column in columns] + [existing["id"]],
+        )
+    else:
+        product_detail_id = conn.execute(
+            f"""
+            INSERT INTO product_details ({", ".join(columns)})
+            VALUES ({placeholders})
+            """,
+            [data[column] for column in columns],
+        ).lastrowid
+    _save_structured_regulatory_data(conn, product_detail_id, record, now, data)
     return data
 
 

@@ -3,7 +3,7 @@ from urllib.parse import quote
 
 from repository import (
     clean_search_term,
-    save_product_detail,
+    save_product_details,
     search_medicines,
     search_product_details,
 )
@@ -352,6 +352,7 @@ SORT_COLUMNS = {
     "registration_date": "registration_date",
 }
 DATE_SORT_FIELDS = {"registration_date", "expiry_date"}
+PROVENANCE_FIELDS = ("evidence_url", "evidence_section", "verification_status", "missing_reason")
 SOURCE_COUNTRIES = {
     "fda": {"United States"},
     "health canada": {"Canada"},
@@ -1189,8 +1190,17 @@ def enriched_cached_results(results: list[dict[str, Any]]) -> list[dict[str, Any
     enriched_results = attach_ai_enrichment_metadata(
         propagate_molecule_fields(enrich_deep_results(rows))
     )
-    for item in enriched_results:
-        save_product_detail(item)
+    # One transaction for the lot: saving row by row cost 0.25 s each, which
+    # made exporting a large search take the better part of an hour.
+    stored = save_product_details(enriched_results)
+    for item, saved in zip(enriched_results, stored):
+        # Saving records where each value came from -- the evidence URL, how
+        # it was verified, why a blank field is blank -- but on the stored row,
+        # not the one in hand. The export writes the row in hand, so without
+        # this every row of a job export said "Evidence URL: Not available".
+        for field in PROVENANCE_FIELDS:
+            if saved.get(field) and not item.get(field):
+                item[field] = saved[field]
     return enriched_results
 
 
