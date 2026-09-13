@@ -27,6 +27,7 @@ import secrets
 import threading
 import time
 
+import config  # noqa: F401 -- loads Backend/.env before the variables below are read
 from core.logging_config import get_logger
 
 

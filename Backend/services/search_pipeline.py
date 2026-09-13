@@ -2,6 +2,7 @@ from typing import Any
 from urllib.parse import quote
 
 from repository import (
+    clean_search_term,
     save_product_detail,
     search_medicines,
     search_product_details,
@@ -12,6 +13,7 @@ from sources.mhra_document_parser import enrich_mhra_document_metadata
 from sources.parser import clean_product_name
 from sources.search_engine import LIVE_SEARCH_TIMEOUT_SECONDS, search_substance
 from services.ai_enrichment import attach_ai_enrichment_metadata
+from services.regulatory_dates import parse_regulatory_date
 from services.result_formatter import formatted_result_row
 
 
@@ -346,6 +348,7 @@ SORT_COLUMNS = {
     "registration_number": "registration_number",
     "registration_date": "registration_date",
 }
+DATE_SORT_FIELDS = {"registration_date", "expiry_date"}
 SOURCE_COUNTRIES = {
     "fda": {"United States"},
     "health canada": {"Canada"},
@@ -992,6 +995,20 @@ def sort_rows(
         )
     field = SORT_COLUMNS[sort_by]
     reverse = sort_dir == "desc"
+    if field in DATE_SORT_FIELDS:
+        # Registries write dates in eight different shapes, so compare the
+        # dates they name rather than the text. Rows with no readable date go
+        # last whichever way the list runs -- they answer neither "newest" nor
+        # "oldest".
+        dated = [(parse_regulatory_date(item.get(field)), item) for item in rows]
+        with_dates = sorted(
+            (pair for pair in dated if pair[0] is not None),
+            key=lambda pair: pair[0],
+            reverse=reverse,
+        )
+        return [item for _, item in with_dates] + [
+            item for parsed, item in dated if parsed is None
+        ]
     return sorted(
         rows,
         key=lambda item: str(item.get(field) or "").lower(),
@@ -1195,6 +1212,7 @@ def filtered_search_results(
     live_sources: list[str] | None = None,
     include_lookup_rows: bool = True,
 ) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
+    substance = clean_search_term(substance)
     selected_sources = parse_sources(sources)
     scoped_sources = sources_for_scope(
         selected_sources,

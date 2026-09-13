@@ -13,6 +13,7 @@ from fastapi.templating import Jinja2Templates
 
 from admin_routes import router as admin_router
 from services.admin_auth import SESSION_COOKIE_NAME, read_session
+from services.result_cache import BoundedResultCache
 
 from config import BASE_DIR, DB_PATH, EXPORT_DIR
 from core.logging_config import configure_logging, get_logger
@@ -26,7 +27,7 @@ from repository import (
     seed_product_details_if_needed,
 )
 from sources.ema import EU_COUNTRIES, find_product_url, run_ema_search
-from sources.ema_product_parser import extract_product_page
+from sources.ema_product_parser import NotAnEmaPage, extract_product_page
 from sources.mhra import run_mhra_search
 from sources.mhra_product_parser import extract_mhra_product_page
 from sources.search_engine import COMPLETE_SEARCH_TIMEOUT_SECONDS, search_substance
@@ -88,7 +89,9 @@ async def require_sign_in(request: Request, call_next):
     return RedirectResponse(
         f"/admin/login?next={quote(destination, safe='')}", status_code=303
     )
-SEARCH_RESULT_CACHE: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+# Sixteen recent result lists, each for half an hour -- enough for a person to
+# search, sort, filter and then export, without memory growing with every click.
+SEARCH_RESULT_CACHE = BoundedResultCache(max_entries=16, ttl_seconds=30 * 60)
 APP_BUILD = "UAT-2026-08-01-platform-core"
 
 
@@ -206,7 +209,7 @@ def home(request: Request):
     )
 
 
-@app.get("/global_search/{substance}")
+@app.get("/global_search/{substance:path}")
 def global_search(
     substance: str,
     sources: list[str] | None = Query(default=None),
@@ -292,7 +295,7 @@ def api_search(
     return {"substance": substance, "count": len(results), "results": results}
 
 
-@app.get("/search/{substance}")
+@app.get("/search/{substance:path}")
 def search_saved(
     substance: str,
     live: bool = True,
@@ -1378,7 +1381,7 @@ def search_page(
     return HTMLResponse(content=html)
 
 
-@app.get("/export/{substance}")
+@app.get("/export/{substance:path}")
 def export_live(
     substance: str,
     live: bool = True,
@@ -1477,7 +1480,7 @@ def export_live(
     )
 
 
-@app.get("/deep_export/{substance}")
+@app.get("/deep_export/{substance:path}")
 def deep_export_live(
     substance: str,
     live: bool = True,
@@ -1966,12 +1969,27 @@ def crawl_substance(substance: str):
     product_url = find_product_url(substance)
     if not product_url:
         return {"error": f"No product found for {substance}"}
-    return crawl_url(product_url)
+    try:
+        return save_ema_product_page(product_url)
+    except (NotAnEmaPage, EmptyProductPage) as exc:
+        return {"error": str(exc)}
 
 
-@app.get("/crawl_url")
-def crawl_url(url: str):
+class EmptyProductPage(ValueError):
+    """Raised when an EMA page was read but named no product."""
+
+
+def save_ema_product_page(url: str) -> dict[str, Any]:
+    """Read one EMA product page and save it as an EMA record.
+
+    Only pages on the EMA website are read (extract_product_page refuses the
+    rest, before and after any redirect), and a page that yields no product
+    name is not saved: a nameless row is not a registration, and it would
+    still be stamped as a regulator record.
+    """
     result = extract_product_page(url)
+    if not str(result.get("product_name") or "").strip():
+        raise EmptyProductPage(f"No product was found on {url}")
     saved = save_product_detail(
         {
             "substance": result.get("active_substance", ""),
@@ -1993,12 +2011,26 @@ def crawl_url(url: str):
     return {"message": "Product saved", "product": saved.get("product"), "data": result}
 
 
+# POST, not GET: it writes to the store, and a GET can be set off by nothing
+# more than a link or a browser prefetch while someone is signed in.
+@app.post("/crawl_url")
+def crawl_url(url: str):
+    try:
+        return save_ema_product_page(url)
+    except NotAnEmaPage:
+        return JSONResponse(
+            {"detail": "Only https pages on ema.europa.eu can be read."}, status_code=400
+        )
+    except EmptyProductPage as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=422)
+
+
 @app.get("/crawl_all_products/{substance}")
 def crawl_all_products(substance: str):
     saved_products = []
     for product_data in run_ema_search(substance):
         try:
-            result = crawl_url(product_data["url"])
+            result = save_ema_product_page(product_data["url"])
             saved_products.append(result["product"])
         except Exception:
             logger.exception("EMA product crawl failed")

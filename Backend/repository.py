@@ -820,6 +820,17 @@ def region_for_country(country: str | None) -> str:
     return ""
 
 
+def clean_search_term(value: object) -> str:
+    """A search term with its surrounding and repeated whitespace removed.
+
+    Search matches with LIKE '%term%', so padding is part of the pattern: a
+    molecule pasted with a trailing space matched only rows whose text had that
+    space too, and " metformin " quietly returned 38% fewer rows than
+    "metformin". Every search path cleans the term through here first.
+    """
+    return " ".join(str(value or "").split())
+
+
 def search_product_details(substance: str) -> list[dict[str, Any]]:
     """Rows for a molecule, whatever language the registry filed it in.
 
@@ -829,6 +840,7 @@ def search_product_details(substance: str) -> list[dict[str, Any]]:
     text match stays for brand names and for rows stored before the key existed.
     """
     initialize_database()
+    substance = clean_search_term(substance)
     key = molecule_group_key(substance)
     with get_connection() as conn:
         rows = conn.execute(

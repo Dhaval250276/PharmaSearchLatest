@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from core.logging_config import get_logger
 from repository import (
+    clean_search_term,
     get_persisted_search_job,
     get_persisted_search_job_results,
     save_search_job,
@@ -146,7 +147,7 @@ def create_search_job(substance: str, sources: list[str] | str | None, mode: str
             progress[source] = SourceProgress(source=source)
     job = SearchJob(
         job_id=job_id,
-        substance=substance.strip(),
+        substance=clean_search_term(substance),
         sources=selected_sources,
         mode=normalized_mode,
         progress=progress,

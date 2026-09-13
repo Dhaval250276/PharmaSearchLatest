@@ -1696,6 +1696,225 @@ class FieldCompletionTests(unittest.TestCase):
         self.assertEqual(changes["reference_pil_url"], "https://ema/pil")
 
 
+class EnvFileTests(unittest.TestCase):
+    def test_credentials_in_the_env_file_reach_the_environment(self):
+        from config import load_env_file
+
+        with tempfile.TemporaryDirectory() as directory:
+            env = Path(directory) / ".env"
+            env.write_text(
+                "# admin sign-in\n"
+                "PHARMASEARCH_TEST_USER=demo-admin\n"
+                'export PHARMASEARCH_TEST_QUOTED="scrypt$abc=def"\n'
+                "not a setting\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PHARMASEARCH_TEST_USER", None)
+                os.environ.pop("PHARMASEARCH_TEST_QUOTED", None)
+                load_env_file(env)
+                self.assertEqual(os.environ["PHARMASEARCH_TEST_USER"], "demo-admin")
+                # A digest can hold "=" and "$"; only the first "=" splits.
+                self.assertEqual(os.environ["PHARMASEARCH_TEST_QUOTED"], "scrypt$abc=def")
+
+    def test_a_variable_already_in_the_environment_is_not_overridden(self):
+        from config import load_env_file
+
+        with tempfile.TemporaryDirectory() as directory:
+            env = Path(directory) / ".env"
+            env.write_text("PHARMASEARCH_TEST_USER=from-file\n", encoding="utf-8")
+            with patch.dict(os.environ, {"PHARMASEARCH_TEST_USER": "from-deployment"}):
+                load_env_file(env)
+                self.assertEqual(os.environ["PHARMASEARCH_TEST_USER"], "from-deployment")
+
+    def test_writing_credentials_keeps_the_other_lines(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "make_admin_password", Path(__file__).parent / "tools" / "make_admin_password.py"
+        )
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        with tempfile.TemporaryDirectory() as directory:
+            env = Path(directory) / ".env"
+            env.write_text(
+                "OPENAI_API_KEY=keep-me\nPHARMASEARCH_ADMIN_USERNAME=old\n", encoding="utf-8"
+            )
+            tool.write_env({
+                "PHARMASEARCH_ADMIN_USERNAME": "new",
+                "PHARMASEARCH_SESSION_SECRET": "s",
+            }, env)
+            lines = env.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            lines,
+            ["OPENAI_API_KEY=keep-me", "PHARMASEARCH_ADMIN_USERNAME=new", "PHARMASEARCH_SESSION_SECRET=s"],
+        )
+
+
+class EmaPageUrlTests(unittest.TestCase):
+    def test_only_https_pages_on_the_ema_website_are_read(self):
+        from sources.ema_product_parser import is_ema_page_url
+
+        self.assertTrue(is_ema_page_url("https://www.ema.europa.eu/en/medicines/human/EPAR/avandamet"))
+        for url in [
+            "http://www.ema.europa.eu/en/x",          # not https
+            "http://127.0.0.1:8765/api/version",      # internal address
+            "https://169.254.169.254/latest/meta-data",
+            "file:///C:/Windows/win.ini",
+            "https://ema.europa.eu@evil.example/x",   # credentials trick
+            "https://ema.europa.eu.evil.example/x",   # look-alike host
+            "https://evilema.europa.eu/x",
+            "https://www.ema.europa.eu:8443/x",       # unexpected port
+            "",
+        ]:
+            self.assertFalse(is_ema_page_url(url), url)
+
+    def test_a_refused_address_never_starts_a_browser(self):
+        from sources import ema_product_parser
+
+        with patch.object(ema_product_parser, "sync_playwright") as playwright:
+            with self.assertRaises(ema_product_parser.NotAnEmaPage):
+                ema_product_parser.extract_product_page("http://127.0.0.1/")
+        playwright.assert_not_called()
+
+    def test_a_page_with_no_product_is_not_saved(self):
+        import main
+
+        with patch.object(main, "extract_product_page", lambda url: {"product_name": ""}), \
+             patch.object(main, "save_product_detail") as save:
+            with self.assertRaises(main.EmptyProductPage):
+                main.save_ema_product_page("https://www.ema.europa.eu/en/x")
+        save.assert_not_called()
+
+
+class RegulatoryDateTests(unittest.TestCase):
+    def test_every_shape_a_registry_publishes_is_read(self):
+        from datetime import date
+        from services.regulatory_dates import parse_regulatory_date
+
+        for text, expected in [
+            ("2024-08-23", date(2024, 8, 23)),
+            ("2025-09-15T10:56:55Z", date(2025, 9, 15)),
+            ("2018-04-03T09:47:15+00:00", date(2018, 4, 3)),
+            ("31/12/2009", date(2009, 12, 31)),
+            ("17 Dec, 2013", date(2013, 12, 17)),
+            ("22-DEC-2020", date(2020, 12, 22)),
+            ("2025-Apr-07", date(2025, 4, 7)),
+            ("22.12.2023", date(2023, 12, 22)),
+            ("20261231", date(2026, 12, 31)),
+        ]:
+            self.assertEqual(parse_regulatory_date(text), expected, text)
+
+    def test_a_slashed_date_is_read_day_first(self):
+        from datetime import date
+        from services.regulatory_dates import parse_regulatory_date
+
+        self.assertEqual(parse_regulatory_date("03/04/2020"), date(2020, 4, 3))
+
+    def test_an_impossible_or_empty_date_reads_as_none(self):
+        from services.regulatory_dates import parse_regulatory_date
+
+        for text in ["99/99/9999", "31/02/2020", "Not yet assigned", "", None]:
+            self.assertIsNone(parse_regulatory_date(text))
+
+    def test_newest_first_orders_by_the_date_not_the_text(self):
+        from services.search_pipeline import sort_rows
+
+        rows = [
+            {"registration_date": "31/12/2009"},
+            {"registration_date": ""},
+            {"registration_date": "2024-01-01"},
+            {"registration_date": "17 Dec, 2013"},
+        ]
+        newest = [r["registration_date"] for r in sort_rows(rows, [], "registration_date", "desc")]
+        oldest = [r["registration_date"] for r in sort_rows(rows, [], "registration_date", "asc")]
+        self.assertEqual(newest, ["2024-01-01", "17 Dec, 2013", "31/12/2009", ""])
+        # A row with no date answers neither question, so it goes last both ways.
+        self.assertEqual(oldest, ["31/12/2009", "17 Dec, 2013", "2024-01-01", ""])
+
+
+class SearchTermCleaningTests(unittest.TestCase):
+    def test_padding_and_repeated_spaces_are_removed(self):
+        from repository import clean_search_term
+
+        self.assertEqual(clean_search_term("  metformin  "), "metformin")
+        self.assertEqual(clean_search_term("amlodipine  /\tvalsartan "), "amlodipine / valsartan")
+        self.assertEqual(clean_search_term(None), "")
+
+    def test_a_padded_search_finds_the_same_rows(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            repository.save_product_detail({
+                "substance": "examplezumab",
+                "product": "Brandname examplezumab 10 mg",
+                "source": "Example Regulator",
+                "registration_number": "EX-PAD",
+            })
+            plain = repository.search_product_details("examplezumab")
+            padded = repository.search_product_details("  examplezumab  ")
+        self.assertEqual(len(plain), 1)
+        self.assertEqual(len(padded), len(plain))
+
+
+class CombinationRouteTests(unittest.TestCase):
+    def test_a_substance_containing_a_slash_reaches_the_export_route(self):
+        import main
+        from starlette.routing import Match
+
+        paths = {
+            "/export/amlodipine / valsartan": "export_live",
+            "/deep_export/amlodipine / valsartan": "deep_export_live",
+            "/search/amlodipine / valsartan": "search_saved",
+        }
+        for path, endpoint_name in paths.items():
+            scope = {"type": "http", "path": path, "method": "GET", "root_path": ""}
+            matched = [
+                route for route in main.app.router.routes
+                if getattr(route, "matches", None) and route.matches(scope)[0] == Match.FULL
+            ]
+            self.assertTrue(matched, path)
+            self.assertEqual(matched[0].endpoint.__name__, endpoint_name)
+            self.assertEqual(
+                matched[0].matches(scope)[1]["path_params"]["substance"], "amlodipine / valsartan"
+            )
+
+
+class BoundedResultCacheTests(unittest.TestCase):
+    def test_only_the_most_recent_entries_are_kept(self):
+        from services.result_cache import BoundedResultCache
+
+        cache = BoundedResultCache(max_entries=3)
+        for key in "abcd":
+            cache[key] = [key]
+        self.assertEqual(len(cache), 3)
+        self.assertIsNone(cache.get("a"))
+        self.assertEqual(cache.get("d"), ["d"])
+
+    def test_reading_an_entry_keeps_it_from_being_dropped(self):
+        from services.result_cache import BoundedResultCache
+
+        cache = BoundedResultCache(max_entries=2)
+        cache["search"] = ["rows"]
+        cache["sorted"] = ["rows"]
+        cache.get("search")          # the export reads it back
+        cache["filtered"] = ["rows"]
+        self.assertEqual(cache.get("search"), ["rows"])
+        self.assertIsNone(cache.get("sorted"))
+
+    def test_an_entry_lapses_after_its_time(self):
+        from services.result_cache import BoundedResultCache
+
+        now = [1000.0]
+        cache = BoundedResultCache(max_entries=4, ttl_seconds=60, clock=lambda: now[0])
+        cache["search"] = ["rows"]
+        now[0] += 59
+        self.assertEqual(cache.get("search"), ["rows"])
+        now[0] += 120
+        self.assertIsNone(cache.get("search"))
+        self.assertEqual(len(cache), 0)
+
+
 class SubstanceSynonymTests(unittest.TestCase):
     def test_a_us_adopted_name_is_reached_from_the_inn_and_back(self):
         for inn, usan in [

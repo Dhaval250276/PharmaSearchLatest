@@ -4,6 +4,9 @@ __pycache__/
 .venv/
 Backend/.venv/
 
+# Local secrets: the admin sign-in credentials
+Backend/.env
+
 # Local runtime data and generated exports
 Backend/pharmasearch.db
 Backend/pharmasearch.db.bak-*

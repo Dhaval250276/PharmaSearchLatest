@@ -10,9 +10,9 @@
         {% if not configured %}
             <div class="setup-steps">
                 <strong>No account is configured yet.</strong>
-                <p style="margin:9px 0 0">Generate the credentials, set them where the server runs, then restart it:</p>
-                <code>python tools/make_admin_password.py &lt;username&gt;</code>
-                <p style="margin:0">The command prints three variables. It never stores the password itself, only its scrypt digest.</p>
+                <p style="margin:9px 0 0">From the Backend folder, create the credentials and save them, then restart the server:</p>
+                <code>python tools/make_admin_password.py &lt;username&gt; --write-env</code>
+                <p style="margin:0">It asks for a password and saves only its scrypt digest to <code>Backend/.env</code>, which is git-ignored. The password itself is never stored.</p>
             </div>
         {% else %}
             {% if error %}<div class="login-error">{{ error }}</div>{% endif %}

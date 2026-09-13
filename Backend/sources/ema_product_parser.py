@@ -1,3 +1,5 @@
+from urllib.parse import urlparse
+
 from playwright.sync_api import sync_playwright
 
 from core.logging_config import get_logger
@@ -5,8 +7,37 @@ from core.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+EMA_HOSTS = ("ema.europa.eu",)
+
+
+class NotAnEmaPage(ValueError):
+    """Raised for an address that is not a page on the EMA website."""
+
+
+def is_ema_page_url(url: object) -> bool:
+    """True only for an https address on the EMA website.
+
+    Whatever this parser reads is saved as an EMA record, so it must never be
+    pointed anywhere else: not at an internal address the server can reach and
+    a caller cannot, and not at a look-alike host. The hostname is taken from
+    the parsed URL rather than matched as text, so "ema.europa.eu@elsewhere"
+    and "ema.europa.eu.elsewhere" are both refused.
+    """
+    try:
+        parsed = urlparse(str(url or "").strip())
+        port = parsed.port
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or port not in (None, 443):
+        return False
+    return any(host == allowed or host.endswith("." + allowed) for allowed in EMA_HOSTS)
+
 
 def extract_product_page(url: str) -> dict[str, str]:
+
+    if not is_ema_page_url(url):
+        raise NotAnEmaPage(url)
 
     with sync_playwright() as p:
 
@@ -15,6 +46,11 @@ def extract_product_page(url: str) -> dict[str, str]:
         page = browser.new_page()
 
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        # A redirect can carry the browser off the EMA site after the address
+        # itself passed; what gets read must still be on it.
+        if not is_ema_page_url(page.url):
+            browser.close()
+            raise NotAnEmaPage(page.url)
         page.wait_for_selector("body", timeout=15000)
 
         title = page.title()
