@@ -36,6 +36,7 @@ from sources.regional_live import (
     run_thai_fda_search,
     run_ukraine_drlz_search,
 )
+from sources.open_registers import run_aifa_italy_search, run_anvisa_brazil_search
 from sources.romania_anmdmr import run_romania_anmdmr_search
 from sources.spain_cima import run_spain_cima_search
 from sources.swissmedic import run_swissmedic_search
@@ -369,6 +370,24 @@ CONNECTORS: list[SourceConnector] = [
             supports_documents=True,
         ),
         run_romania_anmdmr_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="AIFA Italy",
+            region="EU",
+            countries=("Italy",),
+            supports_documents=False,
+        ),
+        run_aifa_italy_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="ANVISA Brazil",
+            region="BR",
+            countries=("Brazil",),
+            supports_documents=False,
+        ),
+        run_anvisa_brazil_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(

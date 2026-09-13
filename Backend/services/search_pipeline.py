@@ -25,6 +25,7 @@ DEFAULT_SOURCES = [
     "Ireland medicines.ie",
     "Spain CIMA",
     "ANMDMR Romania",
+    "AIFA Italy",
     "MHRA",
     "FDA",
     "FDA Orange Book",
@@ -50,6 +51,7 @@ DEFAULT_SOURCES = [
     "Cyprus Pharmaceutical Services",
     "Ukraine DRLZ",
     "GRLS Russia",
+    "ANVISA Brazil",
 ]
 EU_NATIONAL_SOURCES = [
     "Belgium FAMHP",
@@ -58,6 +60,7 @@ EU_NATIONAL_SOURCES = [
     "Ireland medicines.ie",
     "Spain CIMA",
     "ANMDMR Romania",
+    "AIFA Italy",
     "Cyprus Pharmaceutical Services",
     "Ukraine DRLZ",
 ]
@@ -193,7 +196,7 @@ REGIONAL_COUNTRIES = {
     "ME": MIDDLE_EAST_COUNTRIES,
     "AS": ASIA_COUNTRIES,
 }
-REGION_OPTIONS = ["ALL", "EU", "UK", "US", "CA", "AU", "NZ", "AF", "ME", "AS", "CH", "JP", "RU"]
+REGION_OPTIONS = ["ALL", "EU", "UK", "US", "CA", "AU", "NZ", "AF", "ME", "AS", "CH", "JP", "RU", "BR"]
 GLOBAL_COUNTRIES = [
     "Afghanistan",
     "Albania",
@@ -439,6 +442,8 @@ SOURCE_COUNTRIES = {
     "france bdpm": {"France"},
     "ireland medicines.ie": {"Ireland"},
     "spain cima": {"Spain"},
+    "aifa italy": {"Italy"},
+    "anvisa brazil": {"Brazil"},
     "cyprus pharmaceutical services": {"Cyprus"},
     "ukraine drlz": {"Ukraine"},
     "grls russia": {"Russia"},
@@ -469,6 +474,8 @@ COUNTRY_SOURCE_DEFAULTS = {
     "Russia": "GRLS Russia",
     "Cyprus": "Cyprus Pharmaceutical Services",
     "Romania": "ANMDMR Romania",
+    "Italy": "AIFA Italy",
+    "Brazil": "ANVISA Brazil",
 }
 REGION_SOURCE_DEFAULTS = {
     "AU": "TGA Australia",
@@ -479,6 +486,7 @@ REGION_SOURCE_DEFAULTS = {
     "UK": "MHRA",
     "US": "FDA",
     "RU": "GRLS Russia",
+    "BR": "ANVISA Brazil",
 }
 EU_LOOKUP_SOURCE = "EU National Registry"
 REGISTRY_LOOKUP_SOURCE = "Regulatory Registry Lookup"
@@ -605,6 +613,8 @@ def _country_region(country: str) -> str:
         return "JP"
     if country == "Russia":
         return "RU"
+    if country == "Brazil":
+        return "BR"
     if country in ASIA_COUNTRIES:
         return "AS"
     return "Global"
@@ -1086,6 +1096,12 @@ def sources_for_scope(
             item
             for item in _ensure_source(selected, "Medsafe New Zealand")
             if item.lower() == "medsafe new zealand"
+        ]
+    if region == "BR":
+        return [
+            item
+            for item in _ensure_source(selected, "ANVISA Brazil")
+            if item.lower() == "anvisa brazil"
         ]
     if region == "ALL":
         regional_sources = []

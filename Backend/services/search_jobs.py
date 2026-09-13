@@ -42,6 +42,10 @@ FAST_BACKGROUND_SOURCES = {
     "FDA Orange Book",
     "FDA Purple Book",
     "Spain CIMA",
+    # Searched in a local copy of the regulator's published file, ~30 ms each,
+    # so fast mode loses nothing by including them.
+    "AIFA Italy",
+    "ANVISA Brazil",
 }
 # Registries that answer in more than the default budget. Measured against a
 # live search rather than guessed: Health Canada takes ~19s, CDSCO ~22s and

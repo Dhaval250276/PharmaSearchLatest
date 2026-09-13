@@ -562,9 +562,11 @@ class PlatformCoreTests(unittest.TestCase):
         self.assertEqual(rows[0]["source"], "EU National Registry")
 
     def test_country_lookup_returns_row_for_any_country(self):
-        rows = _country_lookup_rows("atorvastatin", country="Brazil")
+        # Brazil was the example here until ANVISA gave it a connector and its
+        # own region; Argentina still has neither.
+        rows = _country_lookup_rows("atorvastatin", country="Argentina")
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["country"], "Brazil")
+        self.assertEqual(rows[0]["country"], "Argentina")
         self.assertEqual(rows[0]["region"], "Global")
         self.assertEqual(rows[0]["source"], "Regulatory Registry Lookup")
 
@@ -1694,6 +1696,172 @@ class FieldCompletionTests(unittest.TestCase):
 
         self.assertEqual(changes["reference_source"], "EMA")
         self.assertEqual(changes["reference_pil_url"], "https://ema/pil")
+
+
+ITALY_FIXTURE = (
+    "CODICE_AIC;COD_FARMACO;COD_CONFEZIONE;DENOMINAZIONE;DESCRIZIONE;CODICE_DITTA;RAGIONE_SOCIALE;"
+    "STATO_AMMINISTRATIVO;TIPO_PROCEDURA;FORMA;CODICE_ATC;PA_ASSOCIATI;LINK\n"
+    "026846010;026846;010;GLUCOPHAGE;500 MG COMPRESSE RIVESTITE- 30 COMPRESSE;1;MERCK SERONO S.P.A.;"
+    "Autorizzata;Procedura Nazionale;Compressa rivestita con film;A10BA02;METFORMINA CLORIDRATO;\n"
+    "026846022;026846;022;GLUCOPHAGE;500 MG COMPRESSE RIVESTITE- 60 COMPRESSE;1;MERCK SERONO S.P.A.;"
+    "Autorizzata;Procedura Nazionale;Compressa rivestita con film;A10BA02;METFORMINA CLORIDRATO;\n"
+    "026846034;026846;034;GLUCOPHAGE;30 COMPRESSE IN BLISTER DA 1000 MG;1;MERCK SERONO S.P.A.;"
+    "Sospesa;Procedura Nazionale;Compressa rivestita con film;A10BA02;METFORMINA CLORIDRATO;\n"
+    "049877011;049877;011;ADIABIN;50 MG/1000 MG COMPRESSE- 56 COMPRESSE;2;PHARMEXTRACTA S.P.A.;"
+    "Autorizzata;Procedura Mutuo riconoscimento o Decentrata;Compressa rivestita con film;A10BD07;"
+    "SITAGLIPTIN/METFORMINA CLORIDRATO;\n"
+    "033001011;033001;011;NORVASC;5 MG COMPRESSE- 28 COMPRESSE;3;PFIZER ITALIA S.R.L.;"
+    "Autorizzata;Procedura Nazionale;Compressa;C08CA01;AMLODIPINA BESILATO;\n"
+    "900001011;900001;011;METFORMIN HOMEOPATHIC GRANULES;GRANULI 4 G;4;BOIRON;"
+    "Autorizzata;Omeopatico;Granuli;V03AX;METFORMINA;\n"
+)
+
+BRAZIL_FIXTURE = (
+    "TIPO_PRODUTO;NOME_PRODUTO;DATA_FINALIZACAO_PROCESSO;CATEGORIA_REGULATORIA;NUMERO_REGISTRO_PRODUTO;"
+    "DATA_VENCIMENTO_REGISTRO;NUMERO_PROCESSO;CLASSE_TERAPEUTICA;EMPRESA_DETENTORA_REGISTRO;"
+    "SITUACAO_REGISTRO;PRINCIPIO_ATIVO\n"
+    '"MEDICAMENTO";"CLORIDRATO DE METFORMINA";"02/09/2024";"Genérico";155840680;"092034";"25351";'
+    '"ANTIDIABETICOS";"06626253000151 - BRAINFARMA INDÚSTRIA QUÍMICA E FARMACÊUTICA S.A";"Ativo";'
+    '"cloridrato de metformina"\n'
+    '"MEDICAMENTO";"ANLO";"11/03/2015";"Similar";102351148;"032025";"25352";"ANTI-HIPERTENSIVOS";'
+    '"57507378000365 - EMS S/A";"Inativo";"besilato de anlodipino"\n'
+    '"MEDICAMENTO";"METFORMINUM";"22/10/2013";"DINAMIZADO";;;;;"60862208000141 - HOMEOPATICO LTDA";'
+    '"Ativo";"metformina"\n'
+)
+
+
+class OpenRegisterTests(unittest.TestCase):
+    """Italy's and Brazil's published registers, searched from a local index."""
+
+    def setUp(self):
+        from sources import open_registers
+
+        self.registers = open_registers
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        index_dir = Path(self.directory.name) / "open_registers"
+        patcher = patch.object(open_registers, "INDEX_DIR", index_dir)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _index(self, register, text):
+        csv_path = Path(self.directory.name) / f"{register.slug}.csv"
+        csv_path.write_bytes(text.encode(register.encoding))
+        self.registers.build_index(register, csv_path)
+
+    def test_an_english_molecule_matches_its_italian_and_portuguese_spelling(self):
+        tokens = self.registers.query_tokens
+        inn = self.registers.inn_tokens
+        for english, italian, portuguese in [
+            ("amlodipine", "AMLODIPINA BESILATO", "besilato de anlodipino"),
+            ("simvastatin", "SIMVASTATINA", "sinvastatina"),
+            ("levothyroxine", "LEVOTIROXINA SODICA", "levotiroxina sódica"),
+            ("amoxicillin", "AMOXICILLINA TRIIDRATO", "amoxicilina tri-hidratada"),
+            ("metformin hydrochloride", "METFORMINA CLORIDRATO", "cloridrato de metformina"),
+        ]:
+            for register_text in (italian, portuguese):
+                self.assertTrue(set(tokens(english)) <= set(inn(register_text)), (english, register_text))
+
+    def test_salt_words_are_ignored_unless_they_are_the_whole_search(self):
+        self.assertEqual(self.registers.query_tokens("metformin hydrochloride"), ["metformin"])
+        self.assertEqual(len(self.registers.query_tokens("sodium chloride")), 2)
+
+    def test_italian_packs_fold_into_one_row_per_product_strength_and_form(self):
+        self._index(self.registers.ITALY, ITALY_FIXTURE)
+        rows = self.registers.search_register(self.registers.ITALY, "metformin")
+        by_product = {row["product"]: row for row in rows}
+
+        glucophage = by_product["GLUCOPHAGE 500 MG, Film-coated tablet"]
+        self.assertEqual(glucophage["pack_size"], "30 COMPRESSE; 60 COMPRESSE")
+        self.assertEqual(glucophage["registration_number"], "026846")
+        self.assertEqual(glucophage["dosage_form"], "Film-coated tablet")
+        self.assertEqual(glucophage["status"], "Authorised")
+        self.assertEqual(glucophage["authorisation_scope"], "National")
+        self.assertEqual(glucophage["atc_code"], "A10BA02")
+        # The pack written pack-first is still read, and keeps its own strength.
+        self.assertEqual(by_product["GLUCOPHAGE 1000 MG, Film-coated tablet"]["pack_size"], "30 COMPRESSE")
+        self.assertEqual(by_product["GLUCOPHAGE 1000 MG, Film-coated tablet"]["status"], "Suspended")
+        # A combination keeps the register's own combination code.
+        self.assertEqual(by_product["ADIABIN 50 MG/1000 MG, Film-coated tablet"]["atc_code"], "A10BD07")
+
+    def test_two_forms_under_one_code_stay_two_products(self):
+        powder = ITALY_FIXTURE + (
+            "026846046;026846;046;GLUCOPHAGE;500 MG POLVERE PER SOLUZIONE ORALE- 30 BUSTINE;1;"
+            "MERCK SERONO S.P.A.;Autorizzata;Procedura Nazionale;Polvere per soluzione orale;A10BA02;"
+            "METFORMINA CLORIDRATO;\n"
+        )
+        self._index(self.registers.ITALY, powder)
+        names = [row["product"] for row in self.registers.search_register(self.registers.ITALY, "metformin")]
+        # Same AIC code and strength, different medicines: they must not share a
+        # name, or the search job and the save path merge them into one row.
+        self.assertIn("GLUCOPHAGE 500 MG, Film-coated tablet", names)
+        self.assertIn("GLUCOPHAGE 500 MG, Powder for oral solution", names)
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_homeopathic_registrations_are_left_out(self):
+        self._index(self.registers.ITALY, ITALY_FIXTURE)
+        self._index(self.registers.BRAZIL, BRAZIL_FIXTURE)
+        for register in (self.registers.ITALY, self.registers.BRAZIL):
+            products = [row["product"] for row in self.registers.search_register(register, "metformin")]
+            self.assertFalse(any("HOMEOPATHIC" in p or p == "METFORMINUM" for p in products), products)
+
+    def test_only_the_registers_own_active_ingredient_decides_a_match(self):
+        self._index(self.registers.ITALY, ITALY_FIXTURE)
+        amlodipine = self.registers.search_register(self.registers.ITALY, "amlodipine")
+        self.assertEqual([row["product"] for row in amlodipine], ["NORVASC 5 MG, Tablet"])
+        self.assertEqual(self.registers.search_register(self.registers.ITALY, "atorvastatin"), [])
+
+    def test_authorised_rows_come_before_suspended_ones(self):
+        self._index(self.registers.ITALY, ITALY_FIXTURE)
+        statuses = [row["status"] for row in self.registers.search_register(self.registers.ITALY, "metformin")]
+        self.assertEqual(statuses[-1], "Suspended")
+
+    def test_brazilian_registrations_keep_category_dates_and_holder_name(self):
+        self._index(self.registers.BRAZIL, BRAZIL_FIXTURE)
+        (metformin,) = self.registers.search_register(self.registers.BRAZIL, "metformin")
+        self.assertEqual(metformin["authorisation_scope"], "Generic")
+        self.assertEqual(metformin["registration_date"], "02/09/2024")
+        self.assertEqual(metformin["expiry_date"], "2034-09")
+        self.assertEqual(metformin["company"], "BRAINFARMA INDÚSTRIA QUÍMICA E FARMACÊUTICA S.A")
+        self.assertEqual(metformin["status"], "Active")
+        self.assertEqual(metformin["region"], "BR")
+
+        (amlodipine,) = self.registers.search_register(self.registers.BRAZIL, "amlodipine")
+        self.assertEqual(amlodipine["product"], "ANLO")
+        self.assertEqual(amlodipine["status"], "Inactive")
+
+    def test_a_register_not_yet_downloaded_says_so_and_starts_the_download(self):
+        with patch.object(self.registers, "refresh_in_background", return_value=True) as refresh:
+            with self.assertRaises(self.registers.RegisterNotReady) as raised:
+                self.registers.search_register(self.registers.BRAZIL, "metformin")
+        refresh.assert_called_once_with(self.registers.BRAZIL)
+        self.assertIn("search again in a few minutes", str(raised.exception))
+
+    def test_a_stale_register_is_still_searched_while_it_refreshes(self):
+        self._index(self.registers.BRAZIL, BRAZIL_FIXTURE)
+        with patch.object(self.registers, "_is_stale", return_value=True), \
+             patch.object(self.registers, "refresh_in_background") as refresh:
+            rows = self.registers.search_register(self.registers.BRAZIL, "metformin")
+        self.assertEqual(len(rows), 1)
+        refresh.assert_called_once_with(self.registers.BRAZIL)
+
+    def test_the_brazil_download_trusts_the_intermediate_its_server_omits(self):
+        bundle = Path(self.registers._ca_bundle(self.registers.BRAZIL)).read_text(encoding="ascii")
+        shipped = (
+            self.registers.CERT_DIR / "sectigo_public_server_authentication_ca_ov_r36.pem"
+        ).read_text(encoding="ascii").strip()
+        self.assertIn(shipped, bundle)
+        # certifi's own roots are still there: verification is extended, not replaced.
+        import certifi
+        self.assertIn(Path(certifi.where()).read_text(encoding="ascii").strip()[:200], bundle)
+
+    def test_italy_and_brazil_are_searched_for_their_countries_and_regions(self):
+        from services.search_pipeline import DEFAULT_SOURCES, sources_for_scope
+
+        self.assertIn("AIFA Italy", sources_for_scope(DEFAULT_SOURCES, country="Italy"))
+        self.assertIn("AIFA Italy", sources_for_scope(DEFAULT_SOURCES, region="EU"))
+        self.assertEqual(sources_for_scope(DEFAULT_SOURCES, country="Brazil"), ["ANVISA Brazil"])
+        self.assertEqual(sources_for_scope(DEFAULT_SOURCES, region="BR"), ["ANVISA Brazil"])
 
 
 class EnvFileTests(unittest.TestCase):

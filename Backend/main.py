@@ -28,6 +28,7 @@ from repository import (
 )
 from sources.ema import EU_COUNTRIES, find_product_url, run_ema_search
 from sources.ema_product_parser import NotAnEmaPage, extract_product_page
+from sources.open_registers import warm_open_registers
 from sources.mhra import run_mhra_search
 from sources.mhra_product_parser import extract_mhra_product_page
 from sources.search_engine import COMPLETE_SEARCH_TIMEOUT_SECONDS, search_substance
@@ -193,6 +194,9 @@ def merged_options(primary_values: list[str], fixed_values: list[str]) -> list[s
 def startup() -> None:
     logger.info("Starting PharmaSearch backend")
     initialize_database()
+    # Download any published register that is missing or stale, on a background
+    # thread, so the first Italian or Brazilian search finds it ready.
+    warm_open_registers()
 
 
 @app.get("/", response_class=HTMLResponse)
