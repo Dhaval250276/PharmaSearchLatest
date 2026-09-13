@@ -42,15 +42,17 @@ FAST_BACKGROUND_SOURCES = {
     "FDA Orange Book",
     "FDA Purple Book",
     "Spain CIMA",
-    # Searched in a local copy of the regulator's published file, ~30 ms each,
-    # so fast mode loses nothing by including them.
+    # Searched in a local copy of the regulator's published register, ~30-100 ms
+    # each, so fast mode loses nothing by including them.
     "AIFA Italy",
     "ANVISA Brazil",
+    "Health Canada",
 }
 # Registries that answer in more than the default budget. Measured against a
-# live search rather than guessed: Health Canada takes ~19s, CDSCO ~22s and
-# France BDPM ~27s, and on the 10s default all three timed out and reported
-# nothing for molecules they hold hundreds of rows for.
+# live search rather than guessed: CDSCO takes ~22s and France BDPM ~27s, and on
+# the 10s default both timed out and reported nothing for molecules they hold
+# hundreds of rows for. (Health Canada was here at ~19s until it moved to a
+# local copy of its register.)
 SLOW_SOURCES = {
     "GRLS Russia",
     "TGA Australia",
@@ -60,7 +62,6 @@ SLOW_SOURCES = {
     "EU MRI Product Index",
     "Belgium FAMHP",
     "Ireland medicines.ie",
-    "Health Canada",
     "France BDPM",
     "CDSCO India",
     "SFDA Saudi Arabia",

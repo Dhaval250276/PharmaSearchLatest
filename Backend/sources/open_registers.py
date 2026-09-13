@@ -149,15 +149,25 @@ def _match_text(active_ingredient: object) -> str:
 
 @dataclass(frozen=True)
 class OpenRegister:
+    """A register published whole, and how to fetch, read and index it.
+
+    Most are one CSV at one address, which is what the defaults do. A register
+    published another way supplies ``fetch`` (put the published data in a
+    working directory and return where it is) and ``read_records`` (yield one
+    dict per record from there).
+    """
     source: str
     country: str
     region: str
     url: str
     slug: str
-    encoding: str
     max_age_seconds: int
-    build_rows: Callable[[Iterable[dict[str, str]], str], Iterator[tuple[str, dict[str, Any]]]]
+    build_rows: Callable[[Iterable[dict[str, Any]], str], Iterator[tuple[str, dict[str, Any]]]]
+    encoding: str = "utf-8"
     extra_ca_certs: tuple[str, ...] = ()
+    fetch: Callable[["OpenRegister", Path], Path] | None = None
+    read_records: Callable[["OpenRegister", Path], Iterable[dict[str, Any]]] | None = None
+    max_results: int = MAX_RESULTS
 
 
 def _clean(value: object) -> str:
@@ -434,14 +444,30 @@ BRAZIL = OpenRegister(
     extra_ca_certs=("sectigo_public_server_authentication_ca_ov_r36.pem",),
 )
 
-REGISTERS = {register.source: register for register in (ITALY, BRAZIL)}
+REGISTERS: dict[str, OpenRegister] = {}
+
+
+def add_register(register: OpenRegister) -> OpenRegister:
+    """Make a register searchable and refreshed; its own module calls this."""
+    REGISTERS[register.source] = register
+    return register
+
+
+add_register(ITALY)
+add_register(BRAZIL)
 
 
 # --------------------------------------------------------------------------
 # Download and index
 # --------------------------------------------------------------------------
 
-_refresh_locks = {register.slug: threading.Lock() for register in REGISTERS.values()}
+_refresh_locks: dict[str, threading.Lock] = {}
+_refresh_locks_guard = threading.Lock()
+
+
+def _refresh_lock(register: OpenRegister) -> threading.Lock:
+    with _refresh_locks_guard:
+        return _refresh_locks.setdefault(register.slug, threading.Lock())
 _ca_bundle_lock = threading.Lock()
 
 
@@ -506,9 +532,10 @@ def _is_stale(register: OpenRegister, info: dict[str, Any] | None) -> bool:
         return True
 
 
-def _download(register: OpenRegister, destination: Path) -> None:
+def download_file(register: OpenRegister, url: str, destination: Path) -> Path:
+    """Stream one published file to disk, verifying TLS with the register's roots."""
     with requests.get(
-        register.url,
+        url,
         stream=True,
         timeout=DOWNLOAD_TIMEOUT,
         headers={"User-Agent": "PharmaSearch/1.0 (regulatory register download)"},
@@ -518,10 +545,29 @@ def _download(register: OpenRegister, destination: Path) -> None:
         with destination.open("wb") as handle:
             for chunk in response.iter_content(chunk_size=1 << 20):
                 handle.write(chunk)
+    return destination
 
 
-def build_index(register: OpenRegister, csv_path: Path) -> Path:
-    """Index a downloaded register file and make it the one searches read.
+def _fetch_single_file(register: OpenRegister, workdir: Path) -> Path:
+    return download_file(register, register.url, workdir / f"{register.slug}.download")
+
+
+def _read_semicolon_csv(register: OpenRegister, path: Path) -> Iterator[dict[str, str]]:
+    with path.open("r", encoding=register.encoding, errors="replace", newline="") as handle:
+        yield from csv.DictReader(handle, delimiter=";")
+
+
+def _size_on_disk(path: Path) -> int:
+    if path.is_dir():
+        return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
+    return path.stat().st_size
+
+
+def build_index(register: OpenRegister, source_path: Path) -> Path:
+    """Index a fetched register and make it the one searches read.
+
+    ``source_path`` is whatever the register's fetch step produced: a single
+    downloaded file, or a directory of them.
 
     The index is written to a new file and only then pointed at, so a search
     running during a refresh reads the old copy whole rather than a half-built
@@ -531,31 +577,30 @@ def build_index(register: OpenRegister, csv_path: Path) -> Path:
     fetched_epoch = time.time()
     fetched_at = datetime.fromtimestamp(fetched_epoch, timezone.utc).isoformat(timespec="seconds")
     path = INDEX_DIR / f"{register.slug}-{time.time_ns()}.sqlite"
-    with csv_path.open("r", encoding=register.encoding, errors="replace", newline="") as handle:
-        records = csv.DictReader(handle, delimiter=";")
-        with _connect(path) as conn:
-            conn.execute("CREATE TABLE rows (match TEXT NOT NULL, payload TEXT NOT NULL)")
-            conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
-            count = 0
-            batch: list[tuple[str, str]] = []
-            for match, row in register.build_rows(records, fetched_at):
-                batch.append((match, json.dumps(row, ensure_ascii=False)))
-                if len(batch) >= 5000:
-                    conn.executemany("INSERT INTO rows VALUES (?, ?)", batch)
-                    count += len(batch)
-                    batch.clear()
-            conn.executemany("INSERT INTO rows VALUES (?, ?)", batch)
-            count += len(batch)
-            conn.executemany(
-                "INSERT INTO meta VALUES (?, ?)",
-                [
-                    ("source", register.source),
-                    ("url", register.url),
-                    ("fetched_at", fetched_at),
-                    ("fetched_epoch", str(fetched_epoch)),
-                    ("rows", str(count)),
-                ],
-            )
+    records = (register.read_records or _read_semicolon_csv)(register, source_path)
+    with _connect(path) as conn:
+        conn.execute("CREATE TABLE rows (match TEXT NOT NULL, payload TEXT NOT NULL)")
+        conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+        count = 0
+        batch: list[tuple[str, str]] = []
+        for match, row in register.build_rows(records, fetched_at):
+            batch.append((match, json.dumps(row, ensure_ascii=False)))
+            if len(batch) >= 5000:
+                conn.executemany("INSERT INTO rows VALUES (?, ?)", batch)
+                count += len(batch)
+                batch.clear()
+        conn.executemany("INSERT INTO rows VALUES (?, ?)", batch)
+        count += len(batch)
+        conn.executemany(
+            "INSERT INTO meta VALUES (?, ?)",
+            [
+                ("source", register.source),
+                ("url", register.url),
+                ("fetched_at", fetched_at),
+                ("fetched_epoch", str(fetched_epoch)),
+                ("rows", str(count)),
+            ],
+        )
     previous = current_index(register)
     _pointer(register).write_text(path.name, encoding="utf-8")
     if previous and previous != path:
@@ -576,20 +621,19 @@ def build_index(register: OpenRegister, csv_path: Path) -> Path:
 
 def refresh_register(register: OpenRegister) -> Path | None:
     """Download and index a register, unless another thread is already doing so."""
-    lock = _refresh_locks[register.slug]
+    lock = _refresh_lock(register)
     if not lock.acquire(blocking=False):
         return None
     try:
         INDEX_DIR.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=INDEX_DIR) as scratch:
-            csv_path = Path(scratch) / f"{register.slug}.csv"
             started = time.time()
-            _download(register, csv_path)
+            fetched = (register.fetch or _fetch_single_file)(register, Path(scratch))
             logger.info(
                 "Downloaded %s (%.1f MB) in %.0fs",
-                register.source, csv_path.stat().st_size / 1e6, time.time() - started,
+                register.source, _size_on_disk(fetched) / 1e6, time.time() - started,
             )
-            return build_index(register, csv_path)
+            return build_index(register, fetched)
     except Exception:
         logger.exception("Refreshing %s failed", register.source)
         return None
@@ -599,7 +643,7 @@ def refresh_register(register: OpenRegister) -> Path | None:
 
 def refresh_in_background(register: OpenRegister) -> bool:
     """Start a refresh on a daemon thread; False if one is already running."""
-    if _refresh_locks[register.slug].locked():
+    if _refresh_lock(register).locked():
         return False
     threading.Thread(
         target=refresh_register, args=(register,), name=f"refresh-{register.slug}", daemon=True
@@ -619,10 +663,12 @@ def warm_open_registers() -> None:
 # --------------------------------------------------------------------------
 
 def _status_rank(row: dict[str, Any]) -> int:
-    return 0 if row.get("status") in {"Authorised", "Active"} else 1
+    status = str(row.get("status") or "")
+    current = {"Authorised", "Active", "Marketed", "Approved"}
+    return 0 if status in current or status.startswith("Marketed (") else 1
 
 
-def search_register(register: OpenRegister, substance: str, limit: int = MAX_RESULTS) -> list[dict[str, Any]]:
+def search_register(register: OpenRegister, substance: str, limit: int | None = None) -> list[dict[str, Any]]:
     """Rows whose own active ingredient contains every word of the molecule.
 
     Matching the register's active-ingredient field, and not the product name
@@ -648,7 +694,13 @@ def search_register(register: OpenRegister, substance: str, limit: int = MAX_RES
         payloads = [payload for (payload,) in conn.execute(f"SELECT payload FROM rows WHERE {where}", params)]
     rows = [json.loads(payload) for payload in payloads]
     rows.sort(key=lambda row: (_status_rank(row), row.get("product", "").lower()))
-    return rows[:limit]
+    bound = register.max_results if limit is None else limit
+    if len(rows) > bound:
+        # Say so rather than trim silently: the search page names a registry
+        # whose rows stop short of what it holds.
+        for row in rows[:bound]:
+            row["available_total"] = len(rows)
+    return rows[:bound]
 
 
 def run_aifa_italy_search(substance: str) -> list[dict[str, Any]]:

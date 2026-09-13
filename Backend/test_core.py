@@ -1232,7 +1232,6 @@ class SearchJobTests(unittest.TestCase):
         sources = order_sources_for_job(["GRLS Russia", "FDA", "Spain CIMA"])
         self.assertEqual(sources[:2], ["FDA", "Spain CIMA"])
         self.assertIn("GRLS Russia", SLOW_SOURCES)
-        self.assertIn("Health Canada", SLOW_SOURCES)
 
     def test_fast_background_job_skips_heavy_sources(self):
         self.assertTrue(source_skipped_in_mode("GRLS Russia", "fast"))
@@ -1696,6 +1695,203 @@ class FieldCompletionTests(unittest.TestCase):
 
         self.assertEqual(changes["reference_source"], "EMA")
         self.assertEqual(changes["reference_pil_url"], "https://ema/pil")
+
+
+def _ndc_record(**overrides):
+    record = {
+        "product_ndc": "33342-409",
+        "product_type": "HUMAN PRESCRIPTION DRUG",
+        "finished": True,
+        "brand_name": "Metformin Hydrochloride",
+        "active_ingredients": [{"name": "METFORMIN HYDROCHLORIDE", "strength": "500 mg/1"}],
+        "dosage_form": "TABLET, FILM COATED",
+        "route": ["ORAL"],
+        "labeler_name": "Macleods Pharmaceuticals Limited",
+        "marketing_category": "ANDA",
+        "application_number": "ANDA211559",
+        "marketing_start_date": "20260406",
+        "listing_expiration_date": "20271231",
+        "pharm_class": ["Biguanide [EPC]", "Biguanides [CS]"],
+        "packaging": [{"description": "30 TABLET, FILM COATED in 1 BOTTLE (33342-409-07)"}],
+        "openfda": {"spl_set_id": ["7d575ca8-9c1f-469d-a341-34daf2f036dd"]},
+    }
+    record.update(overrides)
+    return record
+
+
+class FdaNdcRegisterTests(unittest.TestCase):
+    """The FDA's NDC directory, streamed from openFDA's download and searched locally."""
+
+    def setUp(self):
+        from sources import open_registers
+
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        patcher = patch.object(open_registers, "INDEX_DIR", Path(self.directory.name) / "idx")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _zip(self, records):
+        import json as _json
+        import zipfile as _zipfile
+
+        path = Path(self.directory.name) / "ndc.json.zip"
+        document = {"meta": {"results": {"total": len(records)}}, "results": records}
+        with _zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("drug-ndc-0001-of-0001.json", _json.dumps(document, indent=2))
+        return path
+
+    def test_the_stream_yields_every_record_however_the_reads_fall(self):
+        from sources.fda_ndc import stream_results
+
+        records = [_ndc_record(product_ndc=f"0000-{index:03d}") for index in range(40)]
+        path = self._zip(records)
+        for chunk_size in (7, 1 << 20):
+            streamed = [record["product_ndc"] for record in stream_results(path, chunk_size=chunk_size)]
+            self.assertEqual(streamed, [record["product_ndc"] for record in records], chunk_size)
+
+    def test_a_listing_becomes_a_row_with_its_approval_and_label(self):
+        from sources.fda_ndc import FDA_NDC
+        from sources.open_registers import build_index, search_register
+
+        build_index(FDA_NDC, self._zip([_ndc_record()]))
+        (row,) = search_register(FDA_NDC, "metformin")
+        self.assertEqual(row["product"], "Metformin Hydrochloride 500 mg (NDC 33342-409)")
+        self.assertEqual(row["authorisation_scope"], "ANDA (generic)")
+        self.assertEqual(row["registration_number"], "ANDA211559")
+        self.assertEqual(row["registration_date"], "2026-04-06")
+        self.assertEqual(row["strength"], "500 mg")
+        self.assertEqual(row["therapeutic_category"], "Biguanide")
+        self.assertEqual(row["status"], "Marketed")
+        self.assertEqual(row["pack_size"], "30 TABLET, FILM COATED in 1 BOTTLE")
+        self.assertEqual(
+            row["smpc_url"],
+            "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=7d575ca8-9c1f-469d-a341-34daf2f036dd",
+        )
+
+    def test_a_repackager_under_the_same_application_stays_its_own_row(self):
+        from sources.fda_ndc import FDA_NDC
+        from sources.open_registers import build_index, search_register
+
+        repackaged = _ndc_record(product_ndc="50090-6123", labeler_name="A-S Medication Solutions")
+        build_index(FDA_NDC, self._zip([_ndc_record(), repackaged]))
+        rows = search_register(FDA_NDC, "metformin")
+        self.assertEqual(len({row["product"] for row in rows}), 2)
+
+    def test_products_that_are_not_finished_human_medicines_are_left_out(self):
+        from sources.fda_ndc import FDA_NDC
+        from sources.open_registers import build_index, search_register
+
+        build_index(FDA_NDC, self._zip([
+            _ndc_record(),
+            _ndc_record(product_ndc="1-1", product_type="BULK INGREDIENT"),
+            _ndc_record(product_ndc="1-2", finished=False),
+            _ndc_record(product_ndc="1-3", marketing_category="UNAPPROVED HOMEOPATHIC"),
+        ]))
+        self.assertEqual(len(search_register(FDA_NDC, "metformin")), 1)
+
+    def test_a_search_past_the_bound_says_how_many_there_are(self):
+        import dataclasses
+        from sources.fda_ndc import FDA_NDC
+        from sources.open_registers import build_index, search_register
+
+        small = dataclasses.replace(FDA_NDC, max_results=2)
+        build_index(small, self._zip([_ndc_record(product_ndc=f"9-{index}") for index in range(5)]))
+        rows = search_register(small, "metformin")
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["available_total"] for row in rows}, {5})
+
+
+class HealthCanadaDpdRegisterTests(unittest.TestCase):
+    """Health Canada's DPD, fetched dataset by dataset and joined locally."""
+
+    def setUp(self):
+        from sources import open_registers
+
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        patcher = patch.object(open_registers, "INDEX_DIR", Path(self.directory.name) / "idx")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _datasets(self):
+        import json as _json
+
+        workdir = Path(self.directory.name) / "dpd"
+        workdir.mkdir()
+        data = {
+            "drugproduct": [
+                {"drug_code": 98443, "class_name": "Human", "drug_identification_number": "02494418",
+                 "brand_name": "AG-METFORMIN", "company_name": "ANGITA PHARMA INC."},
+                {"drug_code": 1, "class_name": "Veterinary", "drug_identification_number": "1",
+                 "brand_name": "METFORMIN FOR CATS", "company_name": "VET CO"},
+                {"drug_code": 2, "class_name": "Human", "drug_identification_number": "2",
+                 "brand_name": "METFORMINUM 30CH", "company_name": "BOIRON"},
+            ],
+            "activeingredient": [
+                {"drug_code": 98443, "ingredient_name": "METFORMIN HYDROCHLORIDE", "strength": "500", "strength_unit": "MG"},
+                {"drug_code": 1, "ingredient_name": "METFORMIN HYDROCHLORIDE", "strength": "5", "strength_unit": "MG"},
+                {"drug_code": 2, "ingredient_name": "METFORMIN", "strength": "30", "strength_unit": "CH"},
+            ],
+            "form": [{"drug_code": 98443, "pharmaceutical_form_name": "Tablet"}],
+            "route": [{"drug_code": 98443, "route_of_administration_name": "Oral"}],
+            "packaging": [{"drug_code": 98443, "package_size": "100", "package_size_unit": "TAB", "package_type": "BOTTLE"}],
+            "status": [{"drug_code": 98443, "status": "Marketed", "original_market_date": "2023-01-04"}],
+            "schedule": [
+                {"drug_code": 98443, "schedule_name": "PRESCRIPTION"},
+                {"drug_code": 2, "schedule_name": "HOMEOPATHIC"},
+            ],
+            "therapeuticclass": [{"drug_code": 98443, "tc_atc_number": "A10BA02", "tc_atc": "METFORMIN"}],
+        }
+        for name, records in data.items():
+            (workdir / f"{name}.json").write_text(_json.dumps(records), encoding="utf-8")
+        return workdir
+
+    def test_a_product_is_joined_from_every_dataset(self):
+        from sources.health_canada_dpd import HEALTH_CANADA_DPD
+        from sources.open_registers import build_index, search_register
+
+        build_index(HEALTH_CANADA_DPD, self._datasets())
+        (row,) = search_register(HEALTH_CANADA_DPD, "metformin")
+        # Named and numbered as the per-product connector did, so saved rows
+        # are updated in place rather than duplicated.
+        self.assertEqual(row["product"], "AG-METFORMIN")
+        self.assertEqual(row["registration_number"], "02494418")
+        self.assertEqual(row["atc_code"], "A10BA02")
+        self.assertEqual(row["therapeutic_category"], "Metformin")
+        self.assertEqual(row["authorisation_scope"], "Prescription")
+        self.assertEqual(row["strength"], "500 MG")
+        self.assertEqual((row["dosage_form"], row["route"]), ("Tablet", "Oral"))
+        self.assertEqual(row["pack_size"], "100 TAB BOTTLE")
+        self.assertEqual((row["status"], row["registration_date"]), ("Marketed", "2023-01-04"))
+
+    def test_veterinary_and_homeopathic_products_are_left_out(self):
+        from sources.health_canada_dpd import HEALTH_CANADA_DPD
+        from sources.open_registers import build_index, search_register
+
+        build_index(HEALTH_CANADA_DPD, self._datasets())
+        self.assertEqual([row["product"] for row in search_register(HEALTH_CANADA_DPD, "metformin")], ["AG-METFORMIN"])
+
+    def test_the_product_link_is_the_api_record_that_still_answers(self):
+        from sources.health_canada_dpd import HEALTH_CANADA_DPD
+        from sources.open_registers import build_index, search_register
+
+        build_index(HEALTH_CANADA_DPD, self._datasets())
+        (row,) = search_register(HEALTH_CANADA_DPD, "metformin")
+        self.assertEqual(
+            row["product_url"],
+            "https://health-products.canada.ca/api/drug/drugproduct/?lang=en&type=json&id=98443",
+        )
+
+    def test_fetching_asks_for_every_dataset_the_join_needs(self):
+        from sources import health_canada_dpd
+
+        requested = []
+        with patch.object(health_canada_dpd, "download_file",
+                          side_effect=lambda register, url, destination: requested.append(url) or destination):
+            health_canada_dpd.fetch_datasets(health_canada_dpd.HEALTH_CANADA_DPD, Path(self.directory.name))
+        names = {url.split("/api/drug/")[1].split("/")[0] for url in requested}
+        self.assertEqual(names, set(health_canada_dpd.DATASETS))
 
 
 class CappedResultTests(unittest.TestCase):
@@ -2212,7 +2408,7 @@ class SearchJobTimeoutTests(unittest.TestCase):
             JOB_SLOW_SOURCE_TIMEOUT_SECONDS,
             _source_timeout,
         )
-        for source in ("Health Canada", "France BDPM", "CDSCO India"):
+        for source in ("France BDPM", "CDSCO India"):
             self.assertEqual(_source_timeout(source), JOB_SLOW_SOURCE_TIMEOUT_SECONDS)
 
 

@@ -8,9 +8,9 @@ from sources.connectors.base import (
 from sources.belgium_famhp import run_belgium_famhp_search
 from sources.ema import run_ema_search
 from sources.eu_mri import run_eu_mri_search
-from sources.fda import run_fda_search
+from sources.fda_ndc import run_fda_ndc_search
 from sources.france_bdpm import run_france_bdpm_search
-from sources.health_canada import run_health_canada_search
+from sources.health_canada_dpd import run_health_canada_dpd_search
 from sources.ireland_medicines_ie import run_ireland_medicines_search
 from sources.medsafe import run_medsafe_search
 from sources.mhra import run_mhra_search
@@ -51,7 +51,8 @@ CONNECTORS: list[SourceConnector] = [
             countries=("United States",),
             supports_documents=True,
         ),
-        lambda substance: run_fda_search(substance, limit=100),
+        # The NDC directory, searched locally: every listing, not the first 100 labels.
+        run_fda_ndc_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(
@@ -161,7 +162,8 @@ CONNECTORS: list[SourceConnector] = [
             countries=("Canada",),
             supports_documents=False,
         ),
-        lambda substance: run_health_canada_search(substance, limit=50),
+        # The DPD, fetched whole and searched locally: every product, not the first 50.
+        run_health_canada_dpd_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(

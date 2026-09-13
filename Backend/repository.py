@@ -97,9 +97,19 @@ def same_company_identity(left: object, right: object) -> bool:
     return left_key == right_key or left_key.startswith(right_key) or right_key.startswith(left_key)
 
 
+# How long a connection waits for another's write to finish before failing
+# with "database is locked". SQLite allows one writer at a time, and Python's
+# default of 5 seconds was enough while a registry returned 50 or 100 rows. Now
+# that FDA and Health Canada return every product, one source's results can be
+# thousands of rows written in a single transaction, and a search job's other
+# sources -- writing only their progress -- gave up waiting and were reported as
+# failed. Waiting longer costs nothing when there is no contention.
+SQLITE_BUSY_TIMEOUT_SECONDS = 60
+
+
 @contextmanager
 def get_connection() -> Iterator[sqlite3.Connection]:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=SQLITE_BUSY_TIMEOUT_SECONDS)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
