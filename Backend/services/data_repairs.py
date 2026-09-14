@@ -712,6 +712,150 @@ def clean_stored_markup(dry_run: bool = False) -> dict[str, Any]:
     return {"values_cleaned": dict(per_column), "dry_run": dry_run}
 
 
+MHRA_DOCUMENT_HOST = "mhraproducts4853.blob.core.windows.net"
+DOCUMENT_TYPE_FIELDS = {"SPC": "smpc_url", "PIL": "pil_url", "PAR": "assessment_report_url"}
+
+
+def relink_dead_mhra_documents(
+    dry_run: bool = False,
+    fetch: Callable[[list[str]], list[dict[str, Any]]] = fetch_licence_documents,
+    check: Callable[[Iterable[str]], set[str]] | None = None,
+) -> dict[str, Any]:
+    """Replace links to MHRA PDFs that no longer exist.
+
+    MHRA deletes the old PDF when it revises a label, so a stored link opens
+    an error page. Each dead link is replaced by the licence's current document
+    of the same kind, checked to open; where the licence has none, the link is
+    removed rather than left broken. Reference documents lent to other rows are
+    removed when dead.
+    """
+    from sources.document_links import dead_links
+
+    check = check or dead_links
+    initialize_database()
+    link_columns = ("product_url", *MHRA_DOCUMENT_FIELDS, "evidence_url")
+    reference_columns = ("reference_smpc_url", "reference_pil_url")
+    with get_connection() as conn:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""SELECT id, source, substance, registration_number, document_type,
+                           {', '.join(link_columns + reference_columns)}
+                    FROM product_details"""
+            ).fetchall()
+        ]
+    urls = {
+        row[column]
+        for row in rows
+        for column in link_columns + reference_columns
+        if row.get(column) and MHRA_DOCUMENT_HOST in row[column]
+    }
+    dead = check(urls)
+
+    affected = [
+        row for row in rows
+        if row.get("source") == "MHRA" and any(row.get(column) in dead for column in link_columns)
+    ]
+    licences = sorted({_licence_key(row.get("registration_number")) for row in affected} - {""})
+    current: dict[str, list[dict[str, Any]]] = {}
+    unreachable: set[str] = set()
+    for start in range(0, len(licences), LICENCES_PER_REQUEST):
+        batch = licences[start : start + LICENCES_PER_REQUEST]
+        try:
+            for document in fetch(batch):
+                for number in document.get("pl_number") or []:
+                    current.setdefault(_licence_key(number), []).append(document)
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("MHRA licence lookup failed for %s licences: %s", len(batch), exc)
+            unreachable.update(batch)
+    candidate_urls = {
+        _clean(document.get("metadata_storage_path"))
+        for documents in current.values()
+        for document in documents
+    }
+    dead |= check(candidate_urls - dead)
+
+    replaced = removed = 0
+    updates: list[tuple[int, dict[str, str]]] = []
+    evidence_changes: list[tuple[str, str, int]] = []
+    for row in affected:
+        licence = _licence_key(row.get("registration_number"))
+        if licence in unreachable:
+            continue
+        live = [
+            document for document in current.get(licence, [])
+            if _clean(document.get("metadata_storage_path")) not in dead
+        ]
+        live.sort(key=lambda document: not _record_matches_substance(document, row.get("substance")))
+        by_type: dict[str, str] = {}
+        for document in live:
+            by_type.setdefault(_clean(document.get("doc_type")).upper(), _clean(document["metadata_storage_path"]))
+
+        changes: dict[str, str] = {}
+        mapping: dict[str, str] = {}
+        for field in link_columns:
+            old = row.get(field)
+            if old not in dead:
+                continue
+            if field in MHRA_DOCUMENT_FIELDS:
+                kind = next(k for k, f in DOCUMENT_TYPE_FIELDS.items() if f == field)
+            else:
+                # product_url and evidence_url point at whichever document the
+                # row was built from.
+                kind = next(
+                    (k for k, f in DOCUMENT_TYPE_FIELDS.items() if row.get(f) == old),
+                    _clean(row.get("document_type")).upper(),
+                )
+            new = by_type.get(kind, "")
+            mapping.setdefault(old, new)
+            changes[field] = mapping[old]
+        if not changes:
+            continue
+        replaced += sum(1 for value in changes.values() if value)
+        removed += sum(1 for value in changes.values() if not value)
+        updates.append((row["id"], changes))
+        evidence_changes.extend((new, old, row["id"]) for old, new in mapping.items())
+
+    reference_rows = [
+        row["id"] for row in rows
+        if any(row.get(column) in dead for column in reference_columns)
+    ]
+    if not dry_run:
+        with get_connection() as conn:
+            for row_id, changes in updates:
+                conn.execute(
+                    "UPDATE product_details SET "
+                    + ", ".join(f"{column} = ?" for column in changes)
+                    + " WHERE id = ?",
+                    (*changes.values(), row_id),
+                )
+            conn.executemany(
+                "UPDATE evidence SET evidence_url = ? WHERE evidence_url = ? AND product_detail_id = ?",
+                evidence_changes,
+            )
+            for start in range(0, len(reference_rows), 500):
+                chunk = reference_rows[start : start + 500]
+                marks = ", ".join("?" for _ in chunk)
+                conn.execute(
+                    "UPDATE product_details SET "
+                    + ", ".join(f"{field} = ''" for field in REFERENCE_FIELDS)
+                    + f" WHERE id IN ({marks})",
+                    chunk,
+                )
+    return {
+        "links_checked": len(urls),
+        "dead_links": len(dead & urls),
+        "rows_affected": len(updates),
+        "links_replaced_with_current_document": replaced,
+        "links_removed_no_current_document": removed,
+        "rows_whose_dead_reference_was_removed": len(reference_rows),
+        "left_unchecked_lookup_failed": sum(
+            1 for row in affected if _licence_key(row.get("registration_number")) in unreachable
+        ),
+        "dry_run": dry_run,
+    }
+
+
 def repair_combinations_and_mhra(dry_run: bool = False) -> dict[str, Any]:
     from services.field_completion import complete_fields
 
@@ -720,6 +864,7 @@ def repair_combinations_and_mhra(dry_run: bool = False) -> dict[str, Any]:
     report["mhra"] = verify_mhra_rows(dry_run=dry_run)
     report["duplicates"] = merge_identical_rows(dry_run=dry_run)
     report["health_canada_links"] = relink_health_canada_products(dry_run=dry_run)
+    report["mhra_dead_links"] = relink_dead_mhra_documents(dry_run=dry_run)
     report["rekey"] = rekey_substances(dry_run=dry_run)
     report["atc_codes"] = correct_group_atc_codes(dry_run=dry_run)
     report["references"] = clear_misattached_references(dry_run=dry_run)
@@ -739,5 +884,18 @@ if __name__ == "__main__":
         description="Clean the stored data: non-medicines, markup, MHRA rows, duplicates, links, combinations"
     )
     parser.add_argument("--dry-run", action="store_true", help="count without writing")
+    parser.add_argument(
+        "--mhra-links-only", action="store_true",
+        help="only replace links to MHRA documents that no longer exist",
+    )
     args = parser.parse_args()
-    print(json.dumps(repair_combinations_and_mhra(dry_run=args.dry_run), indent=1))
+    if args.mhra_links_only:
+        report = {"mhra_dead_links": relink_dead_mhra_documents(dry_run=args.dry_run)}
+        if not args.dry_run:
+            from services.field_completion import complete_fields
+
+            # Rows whose dead reference was removed are lent a live one.
+            report["completion"] = complete_fields()
+        print(json.dumps(report, indent=1))
+    else:
+        print(json.dumps(repair_combinations_and_mhra(dry_run=args.dry_run), indent=1))

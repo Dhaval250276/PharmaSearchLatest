@@ -2973,6 +2973,68 @@ class VendorDisplayTests(unittest.TestCase):
         self.assertNotIn("NOT_PUBLISHED", row.values())
 
 
+class DeadMhraDocumentTests(unittest.TestCase):
+    OLD = "https://mhraproducts4853.blob.core.windows.net/docs/old-leaflet"
+    NEW = "https://mhraproducts4853.blob.core.windows.net/docs/new-leaflet"
+
+    def test_only_404_and_410_count_as_dead(self):
+        from sources import document_links
+
+        answers = {"https://a/404": 404, "https://a/200": 200, "https://a/410": 410}
+
+        def head(url, **_kwargs):
+            if url == "https://a/timeout":
+                raise requests.Timeout("slow")
+            return MagicMock(status_code=answers[url])
+
+        document_links._cache.clear()
+        with patch("requests.Session.head", side_effect=head):
+            dead = document_links.dead_links([*answers, "https://a/timeout"])
+        self.assertEqual(dead, {"https://a/404", "https://a/410"})
+
+    def test_a_live_search_drops_a_deleted_pdf_and_keeps_the_licence_current_one(self):
+        from sources import mhra
+
+        results = [
+            {"registration_number": "PL 1/1", "document_type": "PIL", "pil_url": self.OLD,
+             "url": self.OLD, "product_url": self.OLD, "product": "BETMIGA"},
+            {"registration_number": "PL 1/1", "document_type": "PIL", "pil_url": self.NEW,
+             "url": self.NEW, "product_url": self.NEW, "product": "BETMIGA"},
+        ]
+        with patch.object(mhra, "dead_links", return_value={self.OLD}):
+            rows = mhra._finalize_mhra_results(results)
+        self.assertEqual([row["pil_url"] for row in rows], [self.NEW])
+
+    def test_stored_dead_links_take_the_current_document_or_are_removed(self):
+        from services.data_repairs import relink_dead_mhra_documents
+
+        documents = [{"metadata_storage_path": self.NEW, "pl_number": ["PLPI163780990"], "doc_type": "Pil",
+                      "substance_name": ["MIRABEGRON"], "title": "", "product_name": "BETMIGA"}]
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(repository, "DB_PATH", Path(directory) / "test.db"), \
+                patch.object(repository, "PRODUCT_DETAILS_SEED_PATH", Path("no-seed.jsonl")):
+            repository.save_product_details([
+                {"product": "BETMIGA 50 MG", "substance": "mirabegron", "source": "MHRA", "country": "United Kingdom",
+                 "registration_number": "PLPI 16378/0990", "document_type": "PIL",
+                 "pil_url": self.OLD, "product_url": self.OLD},
+                {"product": "OTHER 5 MG", "substance": "mirabegron", "source": "MHRA", "country": "United Kingdom",
+                 "registration_number": "PL 00000/0001", "document_type": "SPC",
+                 "smpc_url": self.OLD + "-spc", "product_url": self.OLD + "-spc"},
+            ])
+            result = relink_dead_mhra_documents(
+                fetch=lambda licences: documents,
+                check=lambda urls: {url for url in urls if "old-leaflet" in url},
+            )
+            with repository.get_connection() as conn:
+                rows = {row["product"]: dict(row) for row in conn.execute("SELECT * FROM product_details")}
+
+        self.assertEqual(rows["BETMIGA 50 MG"]["pil_url"], self.NEW)
+        self.assertEqual(rows["BETMIGA 50 MG"]["product_url"], self.NEW)
+        self.assertEqual(rows["OTHER 5 MG"]["smpc_url"], "")
+        # Its SmPC, product and evidence links all pointed at the deleted file.
+        self.assertEqual(result["links_removed_no_current_document"], 3)
+
+
 class ExcelControlCharacterTests(unittest.TestCase):
     def test_text_from_a_pdf_with_control_characters_still_exports(self):
         from export_service import write_excel_export

@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from core.logging_config import get_logger
+from sources.document_links import dead_links
 from sources.mhra_document_parser import enrich_mhra_document_metadata
 from sources.parser import (
     clean_product_name,
@@ -27,7 +28,51 @@ MHRA_MAX_WORKERS = 6
 logger = get_logger(__name__)
 
 
+# Seconds a live search spends checking document links before showing them.
+LINK_CHECK_DEADLINE_SECONDS = 8
+DOCUMENT_LINK_FIELDS = ("smpc_url", "pil_url", "assessment_report_url")
+
+
+def _without_dead_documents(results):
+    """Drop links to PDFs MHRA has deleted, before related documents are shared.
+
+    MHRA's index still lists some files it has replaced. Checking before the
+    merge lets a licence's current document fill the gap the deleted one
+    leaves; a record whose only document is gone is dropped when another
+    record for the same licence remains.
+    """
+    urls = {
+        item.get(field)
+        for item in results
+        for field in ("url", "product_url", *DOCUMENT_LINK_FIELDS)
+        if item.get(field)
+    }
+    dead = dead_links(urls, deadline_seconds=LINK_CHECK_DEADLINE_SECONDS)
+    if not dead:
+        return results
+    kept = []
+    for item in results:
+        had_document = any(item.get(field) for field in DOCUMENT_LINK_FIELDS)
+        for field in ("url", "product_url", *DOCUMENT_LINK_FIELDS):
+            if item.get(field) in dead:
+                item[field] = ""
+        if had_document and not any(item.get(field) for field in DOCUMENT_LINK_FIELDS):
+            item["dead_document"] = True
+        kept.append(item)
+    licences_with_documents = {
+        item.get("registration_number")
+        for item in kept
+        if not item.get("dead_document")
+    }
+    logger.info("MHRA: %s of %s document links no longer exist", len(dead), len(urls))
+    return [
+        item for item in kept
+        if not (item.get("dead_document") and item.get("registration_number") in licences_with_documents)
+    ]
+
+
 def _finalize_mhra_results(results, enrich_documents=False):
+    results = _without_dead_documents(results)
     merged_results = _sort_document_results(_merge_related_document_urls(results))
     if enrich_documents:
         return enrich_mhra_document_metadata(merged_results)
