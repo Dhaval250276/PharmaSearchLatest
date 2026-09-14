@@ -497,7 +497,6 @@ def search_job_page(job_id: str):
             </div>
             <div class="d-flex gap-2">
                 <a class="btn btn-secondary" href="/">Back</a>
-                <a class="btn btn-outline-secondary" href="/search_jobs">Recent Searches</a>
                 {results_button}
             </div>
         </div>
