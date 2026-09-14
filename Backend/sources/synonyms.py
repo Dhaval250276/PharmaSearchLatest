@@ -122,6 +122,13 @@ def _build() -> dict[str, list[str]]:
 SUBSTANCE_SYNONYMS = _build()
 
 
+def _strip_latin_accents(text):
+    import unicodedata
+
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+
 def get_substance_search_terms(substance):
     normalized_parts = [
         part
@@ -130,7 +137,17 @@ def get_substance_search_terms(substance):
     ]
     normalized = " ".join(normalized_parts)
     terms = [substance]
+    # A name typed with accents -- "céfalexine", "ibuprofène" -- is the French
+    # INN. Registries index the plain spelling, and the English INN drops the
+    # final "e", so both are searched as well.
+    folded = _strip_latin_accents(substance.strip())
+    if folded != substance.strip():
+        terms.append(folded)
+        if len(folded) > 5 and folded.lower().endswith("e"):
+            terms.append(folded[:-1])
+        normalized = _strip_latin_accents(normalized)
     synonyms = list(SUBSTANCE_SYNONYMS.get(normalized, []))
+    synonyms.extend(SUBSTANCE_SYNONYMS.get(normalized.rstrip("e"), []))
     synonyms.extend(SUBSTANCE_SYNONYMS.get(substance.strip().lower(), []))
     for synonym in synonyms:
         if synonym.lower() not in {term.lower() for term in terms}:

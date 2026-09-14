@@ -20,6 +20,7 @@ Every lent value records where it came from, so nothing inherited is ever
 mistaken for something the local regulator published.
 """
 
+import re
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
@@ -34,7 +35,7 @@ from services.evidence_assertions import (
     register_url,
 )
 from services.field_availability import DOCUMENT_CAPABLE_SOURCES
-from services.harvest_vocabulary import molecule_group_key
+from services.harvest_vocabulary import row_molecule_key
 from services.therapeutic_category import short_therapeutic_category
 
 
@@ -71,8 +72,28 @@ def _clean(value: object) -> str:
     return " ".join(str(value or "").split())
 
 
+STRENGTH_CHAIN_PATTERN = re.compile(
+    r"\d[\d.,]*\s*(?:mg|g|mcg|microgram)s?(?:\s*/\s*\d[\d.,]*\s*(?:mg|g|mcg|microgram)s?)+(?![a-z/])",
+    re.IGNORECASE,
+)
+
+
+def names_two_strengths(product: object) -> bool:
+    """A product named with a pair of strengths is a combination.
+
+    Spain and several other registries return the searched molecule as the
+    substance, so a combination found by one of its molecules looks single, and
+    would be lent that molecule's ATC code. "10 mg/160 mg" is a pair; a
+    concentration such as "250 mg/5 ml" is not, and neither is a list of one
+    molecule's strengths, "10 mg/20 mg/40 mg".
+    """
+    return any(
+        chain.count("/") == 1 for chain in STRENGTH_CHAIN_PATTERN.findall(_clean(product))
+    )
+
+
 def _molecule_key(row: dict[str, Any]) -> str:
-    return molecule_group_key(row.get("substance"))
+    return row_molecule_key(row)
 
 
 def _agreed_value(rows: list[dict[str, Any]], field: str) -> tuple[str, str]:
@@ -185,7 +206,7 @@ def _completions_for_group(rows: list[dict[str, Any]]) -> list[tuple[int, dict[s
 
         for field in MOLECULE_FIELDS:
             value, lender = agreed[field]
-            if value and not _clean(row.get(field)):
+            if value and not _clean(row.get(field)) and not names_two_strengths(row.get("product")):
                 changes[field] = value
                 if lender and lender not in lenders:
                     lenders.append(lender)
@@ -227,7 +248,7 @@ def attach_reference_documents(rows: list[dict[str, Any]]) -> list[dict[str, Any
     lending in memory, against the stored rows, at the moment of rendering.
     """
     wanted = {
-        molecule_group_key(row.get("substance"))
+        row_molecule_key(row)
         for row in rows
         if not any(_clean(row.get(field)) for field in LENDABLE_DOCUMENT_FIELDS)
         and not any(_clean(row.get(f"reference_{field}")) for field in LENDABLE_DOCUMENT_FIELDS)
@@ -257,7 +278,7 @@ def attach_reference_documents(rows: list[dict[str, Any]]) -> list[dict[str, Any
         by_key.setdefault(str(candidate.get("substance_key") or ""), []).append(candidate)
 
     for row in rows:
-        key = molecule_group_key(row.get("substance"))
+        key = row_molecule_key(row)
         # Per row, so a spray is not handed the injection's assessment report.
         donor = _document_donor(by_key.get(key, []), row)
         if not donor:

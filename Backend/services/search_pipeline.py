@@ -13,6 +13,7 @@ from sources.mhra_document_parser import enrich_mhra_document_metadata
 from sources.parser import clean_product_name
 from sources.search_engine import LIVE_SEARCH_TIMEOUT_SECONDS, search_substance
 from services.ai_enrichment import attach_ai_enrichment_metadata
+from services.harvest_vocabulary import is_combination, molecule_group_key
 from services.regulatory_dates import parse_regulatory_date
 from services.result_formatter import formatted_result_row
 
@@ -755,6 +756,10 @@ def result_key(item: dict[str, Any]) -> tuple[str, str, str, str, str]:
 
 
 def molecule_key(item: dict[str, Any]) -> str:
+    # A combination found by searching one of its molecules shares nothing
+    # molecule-level with that molecule: Janumet's class is not metformin's.
+    if is_combination(item.get("source_substance")):
+        return molecule_group_key(item.get("source_substance"))
     for field in ["searched_substance", "substance", "source_substance"]:
         value = str(item.get(field) or "").strip().lower()
         if value:
@@ -775,9 +780,13 @@ def product_key(item: dict[str, Any]) -> str:
 def normalized_tokens(value: object) -> list[str]:
     import re
 
+    from services.english_normalizer import _strip_latin_accents
+
+    # Accents folded first: split on non-ASCII, "céfalexine" became "c" and
+    # "falexine", and no row contains both.
     return [
         token
-        for token in re.split(r"[^a-z0-9]+", str(value or "").lower())
+        for token in re.split(r"[^a-z0-9]+", _strip_latin_accents(str(value or "")).lower())
         if token
     ]
 

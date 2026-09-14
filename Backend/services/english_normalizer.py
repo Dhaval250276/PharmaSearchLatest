@@ -185,4 +185,8 @@ def english_row(row: dict[str, Any]) -> dict[str, Any]:
     ):
         if field in normalized:
             normalized[field] = english_text(normalized[field])
-    return normalized
+    # Imported here: vendor_display is presentation, and english_text is also
+    # used on its own where no row is being shown.
+    from services.vendor_display import vendor_row
+
+    return vendor_row(normalized)

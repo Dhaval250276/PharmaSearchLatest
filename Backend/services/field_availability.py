@@ -4,6 +4,9 @@ from typing import Any
 
 
 NOT_SUPPLIED = "NOT_PUBLISHED"
+# What a reader sees for NOT_SUPPLIED. The code stays in the store and in
+# evidence; a table full of "NOT_PUBLISHED" reads as a system error.
+NOT_SUPPLIED_LABEL = "Not published by regulator"
 PENDING_ENRICHMENT = "Pending document enrichment"
 NOT_APPLICABLE = "Not applicable for this source"
 NOT_COLLECTED = "Not collected for this source"
@@ -76,4 +79,5 @@ def field_value(item: dict[str, Any], field: str, *values: object) -> str:
         text = str(value).strip()
         if text:
             return text
-    return missing_field_value(item, field)
+    missing = missing_field_value(item, field)
+    return NOT_SUPPLIED_LABEL if missing == NOT_SUPPLIED else missing

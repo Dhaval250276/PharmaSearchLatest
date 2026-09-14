@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode, urljoin
 import json
+import html
 import re
 import subprocess
 import sys
@@ -168,7 +169,22 @@ REGIONAL_SOURCES = {
 
 
 def _clean_text(value: object) -> str:
-    return " ".join(str(value or "").split()).strip()
+    # BPOM returns HTML-escaped text: "PROCTER &amp; GAMBLE", "A&lt;br&gt;B".
+    text = html.unescape(html.unescape(str(value or "")))
+    text = re.sub(r"<\s*br\s*/?\s*>", "; ", text, flags=re.IGNORECASE)
+    return " ".join(text.split()).strip()
+
+
+# BPOM registers far more than medicines, and a search for zinc or niacinamide
+# returns creams, deodorants and food. The registration number says which:
+# N* is a cosmetic notification, MD/ML processed food, SD/SI food supplement,
+# PKD/PKL household health products. Medicines are D*, G* and similar.
+BPOM_NON_MEDICINE_PREFIXES = ("N", "MD", "ML", "SD", "SI", "PKD", "PKL")
+
+
+def bpom_is_non_medicine(registration_number: object) -> bool:
+    number = _clean_text(registration_number).upper().replace(" ", "")
+    return number.startswith(BPOM_NON_MEDICINE_PREFIXES)
 
 
 def _source_url(config: RegionalSourceConfig, substance: str) -> str:
@@ -289,6 +305,8 @@ def _run_bpom_indonesia_json_search(substance: str, limit: int = MAX_RESULTS) ->
 
     rows = []
     for item in payload.get("data", [])[:limit]:
+        if bpom_is_non_medicine(item.get("PRODUCT_REGISTER")):
+            continue
         product = _clean_text(item.get("PRODUCT_NAME"))
         ingredients = _clean_text(item.get("INGREDIENTS"))
         if clean_substance.lower() not in f"{product} {ingredients}".lower():

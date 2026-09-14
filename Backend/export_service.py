@@ -231,7 +231,7 @@ def build_export_rows(substance: str, results: list[dict[str, Any]]) -> list[dic
                 "Country": export_value(country),
                 "Region": export_value(item.get("region"), region_for_country(country)),
                 "Product Name": export_value(product),
-                "Company": export_value(company_display_value(item)),
+                "Company": export_value(company_display_value(item), company),
                 "Brand Name": export_value(product),
                 "Molecule": export_value(
                     item.get("searched_substance"),

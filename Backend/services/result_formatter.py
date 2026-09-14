@@ -199,7 +199,10 @@ def formatted_result_row(item: dict[str, Any], searched_substance: str = "") -> 
                 item.get("atc_code"),
             )
         ),
-        "company": field_value(item, "company", company_display_value(item)),
+        # The commercial company where a registry names one apart from the
+        # holder, otherwise the holder: an empty Company column on every row
+        # hid the company a vendor is looking for.
+        "company": field_value(item, "company", company_display_value(item), company),
         "ma_holder": field_value(item, "company", company),
         "manufacturer_name": field_value(
             item, "manufacturer_name", structured_manufacturer_value(item, "name"), manufacturer_name_value(item)

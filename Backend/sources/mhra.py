@@ -137,8 +137,32 @@ def _company_from_highlights(record, registration_number):
     return ""
 
 
+def _substance_from_title(title, substance):
+    """The actives a document title names, for records with no substance field.
+
+    Assessment reports often carry no substance_name, and filing them under the
+    searched molecule turns "Amlodipine/Valsartan 5 mg/80 mg Tablets" into an
+    amlodipine product. The title states the actives either in brackets --
+    "(amlodipine besilate)" -- or as the name ahead of the first strength.
+    """
+    query_tokens = set(_normalized_tokens(substance))
+    text = str(title or "")
+    for bracketed in re.findall(r"\(([^()]*)\)", text):
+        if query_tokens & set(_normalized_tokens(bracketed)) and not re.search(r"\d", bracketed):
+            return bracketed.strip()
+    name = re.split(r"\d|\s-\s", text, maxsplit=1)[0].strip(" ,-")
+    if (
+        query_tokens & set(_normalized_tokens(name))
+        and re.search(r"/|\+|\band\b|\bwith\b", name, re.IGNORECASE)
+    ):
+        return name
+    return substance
+
+
 def _extract_mhra_json_record(record, substance):
     active_substances = _active_substances(record)
+    if not active_substances:
+        active_substances = [_substance_from_title(record.get("title"), substance)]
     product = clean_product_name(record.get("product_name") or record.get("title") or "")
     pl_numbers = record.get("pl_number") or []
     if isinstance(pl_numbers, str):

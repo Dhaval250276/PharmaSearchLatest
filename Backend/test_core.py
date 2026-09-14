@@ -47,11 +47,14 @@ from services.field_completion import (
     _completions_for_group,
     attach_reference_documents,
     complete_fields,
-    molecule_group_key,
+    names_two_strengths,
 )
 from services.harvest import CONSECUTIVE_FAILURE_LIMIT, run_harvest
 from services.harvest_vocabulary import (
     _Accumulator,
+    is_combination,
+    molecule_group_key,
+    row_molecule_key,
     normalize_molecule,
     split_combination,
 )
@@ -66,6 +69,7 @@ from services.english_normalizer import english_row, english_text
 from services.field_availability import (
     NOT_COLLECTED,
     NOT_SUPPLIED,
+    NOT_SUPPLIED_LABEL,
     PENDING_ENRICHMENT,
     field_value,
 )
@@ -158,7 +162,7 @@ class StructuredEvidenceRepositoryTests(unittest.TestCase):
 
 class FieldAvailabilityTests(unittest.TestCase):
     def test_missing_document_is_not_claimed_unavailable_without_an_attempt(self):
-        self.assertEqual(field_value({"source": "FDA"}, "smpc_url"), NOT_SUPPLIED)
+        self.assertEqual(field_value({"source": "FDA"}, "smpc_url"), NOT_SUPPLIED_LABEL)
 
     def test_manufacturer_is_not_pending_for_fda_schema(self):
         row = {"source": "FDA", "product_url": "https://example.test/label"}
@@ -178,7 +182,7 @@ class FieldAvailabilityTests(unittest.TestCase):
             "pil_url": "https://example.test/pil.pdf",
             "document_enrichment_attempted": True,
         }
-        self.assertEqual(field_value(row, "manufacturer_name"), NOT_SUPPLIED)
+        self.assertEqual(field_value(row, "manufacturer_name"), NOT_SUPPLIED_LABEL)
 
     def test_export_excludes_registry_handoff_rows(self):
         rows = build_export_rows(
@@ -1135,7 +1139,7 @@ class EnglishNormalizerTests(unittest.TestCase):
         self.assertEqual(row["company"], "Astellas Pharma Europe B.V.")
         self.assertEqual(row["manufacturer_country"], "Netherlands")
         self.assertEqual(row["source_substance"], "Mirabegron")
-        self.assertIn("tablets", row["dosage_form"])
+        self.assertEqual(row["dosage_form"], "Prolonged-release tablet")
 
     def test_marks_non_latin_values_that_need_ai_translation(self):
         self.assertEqual(
@@ -1488,11 +1492,58 @@ class FieldCompletionTests(unittest.TestCase):
                 molecule_group_key(french), molecule_group_key(english), french
             )
 
-    def test_groups_a_semicolon_combination_under_its_first_molecule(self):
+    def test_keys_a_combination_on_all_its_molecules_in_any_order(self):
+        # Keyed on its first molecule, Janumet sat in metformin's group and
+        # lent or borrowed metformin's ATC code.
+        self.assertEqual(molecule_group_key("sitagliptin;metformin hydrochloride"), "metformin+sitagliptin")
         self.assertEqual(
-            molecule_group_key("sitagliptin;metformin hydrochloride"),
-            molecule_group_key("Sitagliptin"),
+            molecule_group_key("METFORMIN HYDROCHLORIDE, SITAGLIPTIN PHOSPHATE MONOHYDRATE"),
+            molecule_group_key("sitagliptin / metformin"),
         )
+        self.assertNotEqual(molecule_group_key("sitagliptin;metformin"), molecule_group_key("metformin"))
+
+    def test_a_molecule_listed_beside_its_own_salt_is_still_one_molecule(self):
+        self.assertFalse(is_combination("ATORVASTATINE, ATORVASTATINE CALCIUM"))
+        self.assertFalse(is_combination("\u00c9SOM\u00c9PRAZOLE, \u00c9SOM\u00c9PRAZOLE MAGN\u00c9SIQUE"))
+        self.assertTrue(is_combination("VALSARTAN, AMLODIPINE BESYLATE"))
+
+    def test_a_searched_row_is_keyed_on_what_the_registry_says_it_contains(self):
+        # A search stores the typed term as the substance.
+        janumet = {"substance": "metformin", "source_substance": "SITAGLIPTIN; METFORMIN HYDROCHLORIDE"}
+        italian = {"substance": "metformin", "source_substance": "METFORMINA CLORIDRATO"}
+        self.assertEqual(row_molecule_key(janumet), "metformin+sitagliptin")
+        # A single molecule keeps the searched name, which is what groups it
+        # across the registries' languages.
+        self.assertEqual(row_molecule_key(italian), "metformin")
+
+    def test_a_combination_and_its_molecule_lend_each_other_nothing(self):
+        rows = [
+            {"id": 1, "source": "EMA", "substance": "metformin", "atc_code": "A10BA02"},
+            {"id": 2, "source": "EMA", "substance": "metformin", "atc_code": "A10BA02"},
+            {"id": 3, "source": "MHRA", "substance": "metformin",
+             "source_substance": "SITAGLIPTIN, METFORMIN HYDROCHLORIDE", "atc_code": ""},
+            {"id": 4, "source": "EMA", "substance": "sitagliptin;metformin", "atc_code": "A10BD07"},
+            {"id": 5, "source": "Spain CIMA", "substance": "metformin", "atc_code": "",
+             "product": "EUCREAS 50 MG/850 MG COMPRIMIDOS"},
+        ]
+        groups = {}
+        for row in rows:
+            groups.setdefault(row_molecule_key(row), []).append(row)
+        changes = {}
+        for group in groups.values():
+            changes.update({row_id: change for row_id, change in _completions_for_group(group)})
+
+        self.assertEqual(changes[3]["atc_code"], "A10BD07")
+        # A combination the registry did not state is recognised by its pair
+        # of strengths and not given the molecule's code.
+        self.assertNotIn("atc_code", changes.get(5, {}))
+
+    def test_a_pair_of_strengths_names_a_combination(self):
+        self.assertTrue(names_two_strengths("FENZIL 10 MG/160 MG COMPRIMIDOS"))
+        self.assertTrue(names_two_strengths("Co-codamol 15mg/500mg Tablets"))
+        self.assertFalse(names_two_strengths("Calpol 120mg/5ml Infant Oral Suspension"))
+        self.assertFalse(names_two_strengths("Atorvastatin 10 mg/20 mg/40 mg Tablets"))
+        self.assertFalse(names_two_strengths("Metformin 500 mg tablets"))
 
     def test_lends_stored_documents_to_a_live_row(self):
         # A live search builds rows from the connectors, so they carry no
@@ -2678,6 +2729,347 @@ class EvidenceBackfillTests(unittest.TestCase):
         self.assertGreater(first["assertions_written"], 0)
         self.assertEqual(second["rows_scanned"], 0)
         self.assertEqual(after_first, after_second)
+
+
+class CombinationAndMhraRepairTests(unittest.TestCase):
+    """Rows stored before combinations were keyed apart and MHRA rows were checked."""
+
+    def setUp(self):
+        # An empty database is otherwise filled from the seed fixture.
+        seed = patch.object(repository, "PRODUCT_DETAILS_SEED_PATH", Path("no-seed.jsonl"))
+        seed.start()
+        self.addCleanup(seed.stop)
+
+    def _database(self, directory):
+        return patch.object(repository, "DB_PATH", Path(directory) / "test.db")
+
+    def test_the_stored_search_finds_a_molecule_inside_a_combination(self):
+        with tempfile.TemporaryDirectory() as directory, self._database(directory):
+            repository.save_product_details([
+                {"substance": "SITAGLIPTINE, METFORMINE", "product": "Janumet 50 mg/1000 mg",
+                 "source": "France BDPM", "country": "France"},
+                {"substance": "metoprolol", "product": "Lopressor", "source": "FDA", "country": "United States"},
+            ])
+            found = [row["product"] for row in repository.search_product_details("metformin")]
+        self.assertEqual(found, ["Janumet 50 mg/1000 mg"])
+
+    def test_mhra_rows_are_kept_only_when_their_licence_is_for_the_molecule(self):
+        from services.data_repairs import verify_mhra_rows
+
+        rows = [
+            # An amlodipine report filed under atorvastatin.
+            {"substance": "atorvastatin", "product": "Amlodipine 10mg Tablets - PL 15764/0016",
+             "registration_number": "PL 15764/0016", "product_url": "https://blob/amlodipine",
+             "source": "MHRA", "country": "United Kingdom"},
+            # A real atorvastatin leaflet, stored under its file name, whose PDF
+            # has since been replaced by a revised one.
+            {"substance": "atorvastatin", "product": "leaflet MAH GENERIC_PL 49445-0400.pdf",
+             "registration_number": "PL 49445/0400", "product_url": "https://blob/old-leaflet",
+             "pil_url": "https://blob/old-leaflet", "document_type": "PIL",
+             "source": "MHRA", "country": "United Kingdom"},
+            # A licence no longer in the register.
+            {"substance": "atorvastatin", "product": "spc-doc_PL 00001-0001.pdf",
+             "registration_number": "PL 00001/0001", "product_url": "https://blob/gone",
+             "source": "MHRA", "country": "United Kingdom"},
+            # Named for its molecule, so not in doubt and never looked up.
+            {"substance": "atorvastatin", "product": "Atorvastatin 20 mg Tablets",
+             "registration_number": "PL 00001/0002", "product_url": "https://blob/fine",
+             "source": "MHRA", "country": "United Kingdom"},
+        ]
+        documents = [
+            {"metadata_storage_path": "https://blob/amlodipine", "pl_number": ["PL157640016"],
+             "substance_name": ["AMLODIPINE BESILATE"], "title": "Amlodipine 10mg Tablets",
+             "product_name": "", "doc_type": "Par"},
+            {"metadata_storage_path": "https://blob/new-leaflet", "pl_number": ["PL494450400"],
+             "substance_name": ["ATORVASTATIN CALCIUM TRIHYDRATE"],
+             "title": "leaflet MAH GENERIC_PL 49445-0400.pdf",
+             "product_name": "ATORVASTATIN 20 MG FILM-COATED TABLETS", "doc_type": "Pil"},
+        ]
+        looked_up = []
+
+        def fetch(licences):
+            looked_up.extend(licences)
+            return documents
+
+        with tempfile.TemporaryDirectory() as directory, self._database(directory):
+            repository.save_product_details(rows)
+            result = verify_mhra_rows(fetch=fetch)
+            with repository.get_connection() as conn:
+                stored = {
+                    row["registration_number"]: dict(row)
+                    for row in conn.execute("SELECT * FROM product_details WHERE source = 'MHRA'")
+                }
+
+        self.assertNotIn("PL00010002", looked_up)
+        self.assertEqual(sorted(stored), ["PL 00001/0002", "PL 49445/0400"])
+        leaflet = stored["PL 49445/0400"]
+        self.assertEqual(leaflet["product"], "ATORVASTATIN 20 MG FILM-COATED TABLETS")
+        self.assertEqual(leaflet["substance"], "ATORVASTATIN CALCIUM TRIHYDRATE")
+        self.assertEqual(leaflet["pil_url"], "https://blob/new-leaflet")
+        self.assertEqual(result["removed_because"]["another_molecule"], 1)
+        self.assertEqual(result["removed_because"]["licence_not_in_register"], 1)
+
+    def test_a_failed_lookup_leaves_rows_untouched(self):
+        from services.data_repairs import verify_mhra_rows
+
+        def fetch(licences):
+            raise requests.ConnectionError("down")
+
+        with tempfile.TemporaryDirectory() as directory, self._database(directory):
+            repository.save_product_details([
+                {"substance": "atorvastatin", "product": "Amlodipine 10mg Tablets",
+                 "registration_number": "PL 15764/0016", "source": "MHRA", "country": "United Kingdom"},
+            ])
+            result = verify_mhra_rows(fetch=fetch)
+            with repository.get_connection() as conn:
+                count = conn.execute("SELECT COUNT(*) FROM product_details").fetchone()[0]
+        self.assertEqual(count, 1)
+        self.assertEqual(result["left_unchecked_lookup_failed"], 1)
+
+    def test_codes_crossed_between_a_molecule_and_its_combination_are_corrected(self):
+        from services.data_repairs import correct_group_atc_codes
+
+        rows = [
+            {"substance": "metformin", "product": f"Metformin {n} mg", "atc_code": "A10BA02",
+             "source": "EMA", "country": "EU"} for n in (500, 850, 1000)
+        ] + [
+            # Metformin lent the combination's code.
+            {"substance": "metformin", "product": "Metformin Teva 750 mg", "atc_code": "A10BD07",
+             "source": "MHRA", "country": "United Kingdom"},
+            # Janumet lent metformin's code, beside two carrying their own.
+            {"substance": "metformin", "source_substance": "SITAGLIPTIN, METFORMIN",
+             "product": "Janumet 50 mg/850 mg", "atc_code": "A10BA02", "source": "MHRA",
+             "country": "United Kingdom"},
+            {"substance": "sitagliptin;metformin", "product": "Janumet", "atc_code": "A10BD07",
+             "source": "EMA", "country": "EU"},
+            {"substance": "sitagliptin;metformin", "product": "Velmetia", "atc_code": "A10BD07",
+             "source": "EMA", "country": "EU"},
+            # A combination Spain did not state, lent the molecule's code.
+            {"substance": "metformin", "product": "EUCREAS 50 MG/850 MG COMPRIMIDOS",
+             "atc_code": "A10BA02", "source": "Spain CIMA", "country": "Spain"},
+        ]
+        with tempfile.TemporaryDirectory() as directory, self._database(directory):
+            repository.save_product_details(rows)
+            result = correct_group_atc_codes()
+            with repository.get_connection() as conn:
+                codes = {row[0]: row[1] for row in conn.execute("SELECT product, atc_code FROM product_details")}
+
+        self.assertEqual(codes["Metformin Teva 750 mg"], "A10BA02")
+        self.assertEqual(codes["Janumet 50 mg/850 mg"], "A10BD07")
+        self.assertEqual(codes["EUCREAS 50 MG/850 MG COMPRIMIDOS"], "")
+        self.assertEqual(codes["Metformin 500 mg"], "A10BA02")
+        self.assertEqual(result["single_molecule_rows_corrected"], 1)
+        self.assertEqual(result["combination_rows_corrected"], 1)
+
+
+class MhraCombinationTitleTests(unittest.TestCase):
+    def test_a_report_with_no_substance_field_takes_the_combination_its_title_names(self):
+        from sources.mhra import _extract_mhra_json_record
+
+        record = {
+            "title": "Amlodipine/Valsartan 5 mg/80 mg film-coated tablets - PL 12345/0001",
+            "substance_name": [], "pl_number": ["PL123450001"], "doc_type": "Par",
+            "metadata_storage_path": "https://blob/par",
+        }
+        row = _extract_mhra_json_record(record, "amlodipine")
+        self.assertEqual(row["substance"], "Amlodipine/Valsartan")
+
+    def test_a_single_molecule_report_keeps_the_molecule(self):
+        from sources.mhra import _extract_mhra_json_record
+
+        record = {
+            "title": "Amlodipine 10mg Tablets (amlodipine besilate) - PL 15764/0016",
+            "substance_name": [], "pl_number": ["PL157640016"], "doc_type": "Par",
+            "metadata_storage_path": "https://blob/par",
+        }
+        self.assertEqual(_extract_mhra_json_record(record, "amlodipine")["substance"], "amlodipine besilate")
+
+
+class VendorDisplayTests(unittest.TestCase):
+    """What a vendor reads in the result table and the export."""
+
+    def test_markup_and_placeholders_are_not_shown_as_values(self):
+        from services.vendor_display import clean_atc_code, clean_text
+
+        self.assertEqual(clean_text("AMLODIPINE BESILATE&lt;br&gt;VALSARTAN"), "AMLODIPINE BESILATE; VALSARTAN")
+        self.assertEqual(clean_text("PROCTER &amp;amp; GAMBLE"), "PROCTER & GAMBLE")
+        for placeholder in ("N/A", "-", "--", "Not yet assigned", "na"):
+            self.assertEqual(clean_text(placeholder), "", placeholder)
+        self.assertEqual(clean_atc_code("Not yet assigned"), "")
+        self.assertEqual(clean_atc_code("A02BC011"), "")
+        self.assertEqual(clean_atc_code("c10aa05"), "C10AA05")
+
+    def test_company_names_lose_page_footers_split_words_and_leaflet_prose(self):
+        from services.vendor_display import clean_company
+
+        self.assertEqual(clean_company("The Boots Compan y PLC"), "The Boots Company PLC")
+        self.assertEqual(clean_company("Sandoz Ltd Page 8 of 8"), "Sandoz Ltd")
+        self.assertEqual(
+            clean_company("Jarama, 111; 45007-Toledo; Espana; Esta informacion esta destinada unicamente a medicos"),
+            "Jarama, 111; 45007-Toledo; Espana",
+        )
+
+    def test_every_registry_status_reads_in_one_vocabulary(self):
+        from services.vendor_display import vendor_status
+
+        cases = {
+            "Commercialisée": "Marketed",
+            "Non commercialisée": "Authorised, not marketed",
+            "available, not_commercialised": "Marketed",
+            "not_commercialised, unavailable": "Authorised, not marketed",
+            "Cancelled Post Market": "Withdrawn",
+            "Berlaku": "Authorised",
+            "Berlaku (Khusus Ekspor)": "Authorised for export only",
+            "Registered - Part 1 Poison": "Authorised",
+            "Lapsed": "Expired",
+            "Application withdrawn": "Application withdrawn",
+        }
+        for registry, shown in cases.items():
+            self.assertEqual(vendor_status(registry), shown, registry)
+
+    def test_dosage_forms_are_shown_in_english(self):
+        from services.vendor_display import english_dosage_form
+
+        cases = {
+            "comprimé pelliculé sécable": "Film-coated tablet (scored)",
+            "comprime pellicule et comprime pellicule": "Film-coated tablet",
+            "comprime orodispersible": "Orodispersible tablet",
+            "solution injectable": "Solution for injection",
+            "KAPSUL; 75 mg": "Capsule",
+            "Vien nen bao phim": "Film-coated tablet",
+            "LIOF. ORAL": "Oral lyophilisate",
+            "Film-coated tablet": "Film-coated tablet",
+        }
+        for registry, shown in cases.items():
+            self.assertEqual(english_dosage_form(registry), shown, registry)
+
+    def test_dates_are_shown_as_iso(self):
+        from services.vendor_display import display_date
+
+        self.assertEqual(display_date("31/12/2009"), "2009-12-31")
+        self.assertEqual(display_date("2020-03-13T06:44:23Z"), "2020-03-13")
+
+    def test_the_result_row_shows_the_holder_as_company_and_a_readable_missing_value(self):
+        from services.result_formatter import formatted_result_row
+
+        row = formatted_result_row({
+            "source": "Health Canada", "product": "METFORMIN", "company": "APOTEX INC",
+            "status": "Cancelled Post Market", "dosage_form": "Tablet",
+        })
+        self.assertEqual(row["company"], "APOTEX INC")
+        self.assertEqual(row["registration_status"], "Withdrawn")
+        self.assertNotIn("NOT_PUBLISHED", row.values())
+
+
+class AccentedSearchTests(unittest.TestCase):
+    def test_an_accented_name_matches_the_plain_spelling(self):
+        from services.search_pipeline import row_relevant_to_substance
+
+        self.assertTrue(row_relevant_to_substance({"product": "CEFALEXINE BIOGARAN 500 mg"}, "céfalexine"))
+
+    def test_an_accented_name_also_searches_the_plain_and_english_spellings(self):
+        terms = get_substance_search_terms("céfalexine")
+        self.assertIn("cefalexine", terms)
+        self.assertIn("cefalexin", terms)
+        self.assertIn("cephalexin", terms)
+
+
+class IndonesianNonMedicineTests(unittest.TestCase):
+    def test_cosmetic_food_and_supplement_notifications_are_recognised(self):
+        from sources.regional_live import bpom_is_non_medicine
+
+        for number in ("NA18230105897", "NC24230100028", "MD 234512", "SD151234", "SI0123"):
+            self.assertTrue(bpom_is_non_medicine(number), number)
+        for number in ("GKL1234567", "DKL0101010", "DBL9876543"):
+            self.assertFalse(bpom_is_non_medicine(number), number)
+
+
+class VendorDataRepairTests(unittest.TestCase):
+    def setUp(self):
+        seed = patch.object(repository, "PRODUCT_DETAILS_SEED_PATH", Path("no-seed.jsonl"))
+        seed.start()
+        self.addCleanup(seed.stop)
+
+    def _database(self, directory):
+        return patch.object(repository, "DB_PATH", Path(directory) / "test.db")
+
+    def _products(self):
+        with repository.get_connection() as conn:
+            return {row[0]: dict(row) for row in conn.execute(
+                "SELECT product, * FROM product_details"
+            )}
+
+    def test_rows_no_buyer_should_see_are_removed(self):
+        from services.data_repairs import remove_non_pharmaceutical_rows
+
+        with tempfile.TemporaryDirectory() as directory, self._database(directory):
+            repository.save_product_details([
+                {"product": "Glucophage", "substance": "metformin", "source": ""},
+                {"product": "Arnica Montana Boiron", "source": "France BDPM", "country": "France",
+                 "substance": "ARNICA MONTANA POUR PRÉPARATIONS HOMÉOPATHIQUES"},
+                {"product": "Allergy Relief", "source": "FDA", "country": "United States",
+                 "substance": "sodium chloride", "strength": "12 [hp_X]"},
+                {"product": "Daily Toner", "source": "BPOM Indonesia", "country": "Indonesia",
+                 "registration_number": "NA18221205669"},
+                {"product": "Amlodipine 5 mg", "source": "BPOM Indonesia", "country": "Indonesia",
+                 "registration_number": "GKL1234567"},
+            ])
+            result = remove_non_pharmaceutical_rows()
+            remaining = sorted(self._products())
+        self.assertEqual(remaining, ["Amlodipine 5 mg"])
+        self.assertEqual(result["homeopathic"], 2)
+
+    def test_identical_rows_are_merged_and_the_keeper_takes_what_only_a_copy_had(self):
+        from services.data_repairs import merge_identical_rows
+
+        base = {"product": "Metformin 500 mg", "source": "FDA", "country": "United States",
+                "registration_number": "ANDA123", "strength": "500 mg"}
+        with tempfile.TemporaryDirectory() as directory, self._database(directory):
+            with repository.get_connection() as conn:
+                repository.initialize_database()
+                for extra in ({"atc_code": "A10BA02"}, {"smpc_url": "https://label"}):
+                    record = {**base, **extra}
+                    conn.execute(
+                        f"INSERT INTO product_details ({', '.join(record)}) VALUES ({', '.join('?' for _ in record)})",
+                        tuple(record.values()),
+                    )
+            result = merge_identical_rows()
+            with repository.get_connection() as conn:
+                rows = [dict(row) for row in conn.execute("SELECT atc_code, smpc_url FROM product_details")]
+        self.assertEqual(result["copies_removed"], 1)
+        self.assertEqual(rows, [{"atc_code": "A10BA02", "smpc_url": "https://label"}])
+
+    def test_canadian_rows_point_at_the_record_that_still_answers(self):
+        from services.data_repairs import relink_health_canada_products
+
+        old = "https://health-products.canada.ca/dpd-bdpp/info.do?lang=en&code=12345"
+        with tempfile.TemporaryDirectory() as directory, self._database(directory):
+            repository.save_product_details([
+                {"product": "APO-METFORMIN", "source": "Health Canada", "country": "Canada",
+                 "product_url": old, "source_url": old},
+            ])
+            relink_health_canada_products()
+            row = self._products()["APO-METFORMIN"]
+        expected = "https://health-products.canada.ca/api/drug/drugproduct/?lang=en&type=json&id=12345"
+        self.assertEqual(row["product_url"], expected)
+        self.assertEqual(row["source_url"], expected)
+
+    def test_stored_markup_goes_but_the_registry_wording_stays(self):
+        from services.data_repairs import clean_stored_markup
+
+        with tempfile.TemporaryDirectory() as directory, self._database(directory):
+            repository.save_product_details([
+                {"product": "Hydrocortisone &amp; Zinc Cream", "source": "BPOM Indonesia",
+                 "country": "Indonesia", "atc_code": "Not yet assigned", "strength": "N/A",
+                 "status": "Berlaku", "substance": "salmeterol;fluticasone"},
+            ])
+            clean_stored_markup()
+            row = next(iter(self._products().values()))
+        self.assertEqual(row["product"], "Hydrocortisone & Zinc Cream")
+        self.assertEqual(row["atc_code"], "")
+        self.assertEqual(row["strength"], "")
+        self.assertEqual(row["status"], "Berlaku")
+        self.assertEqual(row["substance"], "salmeterol;fluticasone")
 
 
 if __name__ == "__main__":

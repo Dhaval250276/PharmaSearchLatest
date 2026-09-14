@@ -16,7 +16,7 @@ from services.evidence_assertions import (
     missing_reason_for_row,
     register_url,
 )
-from services.harvest_vocabulary import molecule_group_key
+from services.harvest_vocabulary import molecule_group_key, row_molecule_key
 
 
 PRODUCT_DETAILS_SEED_PATH = BASE_DIR / "data" / "product_details_seed.jsonl"
@@ -904,10 +904,15 @@ def search_product_details(substance: str) -> list[dict[str, Any]]:
             """
             SELECT *
             FROM product_details
-            WHERE substance LIKE ? OR product LIKE ? OR (substance_key <> '' AND substance_key = ?)
+            WHERE substance LIKE ? OR product LIKE ?
+               OR (substance_key <> '' AND (
+                   substance_key = ? OR substance_key LIKE ? OR substance_key LIKE ?
+                   OR substance_key LIKE ?))
             ORDER BY country, product
             """,
-            (f"%{substance}%", f"%{substance}%", key),
+            # A combination is keyed on all its molecules, so a molecule is
+            # also found as one part of one: "metformin+sitagliptin".
+            (f"%{substance}%", f"%{substance}%", key, f"{key}+%", f"%+{key}", f"%+{key}+%"),
         ).fetchall()
         return _attach_structured_data(conn, rows)
 
@@ -917,13 +922,13 @@ def backfill_substance_keys() -> int:
     initialize_database()
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT id, substance FROM product_details"
+            "SELECT id, substance, source_substance FROM product_details"
             " WHERE substance_key IS NULL OR substance_key = ''"
         ).fetchall()
         for row in rows:
             conn.execute(
                 "UPDATE product_details SET substance_key = ? WHERE id = ?",
-                (molecule_group_key(row["substance"]), row["id"]),
+                (row_molecule_key(dict(row)), row["id"]),
             )
     return len(rows)
 
@@ -1007,7 +1012,7 @@ def _save_product_detail(conn: sqlite3.Connection, record: dict[str, Any]) -> di
             manufacturer_source = ""
     data = {
         "substance": record.get("substance", ""),
-        "substance_key": molecule_group_key(record.get("substance", "")),
+        "substance_key": row_molecule_key(record),
         "source_substance": record.get("source_substance", ""),
         "product": record.get("product", ""),
         "company": record.get("company", ""),

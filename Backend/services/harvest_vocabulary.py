@@ -269,21 +269,77 @@ def molecule_group_key(substance: object) -> str:
     files combinations joined by semicolons, and the Latin INN carries a final
     "e" that English drops -- amoxicilline against amoxicillin.
 
-    Accents are stripped, a combination is keyed on its first molecule, and a
-    trailing "e" is dropped from the stem. The last rule is applied to every
-    name alike, so it does not matter that "omeprazol" is nobody's spelling:
-    both spellings reach it, which is all a grouping key has to do.
+    Accents are stripped and a trailing "e" is dropped from the stem. That rule
+    is applied to every name alike, so it does not matter that "omeprazol" is
+    nobody's spelling: both spellings reach it, which is all a grouping key has
+    to do.
+
+    A combination is keyed on all of its molecules, sorted, joined by "+". It
+    used to be keyed on its first molecule, which put Janumet in metformin's
+    group: plain metformin rows could inherit the combination's A10BD07, and a
+    combination with no code of its own inherited metformin's A10BA02. Registries
+    also list one molecule's salt beside it -- "ATORVASTATINE, ATORVASTATINE
+    CALCIUM" -- and that is still one molecule.
     """
-    molecules = split_combination(_strip_latin_accents(_clean(substance)))
-    stem = molecules[0] if molecules else _clean(substance).lower()
-    stem = _strip_latin_accents(stem).lower()
+    stems = _molecule_stems(substance)
+    if not stems:
+        return _molecule_stem(_clean(substance))
+    return "+".join(stems)
+
+
+def _molecule_stem(molecule: str) -> str:
+    stem = _strip_latin_accents(molecule).lower().strip()
     # Romance registers name the salt first: "chlorhydrate de metformine" is
     # metformin's, and the molecule is whatever follows the last "de".
     if " de " in stem:
         stem = stem.rsplit(" de ", 1)[1].strip()
-    if len(stem) > 5 and stem.endswith("e"):
-        stem = stem[:-1]
-    return stem
+    return " ".join(
+        word[:-1] if len(word) > 5 and word.endswith("e") else word
+        for word in stem.split()
+    )
+
+
+def _molecule_stems(substance: object) -> list[str]:
+    """The distinct molecules a substance string names, as sorted stems."""
+    stems: list[str] = []
+    for molecule in split_combination(_strip_latin_accents(_clean(substance))):
+        words = _molecule_stem(molecule).split()
+        if not words:
+            continue
+        merged = False
+        for index, other in enumerate(stems):
+            other_words = other.split()
+            # A salt or form written after the molecule is the same molecule:
+            # keep the shorter name of the two.
+            shorter, longer = sorted((words, other_words), key=len)
+            if longer[: len(shorter)] == shorter:
+                stems[index] = " ".join(shorter)
+                merged = True
+                break
+        if not merged:
+            stems.append(" ".join(words))
+    return sorted(set(stems))
+
+
+def is_combination(substance: object) -> bool:
+    return len(_molecule_stems(substance)) > 1
+
+
+def row_molecule_key(row: dict[str, Any]) -> str:
+    """The molecule key for a stored or live row.
+
+    A search stores the term that was typed as the row's substance and keeps
+    what the registry said in source_substance, so a search for metformin files
+    Janumet under "metformin". The registry's own statement decides whether the
+    product is a combination; otherwise the substance is kept, because it is
+    what groups a molecule across the registries' languages.
+    """
+    substance = row.get("substance")
+    stated = row.get("source_substance")
+    if stated and _molecule_stems(stated):
+        if is_combination(stated) or is_combination(substance):
+            return molecule_group_key(stated)
+    return molecule_group_key(substance)
 
 
 if __name__ == "__main__":
