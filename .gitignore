@@ -35,3 +35,4 @@ Backend/data/open_registers/
 outputs/
 zip.zip
 Backend/backups/
+Backend/logs/

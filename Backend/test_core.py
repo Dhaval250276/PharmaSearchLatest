@@ -3035,6 +3035,33 @@ class DeadMhraDocumentTests(unittest.TestCase):
         self.assertEqual(result["links_removed_no_current_document"], 3)
 
 
+class WeeklyMhraLinkJobTests(unittest.TestCase):
+    def test_each_run_backs_up_first_and_keeps_the_newest_four_backups(self):
+        import sqlite3
+        import time
+
+        from tools.weekly_mhra_links import back_up
+
+        with tempfile.TemporaryDirectory() as directory:
+            db = Path(directory) / "store.db"
+            connection = sqlite3.connect(db)
+            connection.execute("CREATE TABLE t (x)")
+            connection.commit()
+            connection.close()
+            backups = Path(directory) / "backups"
+            backups.mkdir()
+            for day in range(1, 6):
+                (backups / f"weekly-mhra-links-2026010{day}-000000.db").write_bytes(b"")
+            (backups / "pharmasearch-before-vendor-cleanup.db").write_bytes(b"keep")
+            time.sleep(0.01)
+            made = back_up(db, backups, kept=4)
+            weekly = sorted(path.name for path in backups.glob("weekly-mhra-links-*.db"))
+
+            self.assertIn(made.name, weekly)
+            self.assertEqual(len(weekly), 4)
+            self.assertTrue((backups / "pharmasearch-before-vendor-cleanup.db").exists())
+
+
 class ExcelControlCharacterTests(unittest.TestCase):
     def test_text_from_a_pdf_with_control_characters_still_exports(self):
         from export_service import write_excel_export
