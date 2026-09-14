@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 import pandas as pd
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -426,13 +427,25 @@ def _related_export_rows(results: list[dict[str, Any]], field: str) -> list[dict
     return rows
 
 
+def _excel_safe(frame: pd.DataFrame) -> pd.DataFrame:
+    """Strip the control characters an Excel cell cannot hold.
+
+    Text read out of PDF leaflets carries them, and openpyxl refuses the whole
+    workbook over one: an admin export failed on a UK amoxicillin leaflet.
+    """
+    def clean(value: Any) -> Any:
+        return ILLEGAL_CHARACTERS_RE.sub("", value) if isinstance(value, str) else value
+
+    return frame.map(clean) if hasattr(frame, "map") else frame.applymap(clean)
+
+
 def write_excel_export(substance: str, results: list[dict[str, Any]], deep: bool = False) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     suffix = "_deep" if deep else ""
     filename = f"{safe_filename(substance)}{suffix}_{timestamp}.xlsx"
     path = EXPORT_DIR / filename
     export_rows = build_export_rows(substance, results)
-    df = pd.DataFrame(export_rows, columns=EXPORT_COLUMNS)
+    df = _excel_safe(pd.DataFrame(export_rows, columns=EXPORT_COLUMNS))
     provenance = pd.DataFrame(
         [
             {
@@ -449,16 +462,16 @@ def write_excel_export(substance: str, results: list[dict[str, Any]], deep: bool
     )
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Products")
-        provenance.to_excel(writer, index=False, sheet_name="Provenance")
+        _excel_safe(provenance).to_excel(writer, index=False, sheet_name="Provenance")
         for field, sheet_name in (
             ("manufacturers", "Manufacturers and Sites"),
             ("documents", "Documents"),
             ("evidence", "Field Evidence"),
         ):
             related_rows = _related_export_rows(results, field)
-            pd.DataFrame(related_rows).to_excel(writer, index=False, sheet_name=sheet_name)
+            _excel_safe(pd.DataFrame(related_rows)).to_excel(writer, index=False, sheet_name=sheet_name)
         if deep:
-            pd.DataFrame(_coverage_rows(results)).to_excel(
+            _excel_safe(pd.DataFrame(_coverage_rows(results))).to_excel(
                 writer,
                 index=False,
                 sheet_name="Coverage",

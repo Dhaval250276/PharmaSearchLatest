@@ -2973,6 +2973,19 @@ class VendorDisplayTests(unittest.TestCase):
         self.assertNotIn("NOT_PUBLISHED", row.values())
 
 
+class ExcelControlCharacterTests(unittest.TestCase):
+    def test_text_from_a_pdf_with_control_characters_still_exports(self):
+        from export_service import write_excel_export
+
+        leaflet_text = "Marketing Authorization Holder and \x0b Lyme disease \x03"
+        with tempfile.TemporaryDirectory() as directory, patch("export_service.EXPORT_DIR", Path(directory)):
+            path = write_excel_export("amoxicillin", [{
+                "source": "MHRA", "product": "Amoxicillin 500 mg", "manufacturer_name": leaflet_text,
+                "evidence": [{"field_name": "manufacturer_name", "value": leaflet_text}],
+            }])
+            self.assertTrue(path.exists())
+
+
 class UsDocumentLinkTests(unittest.TestCase):
     def test_a_us_application_links_its_drugs_at_fda_page_as_the_assessment_report(self):
         from services.result_formatter import formatted_result_row
