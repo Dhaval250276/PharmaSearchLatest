@@ -896,23 +896,34 @@ def search_product_details(substance: str) -> list[dict[str, Any]]:
     breaks the substring. The normalized molecule key catches those, and the
     text match stays for brand names and for rows stored before the key existed.
     """
+    from sources.synonyms import get_substance_search_terms
+
     initialize_database()
     substance = clean_search_term(substance)
-    key = molecule_group_key(substance)
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT *
-            FROM product_details
-            WHERE substance LIKE ? OR product LIKE ?
+    # The names the live search sends too: Canada files cefalexin as cephalexin,
+    # and a stored search that tried only what was typed found none of it.
+    clauses = []
+    params: list[str] = []
+    for term in get_substance_search_terms(substance):
+        key = molecule_group_key(term)
+        clauses.append(
+            """substance LIKE ? OR product LIKE ?
                OR (substance_key <> '' AND (
                    substance_key = ? OR substance_key LIKE ? OR substance_key LIKE ?
-                   OR substance_key LIKE ?))
-            ORDER BY country, product
-            """,
-            # A combination is keyed on all its molecules, so a molecule is
-            # also found as one part of one: "metformin+sitagliptin".
-            (f"%{substance}%", f"%{substance}%", key, f"{key}+%", f"%+{key}", f"%+{key}+%"),
+                   OR substance_key LIKE ? OR substance_key LIKE ?))"""
+        )
+        # A combination is keyed on all its molecules, so a molecule is also
+        # found as one part of one: "metformin+sitagliptin". A key followed by
+        # a word is the molecule with a salt a register did not strip:
+        # "cefalexin monohydrate".
+        params.extend([
+            f"%{term}%", f"%{term}%", key, f"{key}+%", f"%+{key}", f"%+{key}+%", f"{key} %",
+        ])
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM product_details WHERE {' OR '.join(f'({c})' for c in clauses)}"
+            " ORDER BY country, product",
+            params,
         ).fetchall()
         return _attach_structured_data(conn, rows)
 

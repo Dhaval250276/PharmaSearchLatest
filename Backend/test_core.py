@@ -2753,6 +2753,18 @@ class CombinationAndMhraRepairTests(unittest.TestCase):
             found = [row["product"] for row in repository.search_product_details("metformin")]
         self.assertEqual(found, ["Janumet 50 mg/1000 mg"])
 
+    def test_the_stored_search_finds_every_name_and_salt_a_register_used(self):
+        with tempfile.TemporaryDirectory() as directory, self._database(directory):
+            repository.save_product_details([
+                {"substance": "cephalexin", "product": "APO-CEPHALEX", "source": "Health Canada", "country": "Canada"},
+                {"substance": "CÉFALEXINE MONOHYDRATÉE", "product": "CEFALEXINE BIOGARAN",
+                 "source": "France BDPM", "country": "France"},
+                {"substance": "cefuroxime", "product": "Zinnat", "source": "MHRA", "country": "United Kingdom"},
+            ])
+            for typed in ("cefalexin", "céfalexine"):
+                found = sorted(row["product"] for row in repository.search_product_details(typed))
+                self.assertEqual(found, ["APO-CEPHALEX", "CEFALEXINE BIOGARAN"], typed)
+
     def test_mhra_rows_are_kept_only_when_their_licence_is_for_the_molecule(self):
         from services.data_repairs import verify_mhra_rows
 
