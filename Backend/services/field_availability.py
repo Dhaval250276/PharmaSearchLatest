@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -10,6 +11,27 @@ NOT_SUPPLIED_LABEL = "Not published by regulator"
 PENDING_ENRICHMENT = "Pending document enrichment"
 NOT_APPLICABLE = "Not applicable for this source"
 NOT_COLLECTED = "Not collected for this source"
+# The US has no separate patient leaflet: the Medication Guide or patient
+# information is a section of the label DailyMed publishes, already linked as
+# the SmPC. "Not collected" said the data was missing when it is one click away.
+US_PIL_IN_LABEL = "Included in the US label (see SmPC link)"
+
+DRUGS_AT_FDA_URL = "https://www.accessdata.fda.gov/scripts/cder/daf/index.cfm?event=overview.process&ApplNo={number}"
+
+
+def drugs_at_fda_url(item: dict[str, Any]) -> str:
+    """The Drugs@FDA page for an NDA or ANDA: approval letters, labels and FDA's reviews.
+
+    It is the US counterpart of an assessment report. OTC monograph products
+    (M012, 505G(a)(3)) have no application and so no page. Biologics are left
+    out: Drugs@FDA covers only those CDER regulates, so a BLA's page may be
+    empty, and the number does not say which.
+    """
+    if str(item.get("source") or "").strip() != "FDA":
+        return ""
+    number = str(item.get("registration_number") or item.get("application_number") or "").upper()
+    match = re.fullmatch(r"\s*(?:NDA|ANDA)\s*0*(\d{3,6})\s*", number)
+    return DRUGS_AT_FDA_URL.format(number=match.group(1).zfill(6)) if match else ""
 
 # The registries whose documents are actually opened and read for the fields
 # below. Only MHRA has a parser: enrich_mhra_document_metadata runs for MHRA
@@ -41,6 +63,8 @@ DOCUMENT_CAPABLE_SOURCES = {
 def missing_field_value(item: dict[str, Any], field: str) -> str:
     """Explain why a normalized regulatory field has no value."""
     source = str(item.get("source") or "").strip()
+    if source == "FDA" and field == "pil_url" and item.get("smpc_url"):
+        return US_PIL_IN_LABEL
     if str(item.get("connector_mode") or "").strip() == "manual_registry":
         return "SOURCE_UNSUPPORTED"
     if item.get("access_blocked"):

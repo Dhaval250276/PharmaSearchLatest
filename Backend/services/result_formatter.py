@@ -3,7 +3,7 @@ import re
 
 from repository import region_for_country
 from services.english_normalizer import english_row
-from services.field_availability import field_value
+from services.field_availability import drugs_at_fda_url, field_value
 from services.therapeutic_category import short_therapeutic_category
 from sources.parser import (
     clean_product_name,
@@ -93,8 +93,7 @@ def smpc_document_url(item: dict[str, Any]) -> str:
 def pil_or_assessment_url(item: dict[str, Any]) -> str:
     smpc_url = smpc_document_url(item)
     pil_url = distinct_url(item.get("pil_url", ""), smpc_url)
-    assessment_url = distinct_url(item.get("assessment_report_url", ""), smpc_url, pil_url)
-    return first_value(pil_url, assessment_url)
+    return first_value(pil_url, assessment_report_url(item))
 
 
 def pil_document_url(item: dict[str, Any]) -> str:
@@ -105,7 +104,7 @@ def pil_document_url(item: dict[str, Any]) -> str:
 def assessment_report_url(item: dict[str, Any]) -> str:
     smpc_url = smpc_document_url(item)
     pil_url = item.get("pil_url", "")
-    return distinct_url(item.get("assessment_report_url", ""), smpc_url, pil_url)
+    return distinct_url(item.get("assessment_report_url", ""), smpc_url, pil_url) or drugs_at_fda_url(item)
 
 
 def manufacturer_name_value(item: dict[str, Any]) -> str:

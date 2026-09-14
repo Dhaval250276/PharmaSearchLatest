@@ -2973,6 +2973,35 @@ class VendorDisplayTests(unittest.TestCase):
         self.assertNotIn("NOT_PUBLISHED", row.values())
 
 
+class UsDocumentLinkTests(unittest.TestCase):
+    def test_a_us_application_links_its_drugs_at_fda_page_as_the_assessment_report(self):
+        from services.result_formatter import formatted_result_row
+
+        row = formatted_result_row({
+            "source": "FDA", "product": "Metformin 500 mg (NDC 0000-0000)", "registration_number": "ANDA076002",
+            "smpc_url": "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=abc",
+        })
+        self.assertEqual(
+            row["assessment_report_url"],
+            "https://www.accessdata.fda.gov/scripts/cder/daf/index.cfm?event=overview.process&ApplNo=076002",
+        )
+
+    def test_monographs_biologics_and_other_regulators_get_no_drugs_at_fda_link(self):
+        from services.field_availability import drugs_at_fda_url
+
+        for item in (
+            {"source": "FDA", "registration_number": "M012"},
+            {"source": "FDA", "registration_number": "BLA125856"},
+            {"source": "MHRA", "registration_number": "NDA021202"},
+        ):
+            self.assertEqual(drugs_at_fda_url(item), "", item)
+
+    def test_the_us_pil_is_said_to_be_in_the_label(self):
+        from services.field_availability import US_PIL_IN_LABEL, missing_field_value
+
+        self.assertEqual(missing_field_value({"source": "FDA", "smpc_url": "https://dailymed"}, "pil_url"), US_PIL_IN_LABEL)
+
+
 class AccentedSearchTests(unittest.TestCase):
     def test_an_accented_name_matches_the_plain_spelling(self):
         from services.search_pipeline import row_relevant_to_substance
