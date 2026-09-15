@@ -129,6 +129,34 @@ def _strip_latin_accents(text):
     return "".join(char for char in decomposed if not unicodedata.combining(char))
 
 
+COMBINATION_SEPARATOR = r"\s*(?:\+|/|,|;|&|\band\b|\bwith\b)\s*"
+
+
+def combination_parts(substance):
+    """The molecules a typed combination names: "paracetamol +Caffeine" -> two.
+
+    One name is not a combination, and neither is a name the table below
+    already expands ("co-amoxiclav").
+    """
+    import re
+
+    parts = [
+        " ".join(part.split()).lower()
+        for part in re.split(COMBINATION_SEPARATOR, str(substance or ""), flags=re.IGNORECASE)
+        if part.strip()
+    ]
+    return list(dict.fromkeys(parts)) if len(parts) > 1 else []
+
+
+def names_for(molecule):
+    """A molecule and the other names a register may file it under."""
+    names = [molecule]
+    for synonym in SUBSTANCE_SYNONYMS.get(molecule.lower(), []):
+        if synonym.lower() not in {name.lower() for name in names}:
+            names.append(synonym)
+    return names
+
+
 def get_substance_search_terms(substance):
     normalized_parts = [
         part
@@ -152,4 +180,24 @@ def get_substance_search_terms(substance):
     for synonym in synonyms:
         if synonym.lower() not in {term.lower() for term in terms}:
             terms.append(synonym)
+
+    # A typed combination -- "paracetamol +Caffeine" -- is sent as each
+    # register understands it. Registers that match every word of a query
+    # (FDA, Health Canada, Italy, Brazil) find the combination under the other
+    # names: "acetaminophen caffeine". Registers that search one molecule at a
+    # time need the molecules separately. Results are kept only if they
+    # contain every molecule, so single-molecule products do not come back.
+    parts = combination_parts(folded)
+    if parts:
+        import itertools
+
+        spellings = [names_for(part) for part in parts]
+        for combination in itertools.islice(itertools.product(*spellings), 6):
+            joined = " ".join(combination)
+            if joined.lower() not in {term.lower() for term in terms}:
+                terms.append(joined)
+        for names in spellings:
+            for name in names:
+                if name.lower() not in {term.lower() for term in terms}:
+                    terms.append(name)
     return terms

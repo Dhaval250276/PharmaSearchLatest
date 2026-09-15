@@ -209,6 +209,23 @@ class SubstanceRelevanceTests(unittest.TestCase):
         }
         self.assertFalse(row_relevant_to_substance(row, "Prilocaine+Lidocaine"))
 
+    def test_a_combination_matches_every_registers_language_and_us_names(self):
+        query = "paracetamol +Caffeine"
+        for row in (
+            {"source": "AIFA Italy", "product": "NEO NISIDINA", "source_substance": "PARACETAMOLO/ACIDO ACETILSALICILICO/CAFFEINA"},
+            {"source": "ANVISA Brazil", "product": "BESEROL", "source_substance": "paracetamol, carisoprodol, cafeína"},
+            {"source": "FDA", "product": "Excedrin", "source_substance": "ASPIRIN; ACETAMINOPHEN; CAFFEINE"},
+        ):
+            self.assertTrue(row_relevant_to_substance(row, query), row["source"])
+        # The searched term stored on the row is not evidence it is a combination.
+        tylenol = {"source": "FDA", "product": "Tylenol", "source_substance": "ACETAMINOPHEN", "substance": query}
+        self.assertFalse(row_relevant_to_substance(tylenol, query))
+
+    def test_a_typed_combination_is_searched_as_each_register_understands_it(self):
+        terms = get_substance_search_terms("paracetamol +Caffeine")
+        for expected in ("acetaminophen caffeine", "paracetamol", "acetaminophen", "caffeine"):
+            self.assertIn(expected, terms)
+
     def test_combination_search_accepts_both_ingredients(self):
         row = {
             "source": "FDA",

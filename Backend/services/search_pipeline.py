@@ -799,12 +799,41 @@ def contains_all_tokens(value: object, tokens: list[str]) -> bool:
     return bool(tokens) and all(token in haystack for token in tokens)
 
 
+def _contains_every_molecule(row: dict[str, Any], substance: str, parts: list[str]) -> bool:
+    """The row's own ingredients or name include each molecule of a combination.
+
+    Matched on the stems the open registers use, so Italy's "PARACETAMOLO;
+    CAFFEINA" and Brazil's "paracetamol + cafeína" count, and on each
+    molecule's other names, so the FDA's "ACETAMINOPHEN; CAFFEINE" counts too.
+    The searched term stored on the row is not evidence of anything.
+    """
+    from sources.open_registers import inn_tokens, query_tokens
+    from sources.synonyms import names_for
+
+    text = " ".join(
+        str(row.get(field) or "")
+        for field in ("product", "source_substance", "active_substance", "active_substances", "substance")
+        if not (field == "substance" and str(row.get(field) or "").strip().lower() == substance.strip().lower())
+    )
+    stems = set(inn_tokens(text))
+    return all(
+        any(set(query_tokens(name)) <= stems for name in names_for(part))
+        for part in parts
+    )
+
+
 def row_relevant_to_substance(row: dict[str, Any], substance: str) -> bool:
     import re
+
+    from sources.synonyms import combination_parts
 
     query_tokens = normalized_tokens(substance)
     if not query_tokens:
         return True
+
+    parts = combination_parts(substance)
+    if parts:
+        return _contains_every_molecule(row, substance, parts)
 
     product = str(row.get("product") or "")
     product_has_query = contains_all_tokens(product, query_tokens)
