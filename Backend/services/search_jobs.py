@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from core.logging_config import get_logger
 from repository import (
+    clean_search_term,
     get_persisted_search_job,
     get_persisted_search_job_results,
     save_search_job,
@@ -29,14 +30,29 @@ logger = get_logger(__name__)
 JOB_WORKERS = 4
 JOB_FAST_WORKERS = 10
 JOB_SLOW_WORKERS = 3
-JOB_SOURCE_TIMEOUT_SECONDS = 10
+# A source now runs a term per synonym, so the budget has to cover the slowest
+# of them rather than the one that was typed. openFDA takes ~11s to hand over
+# the 100 rows it holds for albuterol, which the old 10s ceiling cut off --
+# leaving a search for salbutamol reporting no US products at all. Sources run
+# concurrently, so this is the wait for the slowest, not the sum.
+JOB_SOURCE_TIMEOUT_SECONDS = 20
 JOB_SLOW_SOURCE_TIMEOUT_SECONDS = 40
 FAST_BACKGROUND_SOURCES = {
     "FDA",
     "FDA Orange Book",
     "FDA Purple Book",
     "Spain CIMA",
+    # Searched in a local copy of the regulator's published register, ~30-100 ms
+    # each, so fast mode loses nothing by including them.
+    "AIFA Italy",
+    "ANVISA Brazil",
+    "Health Canada",
 }
+# Registries that answer in more than the default budget. Measured against a
+# live search rather than guessed: CDSCO takes ~22s and France BDPM ~27s, and on
+# the 10s default both timed out and reported nothing for molecules they hold
+# hundreds of rows for. (Health Canada was here at ~19s until it moved to a
+# local copy of its register.)
 SLOW_SOURCES = {
     "GRLS Russia",
     "TGA Australia",
@@ -46,6 +62,11 @@ SLOW_SOURCES = {
     "EU MRI Product Index",
     "Belgium FAMHP",
     "Ireland medicines.ie",
+    "France BDPM",
+    "CDSCO India",
+    "SFDA Saudi Arabia",
+    # One page per ingredient group: ~7s for rosuvastatin, ~40s for paracetamol.
+    "MoPH Lebanon",
 }
 _executor = ThreadPoolExecutor(max_workers=JOB_WORKERS)
 _lock = Lock()
@@ -57,6 +78,10 @@ class SourceProgress:
     source: str
     status: str = "queued"
     records: int = 0
+    # How many the registry holds, where it says so and holds more than it
+    # returned; 0 means it did not say. FDA and Health Canada stop at a fixed
+    # number, and without this a capped count reads as the complete one.
+    available: int = 0
     error: str = ""
     started_at: str = ""
     finished_at: str = ""
@@ -66,6 +91,7 @@ class SourceProgress:
             "source": self.source,
             "status": self.status,
             "records": self.records,
+            "available": self.available,
             "error": self.error,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -133,7 +159,7 @@ def create_search_job(substance: str, sources: list[str] | str | None, mode: str
             progress[source] = SourceProgress(source=source)
     job = SearchJob(
         job_id=job_id,
-        substance=substance.strip(),
+        substance=clean_search_term(substance),
         sources=selected_sources,
         mode=normalized_mode,
         progress=progress,
@@ -183,6 +209,7 @@ def _set_source_progress(
     status: str,
     records: int = 0,
     error: str = "",
+    available: int = 0,
 ) -> None:
     with _lock:
         job = _jobs.get(job_id)
@@ -191,6 +218,7 @@ def _set_source_progress(
         progress = job.progress[source]
         progress.status = status
         progress.records = records
+        progress.available = available
         progress.error = error
         if status == "running" and not progress.started_at:
             progress.started_at = _now()
@@ -278,6 +306,7 @@ def _run_source_for_job(job_id: str, substance: str, source: str) -> tuple[str, 
         source_key = source.strip().lower()
         search_terms = [substance] if source_key in SINGLE_TERM_SOURCES else get_substance_search_terms(substance)
         rows = []
+        timed_out = False
         executor = ThreadPoolExecutor(max_workers=min(4, len(search_terms)))
         futures = [
             executor.submit(_run_connector_once, source, search_term, substance)
@@ -286,15 +315,21 @@ def _run_source_for_job(job_id: str, substance: str, source: str) -> tuple[str, 
         try:
             for future in as_completed(futures, timeout=_source_timeout(source)):
                 rows.extend(future.result())
+        except TimeoutError:
+            # One slow term must not throw away the terms that did answer. A
+            # synonym search runs several, and returning the register's rows
+            # late beats reporting it holds none.
+            timed_out = True
+            logger.warning("Search job %s source %s timed out", job_id, source)
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
         unique_rows = _dedupe_rows(rows)
-        record_source_health(source, "done", len(unique_rows), time.perf_counter() - started)
-        return source, unique_rows, ""
-    except TimeoutError:
-        logger.warning("Search job %s source %s timed out", job_id, source)
-        record_source_health(source, "timeout", 0, time.perf_counter() - started, "timeout")
-        return source, [], "timeout"
+        status = "timeout" if timed_out else "done"
+        record_source_health(
+            source, status, len(unique_rows), time.perf_counter() - started,
+            "timeout" if timed_out else "",
+        )
+        return source, unique_rows, "timeout" if timed_out and not unique_rows else ""
     except Exception as exc:
         logger.exception("Search job %s source %s failed", job_id, source)
         record_source_health(source, "failed", 0, time.perf_counter() - started, str(exc))
@@ -338,7 +373,10 @@ def _run_job(job_id: str) -> None:
                     _set_source_progress(job_id, source_name, status, error=error)
                     continue
                 _append_results(job_id, rows)
-                _set_source_progress(job_id, source_name, "done", records=len(rows))
+                _set_source_progress(
+                    job_id, source_name, "done", records=len(rows),
+                    available=max((int(row.get("available_total") or 0) for row in rows), default=0),
+                )
         _set_job_status(job_id, "done", finished=True)
     except Exception as exc:
         logger.exception("Search job %s failed", job_id)

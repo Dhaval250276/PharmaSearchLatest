@@ -79,10 +79,8 @@ def short_therapeutic_category(
     if atc_category:
         return atc_category
 
-    substance_category = therapeutic_category_from_substance(substance)
-    if substance_category:
-        return substance_category
-
+    # The molecule's name is not consulted: a category guessed from it is not
+    # something this regulator published.
     text = " ".join(str(category or "").split())
     if not text:
         return ""

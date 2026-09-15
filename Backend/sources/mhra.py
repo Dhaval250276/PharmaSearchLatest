@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from core.logging_config import get_logger
+from sources.document_links import dead_links
 from sources.mhra_document_parser import enrich_mhra_document_metadata
 from sources.parser import (
     clean_product_name,
@@ -27,7 +28,51 @@ MHRA_MAX_WORKERS = 6
 logger = get_logger(__name__)
 
 
+# Seconds a live search spends checking document links before showing them.
+LINK_CHECK_DEADLINE_SECONDS = 8
+DOCUMENT_LINK_FIELDS = ("smpc_url", "pil_url", "assessment_report_url")
+
+
+def _without_dead_documents(results):
+    """Drop links to PDFs MHRA has deleted, before related documents are shared.
+
+    MHRA's index still lists some files it has replaced. Checking before the
+    merge lets a licence's current document fill the gap the deleted one
+    leaves; a record whose only document is gone is dropped when another
+    record for the same licence remains.
+    """
+    urls = {
+        item.get(field)
+        for item in results
+        for field in ("url", "product_url", *DOCUMENT_LINK_FIELDS)
+        if item.get(field)
+    }
+    dead = dead_links(urls, deadline_seconds=LINK_CHECK_DEADLINE_SECONDS)
+    if not dead:
+        return results
+    kept = []
+    for item in results:
+        had_document = any(item.get(field) for field in DOCUMENT_LINK_FIELDS)
+        for field in ("url", "product_url", *DOCUMENT_LINK_FIELDS):
+            if item.get(field) in dead:
+                item[field] = ""
+        if had_document and not any(item.get(field) for field in DOCUMENT_LINK_FIELDS):
+            item["dead_document"] = True
+        kept.append(item)
+    licences_with_documents = {
+        item.get("registration_number")
+        for item in kept
+        if not item.get("dead_document")
+    }
+    logger.info("MHRA: %s of %s document links no longer exist", len(dead), len(urls))
+    return [
+        item for item in kept
+        if not (item.get("dead_document") and item.get("registration_number") in licences_with_documents)
+    ]
+
+
 def _finalize_mhra_results(results, enrich_documents=False):
+    results = _without_dead_documents(results)
     merged_results = _sort_document_results(_merge_related_document_urls(results))
     if enrich_documents:
         return enrich_mhra_document_metadata(merged_results)
@@ -137,8 +182,32 @@ def _company_from_highlights(record, registration_number):
     return ""
 
 
+def _substance_from_title(title, substance):
+    """The actives a document title names, for records with no substance field.
+
+    Assessment reports often carry no substance_name, and filing them under the
+    searched molecule turns "Amlodipine/Valsartan 5 mg/80 mg Tablets" into an
+    amlodipine product. The title states the actives either in brackets --
+    "(amlodipine besilate)" -- or as the name ahead of the first strength.
+    """
+    query_tokens = set(_normalized_tokens(substance))
+    text = str(title or "")
+    for bracketed in re.findall(r"\(([^()]*)\)", text):
+        if query_tokens & set(_normalized_tokens(bracketed)) and not re.search(r"\d", bracketed):
+            return bracketed.strip()
+    name = re.split(r"\d|\s-\s", text, maxsplit=1)[0].strip(" ,-")
+    if (
+        query_tokens & set(_normalized_tokens(name))
+        and re.search(r"/|\+|\band\b|\bwith\b", name, re.IGNORECASE)
+    ):
+        return name
+    return substance
+
+
 def _extract_mhra_json_record(record, substance):
     active_substances = _active_substances(record)
+    if not active_substances:
+        active_substances = [_substance_from_title(record.get("title"), substance)]
     product = clean_product_name(record.get("product_name") or record.get("title") or "")
     pl_numbers = record.get("pl_number") or []
     if isinstance(pl_numbers, str):
@@ -168,7 +237,9 @@ def _extract_mhra_json_record(record, substance):
         "dosage_form": extract_dosage_form(product),
         "pack_size": extract_pack_size(product),
         "registration_number": registration_number,
-        "registration_date": record.get("created", ""),
+        # MHRA's index has no authorisation date. "created" is when this PDF
+        # was indexed, which is not a registration date.
+        "registration_date": "",
         "document_type": document_type,
         "source": "MHRA",
         "source_url": f"{MHRA_BASE_URL}/search/?search={quote(substance)}&page=1",

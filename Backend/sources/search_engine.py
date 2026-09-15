@@ -6,6 +6,7 @@ from typing import Any
 from sources.source_registry import SOURCES
 from sources.synonyms import get_substance_search_terms
 from core.logging_config import get_logger
+from repository import save_source_run
 
 
 LIVE_SEARCH_TIMEOUT_SECONDS = 10
@@ -90,6 +91,23 @@ def _search_substance_cached(
     return unique
 
 
+def _is_handoff(item: dict[str, Any]) -> bool:
+    return str(item.get("connector_mode") or "").strip().lower() == "manual_registry"
+
+
+def _record_source_run(*args: Any, **kwargs: Any) -> None:
+    """Write the audit row, but never at the cost of the results it describes.
+
+    These run inside eight worker threads that share one SQLite file, so a
+    contended write can raise. Letting that escape would discard rows this
+    source had already fetched and abort every other source's search too.
+    """
+    try:
+        save_source_run(*args, **kwargs)
+    except Exception:
+        logger.exception("Could not record the source run for %s", args[0] if args else "")
+
+
 def _run_source_search(
     source: dict[str, Any],
     search_term: str,
@@ -104,7 +122,17 @@ def _run_source_search(
             item["searched_substance"] = substance
             item["substance"] = substance
             results.append(item)
+        handoffs = [item for item in results if _is_handoff(item)]
+        _record_source_run(
+            source["name"],
+            substance,
+            "SOURCE_UNSUPPORTED" if handoffs and len(handoffs) == len(results)
+            else ("SUCCESS" if results else "NOT_PUBLISHED"),
+            records_found=len(results) - len(handoffs),
+            evidence_url=str((results[0] if results else {}).get("source_url") or ""),
+        )
         return results
-    except Exception:
+    except Exception as exc:
         logger.exception("%s search failed", source["name"])
+        _record_source_run(source["name"], substance, "PARSER_FAILED", error=str(exc))
         return []

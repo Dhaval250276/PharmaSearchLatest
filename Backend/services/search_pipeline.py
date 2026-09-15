@@ -2,15 +2,19 @@ from typing import Any
 from urllib.parse import quote
 
 from repository import (
-    save_product_detail,
+    clean_search_term,
+    save_product_details,
     search_medicines,
     search_product_details,
 )
 from sources.deep_enrichment import enrich_deep_results
 from sources.ema import EU_COUNTRIES
 from sources.mhra_document_parser import enrich_mhra_document_metadata
+from sources.parser import clean_product_name
 from sources.search_engine import LIVE_SEARCH_TIMEOUT_SECONDS, search_substance
 from services.ai_enrichment import attach_ai_enrichment_metadata
+from services.harvest_vocabulary import is_combination, molecule_group_key
+from services.regulatory_dates import parse_regulatory_date
 from services.result_formatter import formatted_result_row
 
 
@@ -21,6 +25,8 @@ DEFAULT_SOURCES = [
     "France BDPM",
     "Ireland medicines.ie",
     "Spain CIMA",
+    "ANMDMR Romania",
+    "AIFA Italy",
     "MHRA",
     "FDA",
     "FDA Orange Book",
@@ -31,6 +37,7 @@ DEFAULT_SOURCES = [
     "SAHPRA South Africa",
     "FDA Ghana",
     "SFDA Saudi Arabia",
+    "MoPH Lebanon",
     "Israel Drug Registry",
     "CDSCO India",
     "NMPA China",
@@ -46,6 +53,7 @@ DEFAULT_SOURCES = [
     "Cyprus Pharmaceutical Services",
     "Ukraine DRLZ",
     "GRLS Russia",
+    "ANVISA Brazil",
 ]
 EU_NATIONAL_SOURCES = [
     "Belgium FAMHP",
@@ -53,6 +61,8 @@ EU_NATIONAL_SOURCES = [
     "France BDPM",
     "Ireland medicines.ie",
     "Spain CIMA",
+    "ANMDMR Romania",
+    "AIFA Italy",
     "Cyprus Pharmaceutical Services",
     "Ukraine DRLZ",
 ]
@@ -188,7 +198,7 @@ REGIONAL_COUNTRIES = {
     "ME": MIDDLE_EAST_COUNTRIES,
     "AS": ASIA_COUNTRIES,
 }
-REGION_OPTIONS = ["ALL", "EU", "UK", "US", "CA", "AU", "NZ", "AF", "ME", "AS", "CH", "JP", "RU"]
+REGION_OPTIONS = ["ALL", "EU", "UK", "US", "CA", "AU", "NZ", "AF", "ME", "AS", "CH", "JP", "RU", "BR"]
 GLOBAL_COUNTRIES = [
     "Afghanistan",
     "Albania",
@@ -343,6 +353,8 @@ SORT_COLUMNS = {
     "registration_number": "registration_number",
     "registration_date": "registration_date",
 }
+DATE_SORT_FIELDS = {"registration_date", "expiry_date"}
+PROVENANCE_FIELDS = ("evidence_url", "evidence_section", "verification_status", "missing_reason")
 SOURCE_COUNTRIES = {
     "fda": {"United States"},
     "health canada": {"Canada"},
@@ -351,6 +363,7 @@ SOURCE_COUNTRIES = {
     "sahpra south africa": {"South Africa"},
     "fda ghana": {"Ghana"},
     "sfda saudi arabia": {"Saudi Arabia"},
+    "moph lebanon": {"Lebanon"},
     "israel drug registry": {"Israel"},
     "cdsco india": {"India"},
     "nmpa china": {"China"},
@@ -433,6 +446,8 @@ SOURCE_COUNTRIES = {
     "france bdpm": {"France"},
     "ireland medicines.ie": {"Ireland"},
     "spain cima": {"Spain"},
+    "aifa italy": {"Italy"},
+    "anvisa brazil": {"Brazil"},
     "cyprus pharmaceutical services": {"Cyprus"},
     "ukraine drlz": {"Ukraine"},
     "grls russia": {"Russia"},
@@ -451,6 +466,7 @@ COUNTRY_SOURCE_DEFAULTS = {
     "Malaysia": "NPRA Malaysia",
     "Philippines": "FDA Philippines",
     "Saudi Arabia": "SFDA Saudi Arabia",
+    "Lebanon": "MoPH Lebanon",
     "Singapore": "HSA Singapore",
     "South Africa": "SAHPRA South Africa",
     "South Korea": "MFDS South Korea",
@@ -462,6 +478,9 @@ COUNTRY_SOURCE_DEFAULTS = {
     "Ukraine": "Ukraine DRLZ",
     "Russia": "GRLS Russia",
     "Cyprus": "Cyprus Pharmaceutical Services",
+    "Romania": "ANMDMR Romania",
+    "Italy": "AIFA Italy",
+    "Brazil": "ANVISA Brazil",
 }
 REGION_SOURCE_DEFAULTS = {
     "AU": "TGA Australia",
@@ -472,6 +491,7 @@ REGION_SOURCE_DEFAULTS = {
     "UK": "MHRA",
     "US": "FDA",
     "RU": "GRLS Russia",
+    "BR": "ANVISA Brazil",
 }
 EU_LOOKUP_SOURCE = "EU National Registry"
 REGISTRY_LOOKUP_SOURCE = "Regulatory Registry Lookup"
@@ -490,7 +510,7 @@ GENERIC_LOOKUP_SOURCES = {
 }
 REGIONAL_LIVE_SOURCES = {
     "AF": ["SAHPRA South Africa", "FDA Ghana"],
-    "ME": ["SFDA Saudi Arabia", "Israel Drug Registry"],
+    "ME": ["SFDA Saudi Arabia", "MoPH Lebanon", "Israel Drug Registry"],
     "AS": [
         "CDSCO India",
         "NMPA China",
@@ -530,15 +550,22 @@ REGIONAL_REGISTRY_URLS = {
     "South Korea": "https://nedrug.mfds.go.kr/",
     "Thailand": "https://pertento.fda.moph.go.th/FDA_SEARCH_DRUG/SEARCH_DRUG/FRM_SEARCH_DRUG.aspx",
     "Vietnam": "https://dichvucong.dav.gov.vn/congbothuoc/index",
-    "Japan": "https://www.pmda.go.jp/files/000278243.pdf",
+    "Japan": "https://www.pmda.go.jp/PmdaSearch/iyakuSearch/",
     "Hong Kong": "https://www.drugoffice.gov.hk/eps/do/en/consumer/search_drug_database2.html",
     "Ukraine": "http://www.drlz.com.ua/ibp/ddsite.nsf/all/shlist?opendocument",
     "Russia": "https://grls.rosminzdrav.ru/grls.aspx",
     "Cyprus": "https://www.phs.moh.gov.cy/human-search/home.xhtml?lang=en",
 }
-SHARED_MOLECULE_FIELDS = [
+# Therapeutic category describes the molecule, so every row of a search can share
+# it. An ATC code describes the product: plain metformin is A10BA02 while its
+# combinations are A10BD/A10BK codes, so it may only be shared between rows for
+# the same product.
+# Nothing is shared across a molecule: a value one regulator published is not
+# another regulator's record, and showing it on that row presents it as if it
+# were.
+SHARED_MOLECULE_FIELDS: list[str] = []
+SHARED_PRODUCT_FIELDS = [
     "atc_code",
-    "therapeutic_category",
 ]
 
 
@@ -566,8 +593,6 @@ def _lookup_url(substance: str, country: str) -> str:
         return REGIONAL_REGISTRY_URLS[country]
     if country == "Switzerland":
         return "https://www.swissmedic.ch/swissmedic/en/home/services/listen_neu.html"
-    if country == "Japan":
-        return "https://www.pmda.go.jp/PmdaSearch/iyakuSearch/"
     return "https://www.google.com/search?" f"q={quote(country + ' medicine register ' + clean_substance)}"
 
 
@@ -594,6 +619,8 @@ def _country_region(country: str) -> str:
         return "JP"
     if country == "Russia":
         return "RU"
+    if country == "Brazil":
+        return "BR"
     if country in ASIA_COUNTRIES:
         return "AS"
     return "Global"
@@ -733,6 +760,10 @@ def result_key(item: dict[str, Any]) -> tuple[str, str, str, str, str]:
 
 
 def molecule_key(item: dict[str, Any]) -> str:
+    # A combination found by searching one of its molecules shares nothing
+    # molecule-level with that molecule: Janumet's class is not metformin's.
+    if is_combination(item.get("source_substance")):
+        return molecule_group_key(item.get("source_substance"))
     for field in ["searched_substance", "substance", "source_substance"]:
         value = str(item.get(field) or "").strip().lower()
         if value:
@@ -740,12 +771,28 @@ def molecule_key(item: dict[str, Any]) -> str:
     return ""
 
 
+def product_key(item: dict[str, Any]) -> str:
+    """Identify one marketed product, so product-level values are not shared
+    between a plain molecule and its combination products."""
+    product = clean_product_name(item.get("product", ""))
+    normalized = " ".join(str(product or "").strip().lower().split())
+    if not normalized:
+        return ""
+    # The same product from the same regulator only.
+    source = str(item.get("source") or "").strip().lower()
+    return f"{source}|{molecule_key(item)}|{normalized}"
+
+
 def normalized_tokens(value: object) -> list[str]:
     import re
 
+    from services.english_normalizer import _strip_latin_accents
+
+    # Accents folded first: split on non-ASCII, "céfalexine" became "c" and
+    # "falexine", and no row contains both.
     return [
         token
-        for token in re.split(r"[^a-z0-9]+", str(value or "").lower())
+        for token in re.split(r"[^a-z0-9]+", _strip_latin_accents(str(value or "")).lower())
         if token
     ]
 
@@ -755,12 +802,41 @@ def contains_all_tokens(value: object, tokens: list[str]) -> bool:
     return bool(tokens) and all(token in haystack for token in tokens)
 
 
+def _contains_every_molecule(row: dict[str, Any], substance: str, parts: list[str]) -> bool:
+    """The row's own ingredients or name include each molecule of a combination.
+
+    Matched on the stems the open registers use, so Italy's "PARACETAMOLO;
+    CAFFEINA" and Brazil's "paracetamol + cafeína" count, and on each
+    molecule's other names, so the FDA's "ACETAMINOPHEN; CAFFEINE" counts too.
+    The searched term stored on the row is not evidence of anything.
+    """
+    from sources.open_registers import inn_tokens, query_tokens
+    from sources.synonyms import names_for
+
+    text = " ".join(
+        str(row.get(field) or "")
+        for field in ("product", "source_substance", "active_substance", "active_substances", "substance")
+        if not (field == "substance" and str(row.get(field) or "").strip().lower() == substance.strip().lower())
+    )
+    stems = set(inn_tokens(text))
+    return all(
+        any(set(query_tokens(name)) <= stems for name in names_for(part))
+        for part in parts
+    )
+
+
 def row_relevant_to_substance(row: dict[str, Any], substance: str) -> bool:
     import re
+
+    from sources.synonyms import combination_parts
 
     query_tokens = normalized_tokens(substance)
     if not query_tokens:
         return True
+
+    parts = combination_parts(substance)
+    if parts:
+        return _contains_every_molecule(row, substance, parts)
 
     product = str(row.get("product") or "")
     product_has_query = contains_all_tokens(product, query_tokens)
@@ -811,23 +887,33 @@ def is_connector_lookup_fallback(item: dict[str, Any]) -> bool:
     )
 
 
-def propagate_molecule_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    values_by_molecule: dict[str, dict[str, Any]] = {}
+def _propagate_shared_fields(
+    rows: list[dict[str, Any]],
+    fields: list[str],
+    key_for_row,
+) -> None:
+    values_by_key: dict[str, dict[str, Any]] = {}
     for row in rows:
-        key = molecule_key(row)
+        key = key_for_row(row)
         if not key:
             continue
-        bucket = values_by_molecule.setdefault(key, {})
-        for field in SHARED_MOLECULE_FIELDS:
+        bucket = values_by_key.setdefault(key, {})
+        for field in fields:
             if row.get(field) and not bucket.get(field):
                 bucket[field] = row[field]
 
     for row in rows:
-        key = molecule_key(row)
-        values = values_by_molecule.get(key, {})
-        for field, value in values.items():
+        key = key_for_row(row)
+        if not key:
+            continue
+        for field, value in values_by_key.get(key, {}).items():
             if value and not row.get(field):
                 row[field] = value
+
+
+def propagate_molecule_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    _propagate_shared_fields(rows, SHARED_MOLECULE_FIELDS, molecule_key)
+    _propagate_shared_fields(rows, SHARED_PRODUCT_FIELDS, product_key)
     return rows
 
 
@@ -964,6 +1050,20 @@ def sort_rows(
         )
     field = SORT_COLUMNS[sort_by]
     reverse = sort_dir == "desc"
+    if field in DATE_SORT_FIELDS:
+        # Registries write dates in eight different shapes, so compare the
+        # dates they name rather than the text. Rows with no readable date go
+        # last whichever way the list runs -- they answer neither "newest" nor
+        # "oldest".
+        dated = [(parse_regulatory_date(item.get(field)), item) for item in rows]
+        with_dates = sorted(
+            (pair for pair in dated if pair[0] is not None),
+            key=lambda pair: pair[0],
+            reverse=reverse,
+        )
+        return [item for _, item in with_dates] + [
+            item for parsed, item in dated if parsed is None
+        ]
     return sorted(
         rows,
         key=lambda item: str(item.get(field) or "").lower(),
@@ -1041,6 +1141,12 @@ def sources_for_scope(
             item
             for item in _ensure_source(selected, "Medsafe New Zealand")
             if item.lower() == "medsafe new zealand"
+        ]
+    if region == "BR":
+        return [
+            item
+            for item in _ensure_source(selected, "ANVISA Brazil")
+            if item.lower() == "anvisa brazil"
         ]
     if region == "ALL":
         regional_sources = []
@@ -1128,8 +1234,17 @@ def enriched_cached_results(results: list[dict[str, Any]]) -> list[dict[str, Any
     enriched_results = attach_ai_enrichment_metadata(
         propagate_molecule_fields(enrich_deep_results(rows))
     )
-    for item in enriched_results:
-        save_product_detail(item)
+    # One transaction for the lot: saving row by row cost 0.25 s each, which
+    # made exporting a large search take the better part of an hour.
+    stored = save_product_details(enriched_results)
+    for item, saved in zip(enriched_results, stored):
+        # Saving records where each value came from -- the evidence URL, how
+        # it was verified, why a blank field is blank -- but on the stored row,
+        # not the one in hand. The export writes the row in hand, so without
+        # this every row of a job export said "Evidence URL: Not available".
+        for field in PROVENANCE_FIELDS:
+            if saved.get(field) and not item.get(field):
+                item[field] = saved[field]
     return enriched_results
 
 
@@ -1167,6 +1282,7 @@ def filtered_search_results(
     live_sources: list[str] | None = None,
     include_lookup_rows: bool = True,
 ) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
+    substance = clean_search_term(substance)
     selected_sources = parse_sources(sources)
     scoped_sources = sources_for_scope(
         selected_sources,

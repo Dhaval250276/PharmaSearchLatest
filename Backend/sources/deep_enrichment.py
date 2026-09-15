@@ -10,6 +10,7 @@ from pypdf import PdfReader
 
 from core.logging_config import get_logger
 from services.ai_client import ai_extract_regulatory_fields, ai_enabled
+from sources.spain_cima import fetch_cima_detail
 from sources.parser import (
     extract_atc_code,
     extract_dosage_form,
@@ -21,6 +22,7 @@ from sources.parser import (
 
 EMA_BASE_URL = "https://www.ema.europa.eu"
 MAX_EMA_PRODUCT_PAGES = 30
+MAX_CIMA_DETAIL_PAGES = 60
 MAX_PDF_URLS_PER_EXPORT = 60
 MAX_PDF_PAGES = 5
 PDF_EDGE_PAGES = 6
@@ -289,6 +291,8 @@ def _manufacturer_from_pdf(text):
         return {
             "manufacturer_name": "; ".join(company_names) if company_names else manufacturer,
             "manufacturer_country": _extract_countries(manufacturer),
+            "manufacturer_address": manufacturer,
+            "manufacturer_role": "MANUFACTURER_OR_BATCH_RELEASE_SITE",
             "manufacturer_source": "Regulatory document",
         }
 
@@ -312,6 +316,8 @@ def _manufacturer_from_pdf(text):
             return {
                 "manufacturer_name": ("; ".join(company_names) if company_names else manufacturer)[:500],
                 "manufacturer_country": _extract_countries(manufacturer),
+                "manufacturer_address": manufacturer[:700],
+                "manufacturer_role": "MANUFACTURER_OR_BATCH_RELEASE_SITE",
                 "manufacturer_source": "Regulatory document",
             }
     return {}
@@ -369,7 +375,7 @@ def _therapeutic_indication_from_pdf(text):
     return ""
 
 
-def _enrich_from_pdf_text(row, text):
+def _enrich_from_pdf_text(row, text, evidence_url=""):
     if not text:
         return row
     product = row.get("product", "")
@@ -386,9 +392,14 @@ def _enrich_from_pdf_text(row, text):
         row["pack_size"] = _pack_size_from_pdf(text)
     if not row.get("therapeutic_category"):
         row["therapeutic_category"] = _therapeutic_indication_from_pdf(text)
+    # A manufacturer the connector read from a dedicated regulator field is
+    # authoritative. Registries such as ANMDMR publish it separately from the
+    # authorisation holder, and the two legitimately match when a company makes
+    # its own product, so neither overwrite nor discard it here.
+    explicitly_sourced = bool(str(row.get("manufacturer_source") or "").strip())
     manufacturer_metadata = _manufacturer_from_pdf(text)
     manufacturer_name = manufacturer_metadata.get("manufacturer_name")
-    if manufacturer_name and (
+    if manufacturer_name and not explicitly_sourced and (
         not row.get("manufacturer_name")
         or _normalized_value(row.get("manufacturer_name")) == _normalized_value(row.get("company"))
     ):
@@ -396,11 +407,36 @@ def _enrich_from_pdf_text(row, text):
         row["manufacturer_source"] = manufacturer_metadata.get("manufacturer_source", "")
     if manufacturer_metadata.get("manufacturer_country") and not row.get("manufacturer_country"):
         row["manufacturer_country"] = manufacturer_metadata["manufacturer_country"]
+    if manufacturer_name:
+        row.setdefault("manufacturers", []).append(
+            {
+                "name": manufacturer_name,
+                "address": manufacturer_metadata.get("manufacturer_address", ""),
+                "country": manufacturer_metadata.get("manufacturer_country", ""),
+                "role": manufacturer_metadata.get("manufacturer_role", "MANUFACTURER_UNKNOWN_ROLE"),
+                "verification_status": "VERIFIED_OFFICIAL_DOCUMENT",
+            }
+        )
+        row.setdefault("evidence", []).append(
+            {
+                "field_name": "manufacturer_name",
+                "value": manufacturer_name,
+                "role": manufacturer_metadata.get("manufacturer_role", ""),
+                "source_regulator": row.get("source", ""),
+                "document_type": row.get("document_type", "Regulatory document"),
+                "evidence_url": evidence_url,
+                "evidence_section": "Manufacturer / batch release section",
+                "extraction_method": "PDF_TEXT_SECTION_PARSER",
+                "verification_status": "VERIFIED_OFFICIAL_DOCUMENT",
+            }
+        )
     if not row.get("manufacturer_email"):
         row["manufacturer_email"] = _find_email(text)
     if not row.get("manufacturer_phone"):
         row["manufacturer_phone"] = _find_phone(text)
-    if _normalized_value(row.get("manufacturer_name")) == _normalized_value(row.get("company")):
+    if not explicitly_sourced and _normalized_value(row.get("manufacturer_name")) == _normalized_value(
+        row.get("company")
+    ):
         row["manufacturer_name"] = ""
         row["manufacturer_country"] = ""
         row["manufacturer_source"] = ""
@@ -478,7 +514,7 @@ def _enrich_pdf_fields(rows):
     for row in rows:
         for pdf_url in _pdf_urls_for_row(row):
             before = dict(row)
-            _enrich_from_pdf_text(row, text_by_url.get(pdf_url, ""))
+            _enrich_from_pdf_text(row, text_by_url.get(pdf_url, ""), evidence_url=pdf_url)
             if (
                 row.get("strength")
                 and row.get("dosage_form")
@@ -491,7 +527,39 @@ def _enrich_pdf_fields(rows):
     return rows
 
 
+def _enrich_spain_cima_details(rows):
+    """Fill ATC code and pack size from the CIMA per-product endpoint."""
+    numbers = []
+    for row in rows:
+        if row.get("source") != "Spain CIMA":
+            continue
+        number = str(row.get("registration_number") or "").strip()
+        if number and number not in numbers and not row.get("atc_code"):
+            numbers.append(number)
+        if len(numbers) >= MAX_CIMA_DETAIL_PAGES:
+            break
+    if not numbers:
+        return
+
+    detail_by_number = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(numbers))) as executor:
+        jobs = {executor.submit(fetch_cima_detail, number): number for number in numbers}
+        for job in as_completed(jobs):
+            detail_by_number[jobs[job]] = job.result()
+
+    for row in rows:
+        if row.get("source") != "Spain CIMA":
+            continue
+        detail = detail_by_number.get(str(row.get("registration_number") or "").strip())
+        if not detail:
+            continue
+        for field in ("atc_code", "pack_size", "registration_date"):
+            if detail.get(field) and not row.get(field):
+                row[field] = detail[field]
+
+
 def enrich_deep_results(rows):
+    _enrich_spain_cima_details(rows)
     ema_urls = sorted(
         {
             row.get("product_url") or row.get("url")

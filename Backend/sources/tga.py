@@ -244,6 +244,25 @@ def _merge_detail(row: dict[str, Any], detail: dict[str, str]) -> dict[str, Any]
         merged["dosage_form"] = extract_dosage_form(product)
     if not merged.get("pack_size"):
         merged["pack_size"] = extract_pack_size(product)
+    manufacturer = detail.get("manufacturer_name", "")
+    if manufacturer:
+        merged["manufacturer_source"] = "TGA ARTG product detail"
+        merged["manufacturers"] = [{
+            "name": manufacturer,
+            "role": "MANUFACTURER_UNKNOWN_ROLE",
+            "verification_status": "VERIFIED_PRODUCT_PAGE",
+        }]
+        merged["evidence"] = [{
+            "field_name": "manufacturer_name",
+            "value": manufacturer,
+            "role": "MANUFACTURER_UNKNOWN_ROLE",
+            "source_regulator": "TGA Australia",
+            "document_type": "ARTG product detail",
+            "evidence_url": merged.get("product_url", ""),
+            "evidence_section": "Manufacturer",
+            "extraction_method": "OFFICIAL_HTML_FIELD",
+            "verification_status": "VERIFIED_PRODUCT_PAGE",
+        }]
     return merged
 
 

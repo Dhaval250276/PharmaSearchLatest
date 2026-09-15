@@ -126,6 +126,7 @@ def _ema_result_from_record(
         "company": _ema_holder(record),
         "country": country,
         "region": "EU",
+        "authorisation_scope": "EU_CENTRALISED",
         "status": _record_value(record, "medicine_status", "status"),
         "strength": _ema_strength(record, product),
         "dosage_form": _ema_dosage_form(record, product),
@@ -164,16 +165,14 @@ def _extract_ema_products(html, substance, source_url):
 
 
 def _expand_to_ema_countries(products, substance):
-    results = []
-    for product in products:
-        for country in EMA_COUNTRIES:
-            results.append(
+    return [
                 {
                     "substance": substance,
                     "product": product["product"],
                     "company": "",
-                    "country": country,
+                    "country": "European Union",
                     "region": "EU",
+                    "authorisation_scope": "EU_CENTRALISED",
                     "status": "Authorised",
                     "strength": extract_strength(product["product"]),
                     "dosage_form": extract_dosage_form(product["product"]),
@@ -182,8 +181,8 @@ def _expand_to_ema_countries(products, substance):
                     "product_url": product["url"],
                     "url": product["url"],
                 }
-            )
-    return results
+        for product in products
+    ]
 
 
 def _fetch_ema_medicine_json() -> list[dict[str, Any]]:
@@ -261,8 +260,9 @@ def _expand_records(
     for record in records:
         if not _record_matches_substance(record, substance):
             continue
-        for country in countries:
-            results.append(_ema_result_from_record(record, substance, country, source_url))
+        # A centralised EMA authorisation is one EU registration with EU-wide
+        # territorial scope, not 27 separate national registrations.
+        results.append(_ema_result_from_record(record, substance, "European Union", source_url))
     return results
 
 

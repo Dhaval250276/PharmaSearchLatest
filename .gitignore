@@ -4,8 +4,14 @@ __pycache__/
 .venv/
 Backend/.venv/
 
+# Local secrets: the admin sign-in credentials
+Backend/.env
+
 # Local runtime data and generated exports
 Backend/pharmasearch.db
+Backend/pharmasearch.db.bak-*
+Backend/*.db-wal
+Backend/*.db-shm
 Backend/exports/
 Backend/*.xlsx
 
@@ -22,3 +28,11 @@ Backend/forxiga_page.png
 
 # Test/runtime caches
 Backend/**/__pycache__/
+Backend/data/cdsco_india_approvals.json
+Backend/data/open_registers/
+
+# Bulk local artifacts kept outside the app tree
+outputs/
+zip.zip
+Backend/backups/
+Backend/logs/

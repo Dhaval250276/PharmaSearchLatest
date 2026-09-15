@@ -1,12 +1,19 @@
 from html import escape
 from pathlib import Path
+from collections import Counter
 from math import ceil
+import re
 from typing import Any
 from urllib.parse import quote, urlencode
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+
+from admin_routes import router as admin_router
+from services.admin_auth import SESSION_COOKIE_NAME, read_session
+from services.result_cache import BoundedResultCache
 
 from config import BASE_DIR, DB_PATH, EXPORT_DIR
 from core.logging_config import configure_logging, get_logger
@@ -16,12 +23,12 @@ from repository import (
     initialize_database,
     list_search_jobs,
     list_product_details,
-    reset_database,
     save_product_detail,
     seed_product_details_if_needed,
 )
 from sources.ema import EU_COUNTRIES, find_product_url, run_ema_search
-from sources.ema_product_parser import extract_product_page
+from sources.ema_product_parser import NotAnEmaPage, extract_product_page
+from sources.open_registers import warm_open_registers
 from sources.mhra import run_mhra_search
 from sources.mhra_product_parser import extract_mhra_product_page
 from sources.search_engine import COMPLETE_SEARCH_TIMEOUT_SECONDS, search_substance
@@ -43,6 +50,8 @@ from services.connector_health import connector_health_rows
 from services.connector_status import connector_status_rows
 from services.english_normalizer import english_text
 from services.field_availability import missing_field_value
+from services.harvest import harvest_coverage
+from services.harvest_vocabulary import load_vocabulary
 from services.result_formatter import formatted_result_row
 from services.search_jobs import FAST_BACKGROUND_SOURCES, create_search_job, get_search_job, get_search_job_results
 
@@ -51,7 +60,38 @@ configure_logging()
 logger = get_logger(__name__)
 app = FastAPI(title="PharmaSearch", version="0.2.0")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
-SEARCH_RESULT_CACHE: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+app.include_router(admin_router)
+
+# The sign-in page is the only way in. Everything below it needs a session:
+# the search pages, the exports and the JSON endpoints alike.
+PUBLIC_PATHS = {"/admin/login", "/favicon.ico"}
+PUBLIC_PREFIXES = ("/static",)
+
+
+@app.middleware("http")
+async def require_sign_in(request: Request, call_next):
+    path = request.url.path
+    if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
+        return await call_next(request)
+    if read_session(request.cookies.get(SESSION_COOKIE_NAME)):
+        return await call_next(request)
+    # A browser gets sent to the door and returned to where it was heading.
+    # Anything programmatic gets told plainly, rather than handed a login page
+    # it would try to parse as data.
+    if path.startswith("/api") or path.startswith("/admin/api") or "application/json" in (
+        request.headers.get("accept") or ""
+    ):
+        return JSONResponse({"detail": "Sign in required"}, status_code=401)
+    destination = request.url.path
+    if request.url.query:
+        destination = f"{destination}?{request.url.query}"
+    return RedirectResponse(
+        f"/admin/login?next={quote(destination, safe='')}", status_code=303
+    )
+# Sixteen recent result lists, each for half an hour -- enough for a person to
+# search, sort, filter and then export, without memory growing with every click.
+SEARCH_RESULT_CACHE = BoundedResultCache(max_entries=16, ttl_seconds=30 * 60)
 APP_BUILD = "UAT-2026-08-01-platform-core"
 
 
@@ -153,6 +193,9 @@ def merged_options(primary_values: list[str], fixed_values: list[str]) -> list[s
 def startup() -> None:
     logger.info("Starting PharmaSearch backend")
     initialize_database()
+    # Download any published register that is missing or stale, on a background
+    # thread, so the first Italian or Brazilian search finds it ready.
+    warm_open_registers()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -169,7 +212,7 @@ def home(request: Request):
     )
 
 
-@app.get("/global_search/{substance}")
+@app.get("/global_search/{substance:path}")
 def global_search(
     substance: str,
     sources: list[str] | None = Query(default=None),
@@ -255,7 +298,7 @@ def api_search(
     return {"substance": substance, "count": len(results), "results": results}
 
 
-@app.get("/search/{substance}")
+@app.get("/search/{substance:path}")
 def search_saved(
     substance: str,
     live: bool = True,
@@ -340,6 +383,58 @@ def recent_search_jobs_page():
     return HTMLResponse(content=html)
 
 
+def records_with_total(records: object, available: object) -> str:
+    """ "100 of 3,276" where a registry holds more than it returned."""
+    shown = int(records or 0)
+    total = int(available or 0)
+    return f"{shown:,} of {total:,}" if total > shown else f"{shown:,}"
+
+
+def _capped_counts(pairs: list[tuple[str, int, int]]) -> list[str]:
+    return [f"{source} returned {shown:,} of {total:,}" for source, shown, total in pairs if total > shown]
+
+
+def capped_job_note(progress: list[dict[str, Any]]) -> str:
+    capped = _capped_counts(
+        [(item["source"], int(item.get("records") or 0), int(item.get("available") or 0)) for item in progress]
+    )
+    if not capped:
+        return ""
+    return (
+        '<p class="alert alert-warning py-2">'
+        f'Not every product was fetched: {h("; ".join(capped))}. '
+        "These registries stop at a fixed number per search for now, so their counts are partial."
+        "</p>"
+    )
+
+
+def capped_sources_note(rows: list[dict[str, Any]]) -> str:
+    """Name the registries whose results stopped short of what they hold.
+
+    FDA returns its first 100 labels and Health Canada its first 50 products;
+    acetaminophen has 3,276 labels and 1,348 Canadian products. A results page
+    that says nothing reads as the complete list.
+    """
+    shown: Counter[str] = Counter()
+    totals: dict[str, int] = {}
+    for row in rows:
+        total = int(row.get("available_total") or 0)
+        if not total:
+            continue
+        source = str(row.get("source") or "")
+        shown[source] += 1
+        totals[source] = max(totals.get(source, 0), total)
+    capped = _capped_counts([(source, shown[source], totals[source]) for source in totals])
+    if not capped:
+        return ""
+    return (
+        '<p class="alert alert-warning py-2">'
+        f'Partial results: {h("; ".join(capped))}. '
+        "These registries stop at a fixed number per search for now."
+        "</p>"
+    )
+
+
 @app.get("/search_jobs/{job_id}", response_class=HTMLResponse)
 def search_job_page(job_id: str):
     job = get_search_job(job_id)
@@ -371,7 +466,7 @@ def search_job_page(job_id: str):
             <tr>
                 <td>{h(progress["source"])}</td>
                 <td><span class="badge text-bg-{badge}">{h(progress["status"])}</span></td>
-                <td>{h(progress["records"])}</td>
+                <td>{h(records_with_total(progress.get("records"), progress.get("available")))}</td>
                 <td>{h(progress["error"])}</td>
             </tr>
             """
@@ -401,7 +496,6 @@ def search_job_page(job_id: str):
             </div>
             <div class="d-flex gap-2">
                 <a class="btn btn-secondary" href="/">Back</a>
-                <a class="btn btn-outline-secondary" href="/search_jobs">Recent Searches</a>
                 {results_button}
             </div>
         </div>
@@ -421,6 +515,7 @@ def search_job_page(job_id: str):
             </thead>
             <tbody>{"".join(rows)}</tbody>
         </table>
+        {capped_job_note(job["progress"])}
     </div>
     </body>
     </html>
@@ -522,6 +617,7 @@ def search_job_results_page(job_id: str):
                 <h2>Search Job Results</h2>
                 <p class="mb-0">Active Substance: <strong>{h(job["substance"])}</strong></p>
                 <p class="text-muted small mb-0">Showing {len(rows)} of {len(saved_rows)} records from this background job.</p>
+                {capped_sources_note(saved_rows)}
             </div>
             <div class="d-flex gap-2">
                 <a class="btn btn-secondary" href="/search_jobs/{h(job_id)}">Progress</a>
@@ -580,6 +676,25 @@ def export_search_job_results(job_id: str):
     )
 
 
+def document_cell(row, display_row, field, label):
+    """The document this regulator published for this authorisation, or nothing.
+
+    Only the row's own document belongs in the column. Another regulator's
+    document for the same molecule is not this authorisation's label, and a
+    caption naming the lender does not stop a reader taking an MHRA leaflet
+    for the FDA one: the US column showed an MHRA leaflet for NASACORT that
+    way. Where the regulator publishes nothing the column says so, and the
+    reader looks the document up at the source themselves.
+
+    The borrowed link is not lost. It keeps its own Molecule Reference
+    columns in the Excel export, where it is never mistaken for this one.
+    """
+    own_url = str(display_row.get(field) or "").strip()
+    if own_url:
+        return f'<a href="{h(own_url)}" target="_blank" rel="noopener">Open {label}</a>'
+    return f'<span class="text-muted">{h(missing_field_value(row, field))}</span>'
+
+
 @app.get("/search_page", response_class=HTMLResponse)
 def search_page(
     substance: str,
@@ -634,12 +749,19 @@ def search_page(
         )
     sort_dir = "desc" if sort_dir == "desc" else "asc"
     status = english_text(status)
+    normalized_search_mode = "full" if search_mode == "full" else "fast"
     requested_sources = sources if isinstance(sources, list) else [sources] if sources else []
     if not requested_sources:
-        sources = sorted(FAST_BACKGROUND_SOURCES)
+        # A full search with no explicit source list means every source, not the
+        # quick-search shortlist.
+        default_sources = (
+            [item["name"] for item in connector_metadata() if item.get("enabled", True)]
+            if normalized_search_mode == "full"
+            else sorted(FAST_BACKGROUND_SOURCES)
+        )
+        sources = default_sources
         requested_sources = list(sources)
     requested_source_names = {str(item).strip().lower() for item in requested_sources if str(item).strip()}
-    normalized_search_mode = "full" if search_mode == "full" else "fast"
     slow_live_sources = {
         "cdsco india",
         "grls russia",
@@ -884,21 +1006,9 @@ def search_page(
     for row in visible_product_rows:
         display_row = formatted_result_row(row, searched_substance=substance)
         product_link = link_or_unavailable(display_row["product_details_url"], "Open Product")
-        smpc_link = link_or_unavailable(
-            display_row["smpc_url"],
-            "Open SmPC",
-            missing_field_value(row, "smpc_url"),
-        )
-        pil_link = link_or_unavailable(
-            display_row["pil_url"],
-            "Open PIL",
-            missing_field_value(row, "pil_url"),
-        )
-        assessment_link = link_or_unavailable(
-            display_row["assessment_report_url"],
-            "Open Assessment",
-            missing_field_value(row, "assessment_report_url"),
-        )
+        smpc_link = document_cell(row, display_row, "smpc_url", "SmPC")
+        pil_link = document_cell(row, display_row, "pil_url", "PIL")
+        assessment_link = document_cell(row, display_row, "assessment_report_url", "Assessment")
         body_rows.append(
             f"""
             <tr class="result-row">
@@ -916,17 +1026,18 @@ def search_page(
                 <td>{h(display_row["atc_code"])}</td>
                 <td>{h(display_row["therapeutic_category"])}</td>
                 <td>{h(display_row["ma_holder"])}</td>
+                <td>{h(display_row["applicant_sponsor"])}</td>
                 <td>{h(display_row["manufacturer_name"])}</td>
                 <td>{h(display_row["manufacturer_country"])}</td>
+                <td>{h(display_row["manufacturer_address"])}</td>
+                <td>{h(display_row["manufacturer_role"])}</td>
+                <td>{h(display_row["verification_status"])}</td>
                 <td>{h(display_row["registration_status"])}</td>
                 <td>{h(display_row["registration_number"])}</td>
                 <td>{h(display_row["registration_date"])}</td>
                 <td>{smpc_link}</td>
                 <td>{pil_link}</td>
                 <td>{assessment_link}</td>
-                <td>{h(row.get("data_confidence", ""))}</td>
-                <td>{h(row.get("enrichment_status", ""))}</td>
-                <td>{h(row.get("missing_fields", ""))}</td>
             </tr>
             """
         )
@@ -934,7 +1045,7 @@ def search_page(
         body_rows.append(
             """
             <tr>
-                <td colspan="25" class="text-center text-muted py-4">
+                <td colspan="26" class="text-center text-muted py-4">
                     No direct product records on this page. Use the official source links above for manual verification.
                 </td>
             </tr>
@@ -1074,6 +1185,7 @@ def search_page(
         for row in rows
         if row.get("region") == "EU" and row.get("country") in EU_COUNTRIES
     }
+    capped_note = capped_sources_note(all_rows)
     eu_coverage_note = ""
     if region == "EU":
         note_class = "success" if len(eu_countries_in_results) == len(EU_COUNTRIES) else "warning"
@@ -1174,6 +1286,7 @@ def search_page(
         <p class="small text-muted mb-1">By source: {source_summary}</p>
         <p class="small text-muted">By country: {country_summary}</p>
         <p class="small">Active filters: {active_filter_summary}</p>
+        {capped_note}
         {eu_coverage_note}
         {registry_links_section}
         <div class="d-flex justify-content-between align-items-center mb-3">
@@ -1222,17 +1335,18 @@ def search_page(
                     <th>{sort_label("atc_code", "ATC Code")}</th>
                     <th>{sort_label("therapeutic_category", "Therapeutic Category")}</th>
                     <th>{sort_label("ma_holder", "MA Holder Name")}</th>
+                    <th>Applicant / Sponsor</th>
                     <th>{sort_label("manufacturer_name", "Manufacturer Name")}</th>
                     <th>{sort_label("manufacturer_country", "Manufacturer Country")}</th>
+                    <th>Manufacturer Address / Site</th>
+                    <th>Manufacturer Role</th>
+                    <th>Verification</th>
                     <th>Registration Status</th>
                     <th>{sort_label("registration_number", "Registration Number")}</th>
                     <th>{sort_label("registration_date", "Registration Date")}</th>
                     <th>SMPC URL</th>
                     <th>PIL URL</th>
                     <th>Assessment Report URL</th>
-                    <th>Data Confidence</th>
-                    <th>Enrichment Status</th>
-                    <th>Missing Fields</th>
                 </tr>
                 <tr class="table-secondary">
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="substance_filter" value="{h(substance_filter)}" placeholder="Filter"></th>
@@ -1249,17 +1363,18 @@ def search_page(
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="atc_code_filter" value="{h(atc_code_filter)}" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="therapeutic_category_filter" value="{h(therapeutic_category_filter)}" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="ma_holder_filter" value="{h(ma_holder_filter)}" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="14" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="manufacturer_name_filter" value="{h(manufacturer_name_filter)}" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="manufacturer_country_filter" value="{h(manufacturer_country_filter)}" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="17" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="18" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="19" placeholder="Filter"></th>
                     <th><select form="result-filter-form" class="form-select form-select-sm" name="status">{status_options}</select></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="registration_number_filter" value="{h(registration_number_filter)}" placeholder="Filter"></th>
                     <th><input form="result-filter-form" class="form-control form-control-sm" name="registration_date_filter" value="{h(registration_date_filter)}" placeholder="Filter"></th>
-                    <th><input class="form-control form-control-sm page-column-filter" data-column="19" placeholder="Filter"></th>
-                    <th><input class="form-control form-control-sm page-column-filter" data-column="20" placeholder="Filter"></th>
-                    <th><input class="form-control form-control-sm page-column-filter" data-column="21" placeholder="Filter"></th>
-                    <th><input class="form-control form-control-sm page-column-filter" data-column="22" placeholder="Filter"></th>
                     <th><input class="form-control form-control-sm page-column-filter" data-column="23" placeholder="Filter"></th>
                     <th><input class="form-control form-control-sm page-column-filter" data-column="24" placeholder="Filter"></th>
+                    <th><input class="form-control form-control-sm page-column-filter" data-column="25" placeholder="Filter"></th>
                 </tr>
             </thead>
             <tbody>{"".join(body_rows)}</tbody>
@@ -1320,7 +1435,7 @@ def search_page(
     return HTMLResponse(content=html)
 
 
-@app.get("/export/{substance}")
+@app.get("/export/{substance:path}")
 def export_live(
     substance: str,
     live: bool = True,
@@ -1419,7 +1534,7 @@ def export_live(
     )
 
 
-@app.get("/deep_export/{substance}")
+@app.get("/deep_export/{substance:path}")
 def deep_export_live(
     substance: str,
     live: bool = True,
@@ -1533,10 +1648,195 @@ def products():
     return HTMLResponse(content=html)
 
 
+CATALOGUE_COLUMNS = (
+    "Molecule",
+    "Product Name",
+    "Company",
+    "Country",
+    "Region",
+    "Status",
+    "Source",
+    "Product Details",
+    "Strength",
+    "Dosage Form",
+    "Pack Size",
+    "ATC Code",
+    "Therapeutic Category",
+    "MA Holder Name",
+    "Manufacturer Name",
+    "Manufacturer Country",
+    "Registration Status",
+    "Registration Number",
+    "Registration Date",
+    "SMPC URL",
+    "PIL URL",
+    "Assessment Report URL",
+)
+
+# The harvest stores a handoff row for registries whose live endpoint returns
+# nothing. They carry no product data, so the catalogue hides them by default.
+REGISTRY_HANDOFF_PATTERN = re.compile(r"official .* registry search", flags=re.IGNORECASE)
+
+
+def _is_registry_handoff(row: dict[str, Any]) -> bool:
+    return bool(REGISTRY_HANDOFF_PATTERN.search(str(row.get("product") or "")))
+
+
+@app.get("/catalogue", response_class=HTMLResponse)
+def catalogue(
+    page: int = 1,
+    page_size: int = 50,
+    substance: str = "",
+    country: str = "",
+    source: str = "",
+    company: str = "",
+    product: str = "",
+    include_handoffs: bool = False,
+):
+    """Everything harvested, with no substance required.
+
+    The search page answers "what exists for this molecule". This answers "what
+    do we hold", which is the view a harvest produces and the one that shows
+    coverage across every registry at once.
+    """
+    rows = list_product_details()
+    if not include_handoffs:
+        rows = [row for row in rows if not _is_registry_handoff(row)]
+
+    filters = (
+        ("substance", substance),
+        ("country", country),
+        ("source", source),
+        ("company", company),
+        ("product", product),
+    )
+    for field, needle in filters:
+        if needle.strip():
+            wanted = needle.strip().lower()
+            rows = [row for row in rows if wanted in str(row.get(field) or "").lower()]
+
+    total = len(rows)
+    page_size = max(1, min(page_size, 500))
+    pages = max(1, ceil(total / page_size))
+    page = max(1, min(page, pages))
+    visible = rows[(page - 1) * page_size : page * page_size]
+    visible = prepared_cached_results(visible)
+
+    by_source = Counter(str(row.get("source") or "") for row in rows)
+    by_country = Counter(str(row.get("country") or "") for row in rows)
+
+    body_rows = []
+    for row in visible:
+        display_row = formatted_result_row(row, searched_substance=row.get("substance", ""))
+        body_rows.append(
+            f"""
+            <tr>
+                <td>{h(display_row["molecule"])}</td>
+                <td>{h(display_row["product"])}</td>
+                <td>{h(display_row["company"])}</td>
+                <td>{h(display_row["country"])}</td>
+                <td>{h(display_row["region"])}</td>
+                <td>{h(display_row["registration_status"])}</td>
+                <td>{h(display_row["source"])}</td>
+                <td>{link_or_unavailable(display_row["product_details_url"], "Open Product")}</td>
+                <td>{h(display_row["strength"])}</td>
+                <td>{h(display_row["dosage_form"])}</td>
+                <td>{h(display_row["pack_size"])}</td>
+                <td>{h(display_row["atc_code"])}</td>
+                <td>{h(display_row["therapeutic_category"])}</td>
+                <td>{h(display_row["ma_holder"])}</td>
+                <td>{h(display_row["manufacturer_name"])}</td>
+                <td>{h(display_row["manufacturer_country"])}</td>
+                <td>{h(display_row["registration_status"])}</td>
+                <td>{h(display_row["registration_number"])}</td>
+                <td>{h(display_row["registration_date"])}</td>
+                <td>{document_cell(row, display_row, "smpc_url", "SmPC")}</td>
+                <td>{document_cell(row, display_row, "pil_url", "PIL")}</td>
+                <td>{document_cell(row, display_row, "assessment_report_url", "Assessment")}</td>
+            </tr>
+            """
+        )
+    if not body_rows:
+        body_rows.append(
+            f'<tr><td colspan="{len(CATALOGUE_COLUMNS)}" class="text-center text-muted py-4">'
+            "No harvested records match these filters.</td></tr>"
+        )
+
+    def page_href(number):
+        query = [(field, value) for field, value in filters if value.strip()]
+        query.extend([("page", str(number)), ("page_size", str(page_size))])
+        if include_handoffs:
+            query.append(("include_handoffs", "true"))
+        return f"/catalogue?{urlencode(query)}"
+
+    headers = "".join(f"<th>{h(label)}</th>" for label in CATALOGUE_COLUMNS)
+    source_summary = ", ".join(f"{name}: {count}" for name, count in by_source.most_common())
+    country_summary = ", ".join(f"{name}: {count}" for name, count in by_country.most_common(12))
+    previous_link = (
+        f'<a class="btn btn-outline-secondary" href="{h(page_href(page - 1))}">Previous</a>'
+        if page > 1
+        else '<span class="btn btn-outline-secondary disabled">Previous</span>'
+    )
+    next_link = (
+        f'<a class="btn btn-outline-secondary" href="{h(page_href(page + 1))}">Next</a>'
+        if page < pages
+        else '<span class="btn btn-outline-secondary disabled">Next</span>'
+    )
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>PharmaSearch Catalogue</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+        <style>
+            .catalogue-scroll {{ overflow-x: auto; }}
+            .catalogue-scroll table {{ min-width: 2400px; }}
+        </style>
+    </head>
+    <body>
+    <div class="container-fluid mt-4">
+        <h2>Harvested Catalogue</h2>
+        <p class="alert alert-info mb-2">
+            <strong>{total}</strong> product records across <strong>{len(by_source)}</strong> sources
+            and <strong>{len(by_country)}</strong> countries. No substance needed &mdash; this is
+            everything the harvest has stored.
+        </p>
+        <p class="small text-muted">By source &mdash; {h(source_summary)}</p>
+        <p class="small text-muted">By country &mdash; {h(country_summary)}</p>
+        <form class="row g-2 mb-3" method="get" action="/catalogue">
+            <div class="col"><input class="form-control" name="substance" value="{h(substance)}" placeholder="Molecule"></div>
+            <div class="col"><input class="form-control" name="product" value="{h(product)}" placeholder="Product"></div>
+            <div class="col"><input class="form-control" name="company" value="{h(company)}" placeholder="Company"></div>
+            <div class="col"><input class="form-control" name="country" value="{h(country)}" placeholder="Country"></div>
+            <div class="col"><input class="form-control" name="source" value="{h(source)}" placeholder="Source"></div>
+            <div class="col"><input class="form-control" name="page_size" value="{page_size}" placeholder="Rows"></div>
+            <div class="col-auto"><button class="btn btn-primary" type="submit">Filter</button></div>
+            <div class="col-auto"><a class="btn btn-outline-secondary" href="/catalogue">Clear</a></div>
+        </form>
+        <div class="d-flex gap-2 align-items-center mb-2">
+            {previous_link}{next_link}
+            <span class="text-muted">Page {page} of {pages}</span>
+            <a class="btn btn-outline-primary ms-auto" href="/">Back to search</a>
+        </div>
+        <div class="catalogue-scroll">
+        <table class="table table-striped table-bordered align-middle">
+            <thead class="table-dark"><tr>{headers}</tr></thead>
+            <tbody>{"".join(body_rows)}</tbody>
+        </table>
+        </div>
+    </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
+
+
 @app.get("/reset_db")
 def reset_db():
-    reset_database()
-    return {"message": "Database cleared"}
+    # This used to clear the database on a bare GET, which any crawler or link
+    # prefetcher could trigger. Clearing now lives behind the admin sign-in.
+    return RedirectResponse("/admin", status_code=308)
 
 
 @app.get("/connector_status")
@@ -1552,6 +1852,17 @@ def connector_health():
 @app.get("/ai_status")
 def ai_status():
     return current_ai_status()
+
+
+@app.get("/harvest_coverage")
+def harvest_coverage_report():
+    """What the source-wide harvest has stored so far, per source."""
+    rows = harvest_coverage()
+    return {
+        "sources": rows,
+        "rows": sum(row["rows"] for row in rows),
+        "molecules_available": len(load_vocabulary()),
+    }
 
 
 @app.get("/connector_status_page")
@@ -1680,38 +1991,6 @@ def connector_health_page():
     return HTMLResponse(content=html)
 
 
-@app.get("/load_demo_data")
-def load_demo_data():
-    reset_database()
-    demo_data = [
-        ("Dapagliflozin", "Forxiga", "AstraZeneca AB", "Sweden", "Authorised", "Demo"),
-        (
-            "Dapagliflozin",
-            "FORXIGA 10MG FILM COATED TABLETS",
-            "AstraZeneca UK Limited",
-            "United Kingdom",
-            "Authorised",
-            "Demo",
-        ),
-        ("Dapagliflozin", "Dapagliflozin Viatris", "Viatris", "France", "Authorised", "Demo"),
-        ("Empagliflozin", "Jardiance", "Boehringer Ingelheim International GmbH", "Germany", "Authorised", "Demo"),
-        ("Semaglutide", "Ozempic", "Novo Nordisk A/S", "Denmark", "Authorised", "Demo"),
-        ("Metformin", "Glucophage", "Merck", "Spain", "Authorised", "Demo"),
-    ]
-    for substance, product, company, country, status, source in demo_data:
-        save_product_detail(
-            {
-                "substance": substance,
-                "product": product,
-                "company": company,
-                "country": country,
-                "status": status,
-                "source": source,
-            }
-        )
-    return {"message": "Demo data loaded", "count": len(demo_data)}
-
-
 @app.get("/crawl/{substance}")
 def crawl_ema_search(substance: str):
     return run_ema_search(substance)
@@ -1744,12 +2023,27 @@ def crawl_substance(substance: str):
     product_url = find_product_url(substance)
     if not product_url:
         return {"error": f"No product found for {substance}"}
-    return crawl_url(product_url)
+    try:
+        return save_ema_product_page(product_url)
+    except (NotAnEmaPage, EmptyProductPage) as exc:
+        return {"error": str(exc)}
 
 
-@app.get("/crawl_url")
-def crawl_url(url: str):
+class EmptyProductPage(ValueError):
+    """Raised when an EMA page was read but named no product."""
+
+
+def save_ema_product_page(url: str) -> dict[str, Any]:
+    """Read one EMA product page and save it as an EMA record.
+
+    Only pages on the EMA website are read (extract_product_page refuses the
+    rest, before and after any redirect), and a page that yields no product
+    name is not saved: a nameless row is not a registration, and it would
+    still be stamped as a regulator record.
+    """
     result = extract_product_page(url)
+    if not str(result.get("product_name") or "").strip():
+        raise EmptyProductPage(f"No product was found on {url}")
     saved = save_product_detail(
         {
             "substance": result.get("active_substance", ""),
@@ -1771,12 +2065,26 @@ def crawl_url(url: str):
     return {"message": "Product saved", "product": saved.get("product"), "data": result}
 
 
+# POST, not GET: it writes to the store, and a GET can be set off by nothing
+# more than a link or a browser prefetch while someone is signed in.
+@app.post("/crawl_url")
+def crawl_url(url: str):
+    try:
+        return save_ema_product_page(url)
+    except NotAnEmaPage:
+        return JSONResponse(
+            {"detail": "Only https pages on ema.europa.eu can be read."}, status_code=400
+        )
+    except EmptyProductPage as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=422)
+
+
 @app.get("/crawl_all_products/{substance}")
 def crawl_all_products(substance: str):
     saved_products = []
     for product_data in run_ema_search(substance):
         try:
-            result = crawl_url(product_data["url"])
+            result = save_ema_product_page(product_data["url"])
             saved_products.append(result["product"])
         except Exception:
             logger.exception("EMA product crawl failed")
