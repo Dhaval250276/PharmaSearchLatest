@@ -237,7 +237,9 @@ def _extract_mhra_json_record(record, substance):
         "dosage_form": extract_dosage_form(product),
         "pack_size": extract_pack_size(product),
         "registration_number": registration_number,
-        "registration_date": record.get("created", ""),
+        # MHRA's index has no authorisation date. "created" is when this PDF
+        # was indexed, which is not a registration date.
+        "registration_date": "",
         "document_type": document_type,
         "source": "MHRA",
         "source_url": f"{MHRA_BASE_URL}/search/?search={quote(substance)}&page=1",

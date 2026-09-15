@@ -557,9 +557,10 @@ REGIONAL_REGISTRY_URLS = {
 # it. An ATC code describes the product: plain metformin is A10BA02 while its
 # combinations are A10BD/A10BK codes, so it may only be shared between rows for
 # the same product.
-SHARED_MOLECULE_FIELDS = [
-    "therapeutic_category",
-]
+# Nothing is shared across a molecule: a value one regulator published is not
+# another regulator's record, and showing it on that row presents it as if it
+# were.
+SHARED_MOLECULE_FIELDS: list[str] = []
 SHARED_PRODUCT_FIELDS = [
     "atc_code",
 ]
@@ -774,7 +775,9 @@ def product_key(item: dict[str, Any]) -> str:
     normalized = " ".join(str(product or "").strip().lower().split())
     if not normalized:
         return ""
-    return f"{molecule_key(item)}|{normalized}"
+    # The same product from the same regulator only.
+    source = str(item.get("source") or "").strip().lower()
+    return f"{source}|{molecule_key(item)}|{normalized}"
 
 
 def normalized_tokens(value: object) -> list[str]:

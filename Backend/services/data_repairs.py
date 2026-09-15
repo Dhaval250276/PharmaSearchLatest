@@ -856,9 +856,212 @@ def relink_dead_mhra_documents(
     }
 
 
-def repair_combinations_and_mhra(dry_run: bool = False) -> dict[str, Any]:
-    from services.field_completion import complete_fields
+# Regulators whose own record carries an ATC code, and those whose own record
+# carries a therapeutic category. A value on any other regulator's row came from
+# somewhere else.
+ATC_PUBLISHERS = frozenset({
+    "EMA", "EU MRI Product Index", "Health Canada", "AIFA Italy", "BPOM Indonesia",
+    "ANMDMR Romania", "Spain CIMA",
+})
+CATEGORY_PUBLISHERS = frozenset({
+    "EMA", "FDA", "Health Canada", "AIFA Italy", "ANMDMR Romania", "CDSCO India", "ANVISA Brazil",
+})
+DERIVED_ONLY = "derived from ATC code"
+BORROWED_METHODS = ("CROSS_SOURCE_COMPLETION_BACKFILL",)
 
+
+def revoke_borrowed_values(dry_run: bool = False) -> dict[str, Any]:
+    """Keep only what each regulator published for its own product.
+
+    Field completion lent a molecule's ATC code, therapeutic category and
+    reference documents across regulators. The values were usually right for
+    the molecule but were not that regulator's record, and nothing on screen
+    said so. This withdraws them:
+
+    * an ATC code stays only on a row from a regulator that publishes ATC codes,
+      and only if completion did not lend it (a completion_source naming
+      lenders, or an evidence assertion naming a lender, marks it lent);
+    * a therapeutic category stays where the regulator publishes one and
+      completion never rewrote it; otherwise it is the class of the row's own
+      ATC code, or nothing;
+    * every reference document is removed;
+    * MHRA registration dates are removed: MHRA's index has no authorisation
+      date, and the stored value is when the PDF was indexed.
+    """
+    from services.therapeutic_category import therapeutic_category_from_atc
+
+    initialize_database()
+    with get_connection() as conn:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                """SELECT id, source, atc_code, therapeutic_category, completion_source,
+                          registration_date, reference_smpc_url, reference_pil_url,
+                          reference_assessment_report_url, reference_source, reference_product
+                   FROM product_details"""
+            ).fetchall()
+        ]
+        lent_by_evidence = {
+            row[0]
+            for row in conn.execute(
+                f"""SELECT DISTINCT product_detail_id FROM evidence
+                    WHERE field_name = 'atc_code'
+                      AND extraction_method IN ({', '.join('?' for _ in BORROWED_METHODS)})
+                      AND COALESCE(source_regulator, '') NOT IN ('', ?)""",
+                (*BORROWED_METHODS, DERIVED_ONLY),
+            ).fetchall()
+        }
+        own_source_evidence = {
+            (row[0], row[1])
+            for row in conn.execute(
+                "SELECT product_detail_id, source_regulator FROM evidence WHERE field_name = 'atc_code'"
+            ).fetchall()
+        }
+
+        counts: Counter[str] = Counter()
+        reference_fields = (
+            "reference_smpc_url", "reference_pil_url", "reference_assessment_report_url",
+            "reference_source", "reference_product",
+        )
+        cleared_fields: list[tuple[int, str]] = []
+        for row in rows:
+            source = _clean(row.get("source"))
+            completion = _clean(row.get("completion_source"))
+            changes: dict[str, str] = {}
+
+            atc = _clean(row.get("atc_code"))
+            lent = (completion not in ("", DERIVED_ONLY)) or (
+                row["id"] in lent_by_evidence and (row["id"], source) not in own_source_evidence
+            )
+            own_atc = atc if atc and source in ATC_PUBLISHERS and not lent else ""
+            if atc and not own_atc:
+                changes["atc_code"] = ""
+                counts["atc_codes_removed"] += 1
+                cleared_fields.append((row["id"], "atc_code"))
+
+            category = _clean(row.get("therapeutic_category"))
+            if category:
+                if source in CATEGORY_PUBLISHERS and not completion:
+                    kept_category = category
+                else:
+                    kept_category = therapeutic_category_from_atc(own_atc)
+                if kept_category != category:
+                    changes["therapeutic_category"] = kept_category
+                    counts["categories_removed" if not kept_category else "categories_rederived_from_own_atc"] += 1
+                    cleared_fields.append((row["id"], "therapeutic_category"))
+
+            if any(_clean(row.get(field)) for field in reference_fields):
+                changes.update({field: "" for field in reference_fields})
+                counts["rows_with_reference_documents_removed"] += 1
+
+            if source == "MHRA" and _clean(row.get("registration_date")):
+                changes["registration_date"] = ""
+                counts["mhra_document_dates_removed"] += 1
+                cleared_fields.append((row["id"], "registration_date"))
+
+            if completion:
+                changes["completion_source"] = ""
+            if changes and not dry_run:
+                conn.execute(
+                    "UPDATE product_details SET "
+                    + ", ".join(f"{column} = ?" for column in changes)
+                    + " WHERE id = ?",
+                    (*changes.values(), row["id"]),
+                )
+        if not dry_run:
+            conn.executemany(
+                "DELETE FROM evidence WHERE product_detail_id = ? AND field_name = ?",
+                cleared_fields,
+            )
+    return {"rows": len(rows), **dict(counts), "dry_run": dry_run}
+
+
+def restore_health_canada_from_register(
+    dry_run: bool = False, register_rows: Iterable[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Give Canadian rows the ATC code Health Canada itself publishes, by DIN.
+
+    Rows saved by the old per-product connector never carried an ATC code, so
+    theirs was lent from other regulators and has been withdrawn. The Drug
+    Product Database register downloaded for search holds each DIN's own code
+    and ATC description; those are Health Canada's record, so they are filled
+    in where the row has none, with an assertion naming the register.
+    """
+    import json
+    import sqlite3
+
+    from repository import EVIDENCE_INSERT_SQL
+    from services.evidence_assertions import VERIFIED_RECORD
+
+    if register_rows is None:
+        from sources.health_canada_dpd import HEALTH_CANADA_DPD
+        from sources.open_registers import current_index
+
+        index = current_index(HEALTH_CANADA_DPD)
+        if index is None:
+            return {"skipped": "Health Canada register not downloaded yet", "dry_run": dry_run}
+        connection = sqlite3.connect(f"file:{index}?mode=ro", uri=True)
+        try:
+            register_rows = [json.loads(payload) for (payload,) in connection.execute("SELECT payload FROM rows")]
+        finally:
+            connection.close()
+
+    by_din: dict[str, dict[str, Any]] = {}
+    for record in register_rows:
+        din = _clean(record.get("registration_number"))
+        if din and _clean(record.get("atc_code")):
+            by_din.setdefault(din, record)
+
+    initialize_database()
+    now = datetime.now(timezone.utc).isoformat()
+    restored: Counter[str] = Counter()
+    with get_connection() as conn:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                """SELECT id, registration_number, atc_code, therapeutic_category, product_url, document_type
+                   FROM product_details WHERE source = 'Health Canada'"""
+            ).fetchall()
+        ]
+        for row in rows:
+            record = by_din.get(_clean(row.get("registration_number")))
+            if not record:
+                continue
+            changes = {
+                field: _clean(record.get(field))
+                for field in ("atc_code", "therapeutic_category")
+                if not _clean(row.get(field)) and _clean(record.get(field))
+            }
+            if not changes:
+                continue
+            restored.update(changes.keys())
+            if dry_run:
+                continue
+            conn.execute(
+                "UPDATE product_details SET "
+                + ", ".join(f"{column} = ?" for column in changes)
+                + " WHERE id = ?",
+                (*changes.values(), row["id"]),
+            )
+            url = _clean(row.get("product_url")) or _clean(record.get("product_url"))
+            for field, value in changes.items():
+                conn.execute(
+                    EVIDENCE_INSERT_SQL,
+                    (
+                        row["id"], None, field, value, "", "Health Canada", "Drug Product Database",
+                        url, "", "Drug Product Database register", "OFFICIAL_REGISTER_FIELD",
+                        now, VERIFIED_RECORD, "",
+                    ),
+                )
+    return {
+        "canadian_rows": len(rows),
+        "atc_codes_restored_from_register": restored["atc_code"],
+        "categories_restored_from_register": restored["therapeutic_category"],
+        "dry_run": dry_run,
+    }
+
+
+def repair_combinations_and_mhra(dry_run: bool = False) -> dict[str, Any]:
     report: dict[str, Any] = {"non_pharmaceutical": remove_non_pharmaceutical_rows(dry_run=dry_run)}
     report["markup"] = clean_stored_markup(dry_run=dry_run)
     report["mhra"] = verify_mhra_rows(dry_run=dry_run)
@@ -866,13 +1069,9 @@ def repair_combinations_and_mhra(dry_run: bool = False) -> dict[str, Any]:
     report["health_canada_links"] = relink_health_canada_products(dry_run=dry_run)
     report["mhra_dead_links"] = relink_dead_mhra_documents(dry_run=dry_run)
     report["rekey"] = rekey_substances(dry_run=dry_run)
-    report["atc_codes"] = correct_group_atc_codes(dry_run=dry_run)
-    report["references"] = clear_misattached_references(dry_run=dry_run)
-    if not dry_run:
-        # Lends again within the corrected groups: a combination left without a
-        # code takes its own group's agreed one, and a cleared reference is
-        # replaced by a document from the right group.
-        report["completion"] = complete_fields()
+    # Nothing is lent again afterwards: a row shows what its regulator published.
+    report["borrowed_values"] = revoke_borrowed_values(dry_run=dry_run)
+    report["health_canada_register"] = restore_health_canada_from_register(dry_run=dry_run)
     return report
 
 
@@ -888,14 +1087,18 @@ if __name__ == "__main__":
         "--mhra-links-only", action="store_true",
         help="only replace links to MHRA documents that no longer exist",
     )
+    parser.add_argument(
+        "--revoke-borrowed", action="store_true",
+        help="only remove values lent from other regulators and MHRA document dates",
+    )
     args = parser.parse_args()
+    parser_revoke = args.revoke_borrowed
     if args.mhra_links_only:
-        report = {"mhra_dead_links": relink_dead_mhra_documents(dry_run=args.dry_run)}
-        if not args.dry_run:
-            from services.field_completion import complete_fields
-
-            # Rows whose dead reference was removed are lent a live one.
-            report["completion"] = complete_fields()
-        print(json.dumps(report, indent=1))
+        print(json.dumps(relink_dead_mhra_documents(dry_run=args.dry_run), indent=1))
+    elif parser_revoke:
+        print(json.dumps({
+            "borrowed_values": revoke_borrowed_values(dry_run=args.dry_run),
+            "health_canada_register": restore_health_canada_from_register(dry_run=args.dry_run),
+        }, indent=1))
     else:
         print(json.dumps(repair_combinations_and_mhra(dry_run=args.dry_run), indent=1))

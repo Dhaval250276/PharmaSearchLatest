@@ -8,7 +8,7 @@ dead week by week. This is what the Windows scheduled task
 
 1. copies the database to backups/weekly-mhra-links-<timestamp>.db and keeps
    the newest four of those, so a bad run can always be undone;
-2. runs the same repair as `python -m services.data_repairs --mhra-links-only`;
+2. replaces links to deleted MHRA PDFs with the licence's current document;
 3. appends what it did to logs/weekly_mhra_links.log.
 
 It is safe while the server is running: SQLite waits for the server's writes.
@@ -63,12 +63,8 @@ def main() -> int:
         log(f"backup {backup.name}")
 
         from services.data_repairs import relink_dead_mhra_documents
-        from services.field_completion import complete_fields
 
         result = relink_dead_mhra_documents()
-        if result["rows_whose_dead_reference_was_removed"]:
-            completion = complete_fields()
-            result["references_relent_rows"] = completion["rows_updated"]
         log("done " + json.dumps(result))
         return 0
     except Exception:  # the log is the only place a scheduled run can report

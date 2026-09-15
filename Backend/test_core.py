@@ -1325,8 +1325,9 @@ class TherapeuticCategoryTests(unittest.TestCase):
 
         self.assertEqual(category, "Antipsychotic")
 
-    def test_uses_substance_category_when_available(self):
-        self.assertEqual(short_therapeutic_category("", "mirabegron", ""), "Overactive bladder medicine")
+    def test_never_guesses_a_category_from_the_molecule_name(self):
+        # A category no regulator published for this product is not shown.
+        self.assertEqual(short_therapeutic_category("", "mirabegron", ""), "")
 
     def test_uses_atc_category_when_available(self):
         self.assertEqual(short_therapeutic_category("", "", "N02BE01"), "Analgesic")
@@ -3033,6 +3034,86 @@ class DeadMhraDocumentTests(unittest.TestCase):
         self.assertEqual(rows["OTHER 5 MG"]["smpc_url"], "")
         # Its SmPC, product and evidence links all pointed at the deleted file.
         self.assertEqual(result["links_removed_no_current_document"], 3)
+
+
+class OnlyRegulatorValuesTests(unittest.TestCase):
+    """A row shows what its own regulator published, nothing lent from another."""
+
+    def setUp(self):
+        seed = patch.object(repository, "PRODUCT_DETAILS_SEED_PATH", Path("no-seed.jsonl"))
+        seed.start()
+        self.addCleanup(seed.stop)
+
+    def _rows(self):
+        with repository.get_connection() as conn:
+            return {row["product"]: dict(row) for row in conn.execute("SELECT * FROM product_details")}
+
+    def test_lent_values_and_mhra_document_dates_are_withdrawn(self):
+        from services.data_repairs import revoke_borrowed_values
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(repository, "DB_PATH", Path(directory) / "t.db"):
+            repository.save_product_details([
+                # MHRA publishes no ATC code: this one was lent.
+                {"product": "APIXABAN TEVA", "source": "MHRA", "country": "United Kingdom",
+                 "atc_code": "B01AF02", "therapeutic_category": "Anticoagulant",
+                 "completion_source": "EMA", "registration_date": "2022-04-26T22:09:40Z",
+                 "reference_smpc_url": "https://ema/eliquis"},
+                # EMA publishes its own code.
+                {"product": "Eliquis", "source": "EMA", "country": "EU", "atc_code": "B01AF02",
+                 "therapeutic_category": "Anticoagulant"},
+                # Spain publishes ATC codes, but this one was lent.
+                {"product": "APIXABAN CINFA", "source": "Spain CIMA", "country": "Spain",
+                 "atc_code": "B01AF02"},
+            ])
+            with repository.get_connection() as conn:
+                # Field completion wrote these; the save path does not.
+                conn.execute(
+                    "UPDATE product_details SET completion_source = 'EMA', reference_smpc_url = 'https://ema/eliquis'"
+                    " WHERE product IN ('APIXABAN TEVA', 'APIXABAN CINFA')"
+                )
+            revoke_borrowed_values()
+            rows = self._rows()
+
+        uk = rows["APIXABAN TEVA"]
+        self.assertEqual((uk["atc_code"], uk["therapeutic_category"], uk["registration_date"]), ("", "", ""))
+        self.assertFalse(uk["reference_smpc_url"])
+        self.assertEqual(rows["Eliquis"]["atc_code"], "B01AF02")
+        self.assertEqual(rows["APIXABAN CINFA"]["atc_code"], "")
+
+    def test_canadian_rows_take_health_canadas_own_code_by_din(self):
+        from services.data_repairs import restore_health_canada_from_register
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(repository, "DB_PATH", Path(directory) / "t.db"):
+            repository.save_product_details([
+                {"product": "GLUCOPHAGE", "source": "Health Canada", "country": "Canada",
+                 "registration_number": "02099233"},
+            ])
+            result = restore_health_canada_from_register(register_rows=[
+                {"registration_number": "02099233", "atc_code": "A10BA02", "therapeutic_category": "Metformin"},
+            ])
+            row = self._rows()["GLUCOPHAGE"]
+        self.assertEqual((row["atc_code"], row["therapeutic_category"]), ("A10BA02", "Metformin"))
+        self.assertEqual(result["atc_codes_restored_from_register"], 1)
+
+    def test_live_results_share_nothing_across_regulators(self):
+        from services.search_pipeline import propagate_molecule_fields
+
+        rows = propagate_molecule_fields([
+            {"source": "EMA", "substance": "apixaban", "product": "Eliquis", "atc_code": "B01AF02",
+             "therapeutic_category": "Anticoagulant"},
+            {"source": "MHRA", "substance": "apixaban", "product": "Eliquis"},
+        ])
+        self.assertEqual(rows[1].get("atc_code", ""), "")
+        self.assertEqual(rows[1].get("therapeutic_category", ""), "")
+
+    def test_mhra_rows_carry_no_registration_date(self):
+        from sources.mhra import _extract_mhra_json_record
+
+        row = _extract_mhra_json_record({
+            "title": "Apixaban 5 mg Tablets", "substance_name": ["APIXABAN"], "pl_number": ["PL002892534"],
+            "doc_type": "Spc", "metadata_storage_path": "https://blob/spc", "created": "2022-04-26T22:09:40Z",
+        }, "apixaban")
+        self.assertEqual(row["registration_date"], "")
 
 
 class WeeklyMhraLinkJobTests(unittest.TestCase):
