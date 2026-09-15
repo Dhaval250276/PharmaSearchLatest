@@ -240,6 +240,88 @@ def _search_term(session, token, term, substance, limit):
     return records
 
 
+PACK_NUMBER = re.compile(r"^(?P<base>.+?/\d{4})/(?P<pack>\d{1,3})$")
+PACK_COUNT = re.compile(
+    r"^(?P<head>.*?\bx\s*)(?P<count>\d+(?:[.,]\d+)?(?:x\d+)?)(?P<tail>\s*\D.*)?$", re.IGNORECASE
+)
+
+
+def _pack_label(values):
+    """Pack descriptions for one product, as one line.
+
+    "Cutie cu blist. PVC-PVDC/Al x 10 compr. film." and the same with 12 and 14
+    read as "Cutie cu blist. PVC-PVDC/Al x 10 / 12 / 14 compr. film.". Packs of
+    another kind -- unit-dose blisters -- get their own line of the same shape,
+    and a pack that fits no pattern is listed as it is.
+    """
+    values = list(dict.fromkeys(value for value in values if value))
+    kinds: dict[tuple[str, str], list[str]] = {}
+    loose = []
+    for value in values:
+        match = PACK_COUNT.match(value)
+        if not match:
+            loose.append(value)
+            continue
+        kinds.setdefault((match["head"], (match["tail"] or "").strip()), []).append(match["count"])
+    lines = [
+        f"{head}{' / '.join(counts)} {tail}".strip()
+        for (head, tail), counts in kinds.items()
+    ]
+    return "; ".join(lines + loose)
+
+
+def _pack_numbers(base, packs):
+    """16519/2026 with packs 01..11 -> "16519/2026/01-11"; gaps are listed."""
+    numbers = sorted(packs, key=int)
+    if len(numbers) == 1:
+        return f"{base}/{numbers[0]}"
+    ints = [int(number) for number in numbers]
+    if ints == list(range(ints[0], ints[-1] + 1)):
+        return f"{base}/{numbers[0]}-{numbers[-1]}"
+    return f"{base}/{', '.join(numbers)}"
+
+
+def fold_pack_registrations(records):
+    """One row per product, not one per pack.
+
+    ANMDMR registers every pack of a product under its own number --
+    16519/2026/01 for 10 tablets, /02 for 12, and so on -- so one medicine
+    filled a result page with rows that differed only in pack size. Packs of
+    the same product, strength, form and holder are folded into one row that
+    lists every pack and every pack number. Nothing is dropped.
+    """
+    groups = {}
+    order = []
+    for record in records:
+        match = PACK_NUMBER.match(str(record.get("registration_number") or "").strip())
+        base = match["base"] if match else str(record.get("registration_number") or "")
+        key = (
+            str(record.get("product") or "").strip().lower(),
+            str(record.get("strength") or "").strip().lower(),
+            str(record.get("dosage_form") or "").strip().lower(),
+            str(record.get("company") or "").strip().lower(),
+            base,
+        )
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append((match["pack"] if match else "", record))
+
+    folded = []
+    for key in order:
+        members = sorted(groups[key], key=lambda item: int(item[0]) if item[0] else 0)
+        packs = [pack for pack, _record in members if pack]
+        first = dict(members[0][1])
+        if len(members) > 1 and len(packs) == len(members):
+            first["registration_number"] = _pack_numbers(key[4], packs)
+            first["pack_size"] = _pack_label(record.get("pack_size") for _pack, record in members)
+            for field in ("smpc_url", "pil_url"):
+                if not first.get(field):
+                    first[field] = next((r.get(field) for _p, r in members if r.get(field)), "")
+        folded.append(first)
+    return folded
+
+
 def run_romania_anmdmr_search(substance, limit=MAX_RESULTS):
     if not substance.strip():
         return []
@@ -257,5 +339,5 @@ def run_romania_anmdmr_search(substance, limit=MAX_RESULTS):
         if records:
             if term != substance.strip():
                 logger.info("ANMDMR matched %s using Romanian term %s", substance, term)
-            return records
+            return fold_pack_registrations(records)
     return []

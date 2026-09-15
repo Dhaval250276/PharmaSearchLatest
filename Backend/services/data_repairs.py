@@ -1061,6 +1061,63 @@ def restore_health_canada_from_register(
     }
 
 
+def fold_romanian_pack_rows(dry_run: bool = False) -> dict[str, Any]:
+    """Merge Romania's one-row-per-pack registrations into one row per product.
+
+    The connector now folds packs as it reads them; this does the same for the
+    rows stored before. The row for the first pack stays -- its product link is
+    the one a later search matches on -- and takes every pack's description and
+    number; the other pack rows are removed. No pack is lost.
+    """
+    from sources.romania_anmdmr import fold_pack_registrations
+
+    initialize_database()
+    with get_connection() as conn:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT * FROM product_details WHERE source = 'ANMDMR Romania' ORDER BY id"
+            ).fetchall()
+        ]
+        folded = fold_pack_registrations(rows)
+        keepers = {row["id"]: row for row in folded}
+        removals = [row["id"] for row in rows if row["id"] not in keepers]
+        by_id = {row["id"]: row for row in rows}
+        updated = 0
+        for row_id, keeper in keepers.items():
+            original = by_id[row_id]
+            changes = {
+                field: keeper[field]
+                for field in ("registration_number", "pack_size", "smpc_url", "pil_url")
+                if (keeper.get(field) or "") != (original.get(field) or "")
+            }
+            if not changes:
+                continue
+            updated += 1
+            if dry_run:
+                continue
+            conn.execute(
+                "UPDATE product_details SET "
+                + ", ".join(f"{column} = ?" for column in changes)
+                + " WHERE id = ?",
+                (*changes.values(), row_id),
+            )
+            for field, value in changes.items():
+                conn.execute(
+                    "UPDATE evidence SET value = ? WHERE product_detail_id = ? AND field_name = ?",
+                    (value, row_id, field),
+                )
+        if not dry_run:
+            _delete_rows(conn, removals)
+    return {
+        "romanian_rows": len(rows),
+        "products": len(folded),
+        "pack_rows_merged_away": len(removals),
+        "product_rows_updated": updated,
+        "dry_run": dry_run,
+    }
+
+
 def repair_combinations_and_mhra(dry_run: bool = False) -> dict[str, Any]:
     report: dict[str, Any] = {"non_pharmaceutical": remove_non_pharmaceutical_rows(dry_run=dry_run)}
     report["markup"] = clean_stored_markup(dry_run=dry_run)
@@ -1072,6 +1129,7 @@ def repair_combinations_and_mhra(dry_run: bool = False) -> dict[str, Any]:
     # Nothing is lent again afterwards: a row shows what its regulator published.
     report["borrowed_values"] = revoke_borrowed_values(dry_run=dry_run)
     report["health_canada_register"] = restore_health_canada_from_register(dry_run=dry_run)
+    report["romanian_packs"] = fold_romanian_pack_rows(dry_run=dry_run)
     return report
 
 
@@ -1091,10 +1149,16 @@ if __name__ == "__main__":
         "--revoke-borrowed", action="store_true",
         help="only remove values lent from other regulators and MHRA document dates",
     )
+    parser.add_argument(
+        "--fold-romanian-packs", action="store_true",
+        help="only merge Romania's one-row-per-pack registrations into one row per product",
+    )
     args = parser.parse_args()
     parser_revoke = args.revoke_borrowed
     if args.mhra_links_only:
         print(json.dumps(relink_dead_mhra_documents(dry_run=args.dry_run), indent=1))
+    elif args.fold_romanian_packs:
+        print(json.dumps(fold_romanian_pack_rows(dry_run=args.dry_run), indent=1))
     elif parser_revoke:
         print(json.dumps({
             "borrowed_values": revoke_borrowed_values(dry_run=args.dry_run),

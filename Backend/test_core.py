@@ -3116,6 +3116,59 @@ class OnlyRegulatorValuesTests(unittest.TestCase):
         self.assertEqual(row["registration_date"], "")
 
 
+class RomanianPackTests(unittest.TestCase):
+    PACKS = [
+        ("16519/2026/01", "Cutie cu blist. PVC-PVDC/Al x 10 compr. film."),
+        ("16519/2026/02", "Cutie cu blist. PVC-PVDC/Al x 12 compr. film."),
+        ("16519/2026/03", "Cutie cu blist. doze unitare PVC-PVDC/Al x 20x1 compr. film."),
+    ]
+
+    def _records(self):
+        return [
+            {"product": "ABATIXENT 2,5 mg", "strength": "2,5mg", "dosage_form": "Film-coated tablet",
+             "company": "SANDOZ", "registration_number": number, "pack_size": pack,
+             "product_url": f"https://anm/{number}", "source": "ANMDMR Romania", "country": "Romania",
+             "atc_code": "B01AF02"}
+            for number, pack in self.PACKS
+        ] + [{"product": "ABATIXENT 5 mg", "strength": "5mg", "dosage_form": "Film-coated tablet",
+              "company": "SANDOZ", "registration_number": "16520/2026/01", "pack_size": "x 10 compr.",
+              "product_url": "https://anm/16520", "source": "ANMDMR Romania", "country": "Romania"}]
+
+    def test_packs_of_one_product_become_one_row_listing_every_pack(self):
+        from sources.romania_anmdmr import fold_pack_registrations
+
+        rows = fold_pack_registrations(self._records())
+        self.assertEqual([row["product"] for row in rows], ["ABATIXENT 2,5 mg", "ABATIXENT 5 mg"])
+        self.assertEqual(rows[0]["registration_number"], "16519/2026/01-03")
+        self.assertEqual(
+            rows[0]["pack_size"],
+            "Cutie cu blist. PVC-PVDC/Al x 10 / 12 compr. film.; "
+            "Cutie cu blist. doze unitare PVC-PVDC/Al x 20x1 compr. film.",
+        )
+        self.assertEqual(rows[0]["product_url"], "https://anm/16519/2026/01")
+        self.assertEqual(rows[1]["registration_number"], "16520/2026/01")
+
+    def test_stored_pack_rows_are_merged_and_a_later_search_updates_the_same_row(self):
+        from services.data_repairs import fold_romanian_pack_rows
+        from sources.romania_anmdmr import fold_pack_registrations
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(repository, "DB_PATH", Path(directory) / "t.db"), \
+                patch.object(repository, "PRODUCT_DETAILS_SEED_PATH", Path("no-seed.jsonl")):
+            repository.save_product_details(self._records())
+            result = fold_romanian_pack_rows()
+            repository.save_product_details(fold_pack_registrations(self._records()))
+            with repository.get_connection() as conn:
+                rows = [dict(row) for row in conn.execute(
+                    "SELECT product, registration_number FROM product_details ORDER BY product"
+                )]
+        self.assertEqual(result["pack_rows_merged_away"], 2)
+        self.assertEqual(rows, [
+            {"product": "ABATIXENT 2,5 mg", "registration_number": "16519/2026/01-03"},
+            {"product": "ABATIXENT 5 mg", "registration_number": "16520/2026/01"},
+        ])
+
+
 class WeeklyMhraLinkJobTests(unittest.TestCase):
     def test_each_run_backs_up_first_and_keeps_the_newest_four_backups(self):
         import sqlite3
