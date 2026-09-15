@@ -3133,6 +3133,67 @@ class OnlyRegulatorValuesTests(unittest.TestCase):
         self.assertEqual(row["registration_date"], "")
 
 
+class MiddleEastConnectorTests(unittest.TestCase):
+    LEBANON_LISTING = """<table class="table"><thead><tr>
+        <th><a href="#">ATC </a></th><th><a href="#">Name </a></th><th><a href="#">B/G </a></th>
+        <th><a href="#">Ingredients </a></th><th><a href="#">Dosage </a></th><th><a href="#">Form </a></th>
+        <th><a href="#">Price </a></th></tr></thead><tbody>
+        <tr><td><a href="/en/Drugs/view/2029">C10BA06</a></td><td><a href="/en/Drugs/view/2029">LIPOCOMB </a></td>
+        <td><a href="/en/Drugs/view/2029">B</a></td>
+        <td><a href="/en/Drugs/view/2029">Rosuvastatin (calcium) - 10mg, Ezetimibe - 10mg</a></td>
+        <td><a href="/en/Drugs/view/2029"></a></td><td><a href="/en/Drugs/view/2029">Capsule, hard</a></td>
+        <td><a href="/en/Drugs/view/2029">1,811,500 L.L<!-- x --></a></td></tr></tbody></table>"""
+    LEBANON_DETAIL = """<table class="table"><thead><tr><th>ATC</th><th>B/G</th><!-- <th></th> --><th>Ingredients</th>
+        <th>code</th><th>Registration Nb</th><th>Name</th><th>Dosage</th><th>Presentation</th><th>Form</th>
+        <th>Route</th><th>Agent</th><th>Laboratory</th><th>Country</th><th>Price</th><th>Pharmacist Margin</th>
+        <th>Stratum</th><th>Responsible Party Name</th><th>Responsible Party Country</th><th>Exch_date</th>
+        <th>%SUBSIDY</th></tr></thead><tbody><tr><td>C10BA06</td><td>B</td><!-- <td></td> -->
+        <td>Rosuvastatin (calcium) - 10mg, Ezetimibe - 10mg</td><td>10635</td><td>92520/1</td><td>LIPOCOMB</td>
+        <td></td><td>30</td><td>Capsule, hard</td><td>Oral</td><td>Khalil Fattal &amp; Fils S.A.L.</td>
+        <td>Egis Pharmaceuticals PLC</td><td>Hungary</td><td>1,811,500 L.L</td><td>23.08</td><td>B</td>
+        <td>Les Laboratoires Servier</td><td>France</td><td>9/3/2026</td><td></td></tr></tbody></table>"""
+
+    def test_a_lebanese_registration_takes_its_drug_page_details(self):
+        from sources import lebanon_moph
+
+        def post(url, data=None, **_kwargs):
+            return MagicMock(text=self.LEBANON_LISTING, raise_for_status=lambda: None)
+
+        def get(url, **_kwargs):
+            return MagicMock(text=self.LEBANON_DETAIL if "view" in url else "", raise_for_status=lambda: None)
+
+        with patch("requests.Session.post", side_effect=post), patch("requests.Session.get", side_effect=get):
+            rows = lebanon_moph.run_lebanon_moph_search("ezetimibe")
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["product"], "LIPOCOMB 10mg/10mg")
+        self.assertEqual(row["substance"], "Rosuvastatin (calcium); Ezetimibe")
+        self.assertEqual(row["registration_number"], "92520/1")
+        self.assertEqual(row["company"], "Les Laboratoires Servier")
+        self.assertEqual((row["manufacturer_name"], row["manufacturer_country"]), ("Egis Pharmaceuticals PLC", "Hungary"))
+        self.assertEqual((row["atc_code"], row["pack_size"], row["authorisation_scope"]), ("C10BA06", "30", "Brand"))
+        self.assertTrue(row_relevant_to_substance(row, "rosuvastatin + ezetimibe"))
+
+    def test_the_sfda_list_and_details_pages_are_read(self):
+        from sources.sfda_saudi import build_sfda_rows, parse_details, parse_list_page
+
+        listing = """<table><tr><th>Scientific Name</th></tr><tr><td>VALSARTAN,HYDROCHLOROTHIAZIDE</td>
+            <td>CO-VALISTA</td><td>160,25</td><td></td><td>30.3</td>
+            <td><a href="/en/details_data?nid=17582&amp;id=1661&amp;page=2">Details</a></td></tr></table>"""
+        records = parse_list_page(listing)
+        self.assertEqual(records[0]["details"], "/en/details_data?nid=17582&id=1661&page=2")
+        _match, row = next(build_sfda_rows(records, "2026-09-16"))
+        self.assertEqual((row["product"], row["strength"], row["price"]), ("CO-VALISTA", "160,25", "30.3 SAR"))
+        self.assertEqual(row["product_url"], "https://www.sfda.gov.sa/en/details_data?nid=17582&id=1661&page=2")
+
+        details = parse_details(
+            "<table><tbody><tr><th>Register Number</th><td>316-212-14</td></tr>"
+            "<tr><th>Strength Unit</th><td>Array</td></tr><tr><th>ATC Code 1</th><td>C09DA03</td></tr></tbody></table>"
+        )
+        self.assertEqual(details, {"Register Number": "316-212-14", "Strength Unit": "", "ATC Code 1": "C09DA03"})
+
+
 class RomanianPackTests(unittest.TestCase):
     PACKS = [
         ("16519/2026/01", "Cutie cu blist. PVC-PVDC/Al x 10 compr. film."),

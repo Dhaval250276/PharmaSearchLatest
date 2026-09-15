@@ -861,7 +861,7 @@ def relink_dead_mhra_documents(
 # somewhere else.
 ATC_PUBLISHERS = frozenset({
     "EMA", "EU MRI Product Index", "Health Canada", "AIFA Italy", "BPOM Indonesia",
-    "ANMDMR Romania", "Spain CIMA",
+    "ANMDMR Romania", "Spain CIMA", "MoPH Lebanon", "SFDA Saudi Arabia",
 })
 CATEGORY_PUBLISHERS = frozenset({
     "EMA", "FDA", "Health Canada", "AIFA Italy", "ANMDMR Romania", "CDSCO India", "ANVISA Brazil",

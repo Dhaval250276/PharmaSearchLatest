@@ -32,12 +32,13 @@ from sources.regional_live import (
     run_npra_malaysia_search,
     run_pmda_japan_search,
     run_sahpra_search,
-    run_sfda_saudi_search,
     run_thai_fda_search,
     run_ukraine_drlz_search,
 )
 from sources.open_registers import run_aifa_italy_search, run_anvisa_brazil_search
 from sources.romania_anmdmr import run_romania_anmdmr_search
+from sources.lebanon_moph import run_lebanon_moph_search
+from sources.sfda_saudi import run_sfda_saudi_search
 from sources.spain_cima import run_spain_cima_search
 from sources.swissmedic import run_swissmedic_search
 from sources.tga import run_tga_search
@@ -200,6 +201,15 @@ CONNECTORS: list[SourceConnector] = [
             supports_documents=False,
         ),
         run_fda_ghana_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="MoPH Lebanon",
+            region="ME",
+            countries=("Lebanon",),
+            supports_documents=False,
+        ),
+        run_lebanon_moph_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(

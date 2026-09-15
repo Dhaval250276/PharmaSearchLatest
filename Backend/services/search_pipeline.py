@@ -37,6 +37,7 @@ DEFAULT_SOURCES = [
     "SAHPRA South Africa",
     "FDA Ghana",
     "SFDA Saudi Arabia",
+    "MoPH Lebanon",
     "Israel Drug Registry",
     "CDSCO India",
     "NMPA China",
@@ -362,6 +363,7 @@ SOURCE_COUNTRIES = {
     "sahpra south africa": {"South Africa"},
     "fda ghana": {"Ghana"},
     "sfda saudi arabia": {"Saudi Arabia"},
+    "moph lebanon": {"Lebanon"},
     "israel drug registry": {"Israel"},
     "cdsco india": {"India"},
     "nmpa china": {"China"},
@@ -464,6 +466,7 @@ COUNTRY_SOURCE_DEFAULTS = {
     "Malaysia": "NPRA Malaysia",
     "Philippines": "FDA Philippines",
     "Saudi Arabia": "SFDA Saudi Arabia",
+    "Lebanon": "MoPH Lebanon",
     "Singapore": "HSA Singapore",
     "South Africa": "SAHPRA South Africa",
     "South Korea": "MFDS South Korea",
@@ -507,7 +510,7 @@ GENERIC_LOOKUP_SOURCES = {
 }
 REGIONAL_LIVE_SOURCES = {
     "AF": ["SAHPRA South Africa", "FDA Ghana"],
-    "ME": ["SFDA Saudi Arabia", "Israel Drug Registry"],
+    "ME": ["SFDA Saudi Arabia", "MoPH Lebanon", "Israel Drug Registry"],
     "AS": [
         "CDSCO India",
         "NMPA China",
