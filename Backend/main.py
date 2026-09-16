@@ -780,7 +780,10 @@ def search_page(
         and country_default_source not in requested_source_names
     )
     effective_live = bool(live and not auto_slow_country_source)
-    live_timeout = 45 if normalized_search_mode == "full" else 10
+    # A full search waited 45s, and the registers answer in about 50: Italy,
+    # Brazil and half of Belgium were cut off a moment before they replied, so
+    # rosuvastatin + ezetimibe showed 138 products where 233 exist.
+    live_timeout = 90 if normalized_search_mode == "full" else 10
     selected_for_live = parse_sources(sources)
     if normalized_search_mode == "full":
         live_sources = selected_for_live
