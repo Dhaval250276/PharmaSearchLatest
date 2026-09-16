@@ -21,6 +21,7 @@ from services.result_formatter import (
     company_display_value,
     manufacturer_country_value,
     manufacturer_name_value,
+    manufacturer_or_holder,
     pil_or_assessment_url,
     product_details_url,
     smpc_document_url,
@@ -263,7 +264,13 @@ def build_export_rows(substance: str, results: list[dict[str, Any]]) -> list[dic
                 ),
                 "MA Holder Name": field_value(item, "company", company),
                 "Applicant / Sponsor": export_value(item.get("applicant_sponsor")),
-                "Manufacturer Name": field_value(item, "manufacturer_name", manufacturer_values["names"], manufacturer_name_value(item)),
+                "Manufacturer Name": field_value(
+                    item,
+                    "manufacturer_name",
+                    manufacturer_or_holder(
+                        item, first_value(manufacturer_values["names"], manufacturer_name_value(item))
+                    ),
+                ),
                 "Manufacturer Country": field_value(
                     item,
                     "manufacturer_country",

@@ -107,6 +107,25 @@ def assessment_report_url(item: dict[str, Any]) -> str:
     return distinct_url(item.get("assessment_report_url", ""), smpc_url, pil_url) or drugs_at_fda_url(item)
 
 
+HOLDER_SUFFIX = "(licence holder)"
+
+
+def manufacturer_or_holder(item: dict[str, Any], manufacturer: str) -> str:
+    """The maker, or the licence holder said to be one.
+
+    Most registers publish only the marketing authorisation holder: Italy names
+    Organon for Atozet, not the plant that makes it. Leaving the column empty
+    sends a buyer to look the company up elsewhere, and filling it silently
+    would present a holder as a factory, so the holder is named and labelled.
+    """
+    if manufacturer:
+        return manufacturer
+    holder = first_value(
+        company_display_value(item), item.get("company"), item.get("mah"), item.get("ma_holder")
+    )
+    return f"{holder} {HOLDER_SUFFIX}" if holder else ""
+
+
 def manufacturer_name_value(item: dict[str, Any]) -> str:
     manufacturer = first_value(item.get("manufacturer_name"))
     company = first_value(item.get("company"), item.get("mah"), item.get("ma_holder"))
@@ -204,7 +223,12 @@ def formatted_result_row(item: dict[str, Any], searched_substance: str = "") -> 
         "company": field_value(item, "company", company_display_value(item), company),
         "ma_holder": field_value(item, "company", company),
         "manufacturer_name": field_value(
-            item, "manufacturer_name", structured_manufacturer_value(item, "name"), manufacturer_name_value(item)
+            item,
+            "manufacturer_name",
+            manufacturer_or_holder(
+                item,
+                first_value(structured_manufacturer_value(item, "name"), manufacturer_name_value(item)),
+            ),
         ),
         "manufacturer_country": field_value(
             item, "manufacturer_country", structured_manufacturer_value(item, "country"), manufacturer_country_value(item)

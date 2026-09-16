@@ -2939,6 +2939,28 @@ class VendorDisplayTests(unittest.TestCase):
             "Jarama, 111; 45007-Toledo; Espana",
         )
 
+    def test_the_manufacturer_column_names_the_holder_and_says_so(self):
+        from services.result_formatter import formatted_result_row
+
+        # Italy publishes the holder, not the plant.
+        italy = formatted_result_row({
+            "source": "AIFA Italy", "product": "ATOZET 10MG/10MG",
+            "company": "ORGANON ITALIA S.R.L.", "country": "Italy",
+        })
+        self.assertEqual(italy["manufacturer_name"], "ORGANON ITALIA S.R.L. (licence holder)")
+        # Where the register names the maker, it is shown plainly.
+        vietnam = formatted_result_row({
+            "source": "DAV Vietnam", "product": "Lipvar", "company": "Cong ty A",
+            "manufacturer_name": "Daewoo Pharm. Co., Ltd.", "manufacturer_source": "register",
+            "country": "Vietnam",
+        })
+        self.assertEqual(vietnam["manufacturer_name"], "Daewoo Pharm. Co., Ltd.")
+        # With neither, nothing is invented.
+        self.assertEqual(
+            formatted_result_row({"source": "FDA", "product": "X", "country": "United States"})["manufacturer_name"],
+            "Not published by regulator",
+        )
+
     def test_leaflet_sentences_are_not_shown_as_a_company(self):
         from services.vendor_display import clean_company
 
