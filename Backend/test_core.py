@@ -2939,6 +2939,21 @@ class VendorDisplayTests(unittest.TestCase):
             "Jarama, 111; 45007-Toledo; Espana",
         )
 
+    def test_leaflet_sentences_are_not_shown_as_a_company(self):
+        from services.vendor_display import clean_company
+
+        for sentence in (
+            "breathing problems. There can also alcohol and",
+            "or if you need to take the medicine more often. and Manufacturer",
+        ):
+            self.assertEqual(clean_company(sentence), "")
+        # Real names in any language keep their place.
+        for name in (
+            "MEDIFARMA LABORATORIES", "LABORATOIRE DE L'HOMME DE FER",
+            "Cong ty TNHH Lien doanh Hasan - Dermapharm", "Army & Air Force Exchange Service",
+        ):
+            self.assertEqual(clean_company(name), name)
+
     def test_every_registry_status_reads_in_one_vocabulary(self):
         from services.vendor_display import vendor_status
 

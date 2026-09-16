@@ -76,6 +76,21 @@ PROSE_MARKERS = re.compile(
 )
 
 
+# What a company name is made of, in any of the registers' languages.
+COMPANY_WORDS = re.compile(
+    r"\b(?:ltd|limited|plc|inc|llc|gmbh|s\.?a\.?|b\.?v\.?|n\.?v\.?|a/s|ab|oy|s\.?p\.?a|s\.?r\.?l"
+    r"|pharma\w*|laborator\w*|healthcare|industri\w*|company|group|corp\w*|kg|sas|srl|d\.?d"
+    r"|pte|sdn|bhd|co|cie|farmac\w*|obshchestvo|predpriyatie|cong ty|tnhh|holding\w*)\b",
+    re.IGNORECASE,
+)
+# Words that belong to a leaflet's text, not to a company's name.
+LEAFLET_WORDS = re.compile(
+    r"\byou\b|\byour\b|\btake\b|\bdose\b|\bmedicine\b|\btablets? if\b|\bif you\b|\bproblems\b"
+    r"|\bfeeling sick\b|\bpregnan\w*|\bside effects?\b|•",
+    re.IGNORECASE,
+)
+
+
 def clean_company(value: object) -> str:
     """A company name as a vendor expects to read it.
 
@@ -90,7 +105,15 @@ def clean_company(value: object) -> str:
     for pattern, replacement in SPLIT_WORD_FIXES:
         text = pattern.sub(replacement, text)
     parts = [part.strip() for part in re.split(r";\s*", text) if part.strip()]
-    kept = [part for part in parts if not PROSE_MARKERS.search(part) and len(part) <= 160]
+    kept = [
+        part for part in parts
+        if not PROSE_MARKERS.search(part)
+        and len(part) <= 160
+        # A sentence lifted out of a leaflet: no company word anywhere in it,
+        # and words a leaflet uses. "MEDIFARMA LABORATORIES" keeps its place;
+        # "breathing problems. There can also alcohol and" does not.
+        and not (LEAFLET_WORDS.search(part) and not COMPANY_WORDS.search(part))
+    ]
     return "; ".join(dict.fromkeys(kept))
 
 
