@@ -3492,6 +3492,39 @@ class VendorDataRepairTests(unittest.TestCase):
         self.assertEqual(row["substance"], "salmeterol;fluticasone")
 
 
+class SearchedStrengthTests(unittest.TestCase):
+    def test_a_strength_after_the_molecule_is_not_part_of_its_name(self):
+        from services.search_pipeline import split_searched_strength
+
+        self.assertEqual(split_searched_strength("sevelamer carbonate 800"), ("sevelamer carbonate", "800"))
+        self.assertEqual(split_searched_strength("sevelamer carbonate 800 MG"), ("sevelamer carbonate", "800 mg"))
+        self.assertEqual(split_searched_strength("vitamin b12"), ("vitamin b12", ""))
+        self.assertEqual(split_searched_strength("atorvastatin + ezetimibe"), ("atorvastatin + ezetimibe", ""))
+
+    def test_rows_are_kept_at_that_strength_in_any_unit_or_when_none_is_published(self):
+        from services.search_pipeline import matches_searched_strength
+
+        for strength in ("800MG/TAB", "0.8 G", ".8 g", "800 mg/930mg", ""):
+            self.assertTrue(matches_searched_strength({"strength": strength, "product": "Renvela"}, "800"), strength)
+        for strength in ("2.4 g", "1,6G/SACHET", "400MG/TAB"):
+            self.assertFalse(matches_searched_strength({"strength": strength}, "800"), strength)
+
+    def test_the_search_asks_the_registers_for_the_molecule_only(self):
+        asked = []
+
+        def combined(substance, **_kwargs):
+            asked.append(substance)
+            return [
+                {"product": "Renvela", "active_substance": "sevelamer carbonate", "strength": "800 mg", "country": "Greece", "source": "EOF Greece"},
+                {"product": "Renvela", "active_substance": "sevelamer carbonate", "strength": "2.4 g", "country": "Greece", "source": "EOF Greece"},
+            ]
+
+        with patch("services.search_pipeline.combined_search", side_effect=combined):
+            rows, _, _ = filtered_search_results("sevelamer carbonate 800", live=False, sources=["EOF Greece"], include_lookup_rows=False)
+        self.assertEqual(asked, ["sevelamer carbonate"])
+        self.assertEqual([row["strength"] for row in rows], ["800 mg"])
+
+
 class GreeceConnectorTests(unittest.TestCase):
     RESULTS = """<partial-response><changes><update id="frmMain:tblResults"><![CDATA[
         <tr data-ri="0" class="ui-widget-content"><td role="gridcell"><span class="ui-column-title">Κωδικός</span>3168501</td>

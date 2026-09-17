@@ -1,3 +1,4 @@
+import re
 from typing import Any
 from urllib.parse import quote
 
@@ -802,6 +803,62 @@ def normalized_tokens(value: object) -> list[str]:
     ]
 
 
+SEARCHED_STRENGTH = re.compile(
+    r"^(?P<molecule>.*?\D)\s+(?P<amount>\d+(?:[.,]\d+)?)\s*(?P<unit>mg|g|mcg|µg|ug|microgram|micrograms|ml|%|iu)?\.?$",
+    re.IGNORECASE,
+)
+_UNIT_IN_MG = {"g": 1000.0, "mg": 1.0, "mcg": 0.001, "µg": 0.001, "ug": 0.001, "microgram": 0.001, "micrograms": 0.001}
+# ".8 g" is how the FDA writes 0.8 g.
+_AMOUNT = re.compile(r"(\d*[.,]?\d+)\s*(mg|g|mcg|µg|μg|ug|microgram)?\b", re.IGNORECASE)
+
+
+def split_searched_strength(term: object) -> tuple[str, str]:
+    """ "sevelamer carbonate 800" -> ("sevelamer carbonate", "800").
+
+    A strength typed after the molecule is not part of its name. Matched as a
+    name it kept only the registers that print "800" in the product name --
+    the USA, the UK and Vietnam -- and lost every other market.
+    """
+    text = " ".join(str(term or "").split())
+    match = SEARCHED_STRENGTH.match(text)
+    if not match or not match.group("molecule").strip(" +,"):
+        return text, ""
+    unit = (match.group("unit") or "").lower()
+    return match.group("molecule").strip(" +,"), f"{match.group('amount')}{(' ' + unit) if unit else ''}"
+
+
+def _in_mg(amount: str, unit: str) -> float | None:
+    factor = _UNIT_IN_MG.get((unit or "mg").lower().replace("μ", "µ"))
+    if factor is None:
+        return None
+    return float(amount.replace(",", ".")) * factor
+
+
+def matches_searched_strength(row: dict[str, Any], strength: str) -> bool:
+    """The row is at the searched strength, or does not say what strength it is.
+
+    Amounts are compared in milligrams, so "800" matches "800MG/TAB" and
+    Canada's "0.8 G". A row whose register publishes no strength is kept: the
+    search would otherwise drop a licence for want of a field.
+    """
+    if not strength:
+        return True
+    amount, _, unit = strength.partition(" ")
+    if unit and unit not in _UNIT_IN_MG:
+        return strength.lower() in f"{row.get('strength', '')} {row.get('product', '')}".lower()
+    wanted = _in_mg(amount, unit)
+    text = f"{row.get('strength') or ''} {row.get('product') or ''}"
+    found = [
+        _in_mg(number, found_unit)
+        for number, found_unit in _AMOUNT.findall(text)
+        if found_unit or not unit
+    ]
+    found = [value for value in found if value is not None]
+    if not found:
+        return True
+    return any(abs(value - wanted) < 1e-6 for value in found)
+
+
 def contains_all_tokens(value: object, tokens: list[str]) -> bool:
     haystack = set(normalized_tokens(value))
     return bool(tokens) and all(token in haystack for token in tokens)
@@ -1287,7 +1344,7 @@ def filtered_search_results(
     live_sources: list[str] | None = None,
     include_lookup_rows: bool = True,
 ) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
-    substance = clean_search_term(substance)
+    substance, searched_strength = split_searched_strength(clean_search_term(substance))
     selected_sources = parse_sources(sources)
     scoped_sources = sources_for_scope(
         selected_sources,
@@ -1312,7 +1369,10 @@ def filtered_search_results(
         live_sources=scoped_live_sources,
         live_timeout=live_timeout,
     )
-    all_rows = [row for row in all_rows if row_relevant_to_substance(row, substance)]
+    all_rows = [
+        row for row in all_rows
+        if row_relevant_to_substance(row, substance) and matches_searched_strength(row, searched_strength)
+    ]
     normalized_sort_dir = "desc" if sort_dir == "desc" else "asc"
     rows = filter_rows(
         all_rows,

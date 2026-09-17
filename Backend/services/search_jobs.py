@@ -19,6 +19,7 @@ from repository import (
 )
 from services.search_pipeline import (
     parse_sources,
+    split_searched_strength,
 )
 from services.connector_health import record_source_health
 from sources.search_engine import SINGLE_TERM_SOURCES
@@ -161,7 +162,9 @@ def create_search_job(substance: str, sources: list[str] | str | None, mode: str
             progress[source] = SourceProgress(source=source)
     job = SearchJob(
         job_id=job_id,
-        substance=clean_search_term(substance),
+        # The connectors are asked for the molecule; a strength typed after it
+        # is applied when the results are shown.
+        substance=split_searched_strength(clean_search_term(substance))[0],
         sources=selected_sources,
         mode=normalized_mode,
         progress=progress,
