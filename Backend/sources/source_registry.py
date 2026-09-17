@@ -40,6 +40,7 @@ from sources.romania_anmdmr import run_romania_anmdmr_search
 from sources.lebanon_moph import run_lebanon_moph_search
 from sources.eof_greece import run_eof_greece_search
 from sources.japan_nhi import run_mhlw_japan_search
+from sources.fda_drugsfda import run_drugs_at_fda_search
 from sources.sfda_saudi import run_sfda_saudi_search
 from sources.spain_cima import run_spain_cima_search
 from sources.swissmedic import run_swissmedic_search
@@ -56,6 +57,16 @@ CONNECTORS: list[SourceConnector] = [
         ),
         # The NDC directory, searched locally: every listing, not the first 100 labels.
         run_fda_ndc_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="Drugs@FDA",
+            region="US",
+            countries=("United States",),
+            supports_documents=False,
+        ),
+        # Every US application and its holder, discontinued ones included.
+        run_drugs_at_fda_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(

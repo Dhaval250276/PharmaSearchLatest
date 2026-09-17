@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import html
 import re
+import unicodedata
 from typing import Any
 
 from services.regulatory_dates import parse_regulatory_date
@@ -38,6 +39,8 @@ def clean_text(value: object) -> str:
         return ""
     # Twice: BPOM encodes some values twice ("&amp;lt;br&amp;gt;").
     text = html.unescape(html.unescape(text))
+    # Ligatures a PDF leaves behind ("Sanoﬁ") and full-width letters.
+    text = unicodedata.normalize("NFKC", text)
     text = TAG_BREAK.sub("; ", text)
     text = TAG_ANY.sub(" ", text)
     text = " ".join(text.split()).strip(" ;,")
@@ -115,6 +118,48 @@ def clean_company(value: object) -> str:
         and not (LEAFLET_WORDS.search(part) and not COMPANY_WORDS.search(part))
     ]
     return "; ".join(dict.fromkeys(kept))
+
+
+ADDRESS_WORDS = re.compile(r"\b(?:park|estate|zone|road|street|avenue|block|floor|building|box|area|prefecture)\b", re.IGNORECASE)
+LEGAL_FORMS = re.compile(r"\b(?:ltd|limited|plc|inc|llc|gmbh|s\.?\s?a|b\.?v|n\.?v|s\.?p\.?a|s\.?r\.?l|ag|kg|sas)\b\.?", re.IGNORECASE)
+MANUFACTURED_BY = re.compile(
+    r"manufactured by\s*:?\s*(?P<names>.+?)(?=\bprocured\b|\brepackaged\b|\bdistributed\b|\bmarketed\b|\bPL\s*\d|\bthis leaflet\b|$)",
+    re.IGNORECASE,
+)
+
+
+def clean_manufacturer(value: object) -> str:
+    """The manufacturers' names, without the addresses leaflets write after them.
+
+        "Sanofi Winthrop Industrie; 1 rue de la Vierge; Ambares et Lagrave; France"
+            -> "Sanofi Winthrop Industrie"
+        "... Manufactured by: Sanofi Winthrop Industrie, 1 rue de la Vierge, ...
+         OR Genzyme Ireland Limited, IDA Industrial Park, ... Procured from ..."
+            -> "Sanofi Winthrop Industrie; Genzyme Ireland Limited"
+    """
+    # The sentence is looked for before company cleaning, which drops a value
+    # that long as prose.
+    sentence = MANUFACTURED_BY.search(clean_text(value))
+    text = clean_company(value)
+    if sentence:
+        names = [
+            part.split(",")[0].strip(" .;")
+            for part in re.split(r"\s+OR\s+|;\s*", sentence.group("names"))
+        ]
+        names = [name for name in names if COMPANY_WORDS.search(name) or len(name.split()) <= 5]
+        return "; ".join(dict.fromkeys(name for name in names if name))
+    if not text:
+        return ""
+    parts = [part.strip() for part in text.split(";") if part.strip()]
+    if len(parts) < 2:
+        return text
+    # An address line is not a name: keep the parts that read as companies,
+    # or the first part when none does. "Industrial Park Sapes" is a place.
+    names = [
+        part for part in parts
+        if COMPANY_WORDS.search(part) and not (ADDRESS_WORDS.search(part) and not LEGAL_FORMS.search(part))
+    ] or parts[:1]
+    return "; ".join(dict.fromkeys(names))
 
 
 # --- Status ----------------------------------------------------------------------
@@ -388,7 +433,7 @@ def vendor_row(row: dict[str, Any]) -> dict[str, Any]:
             shown[field] = clean_text(shown[field])
     for field in COMPANY_FIELDS:
         if field in shown and isinstance(shown[field], str):
-            shown[field] = clean_company(shown[field])
+            shown[field] = (clean_manufacturer if field == "manufacturer_name" else clean_company)(shown[field])
     if "atc_code" in shown:
         shown["atc_code"] = clean_atc_code(shown["atc_code"])
     if "dosage_form" in shown:

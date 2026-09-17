@@ -118,6 +118,11 @@ def manufacturer_or_holder(item: dict[str, Any], manufacturer: str) -> str:
     sends a buyer to look the company up elsewhere, and filling it silently
     would present a holder as a factory, so the holder is named and labelled.
     """
+    from services.vendor_display import clean_manufacturer
+
+    # Names from a structured list or a leaflet can carry addresses and
+    # sentences; the column shows the names.
+    manufacturer = clean_manufacturer(manufacturer)
     if manufacturer:
         return manufacturer
     holder = first_value(

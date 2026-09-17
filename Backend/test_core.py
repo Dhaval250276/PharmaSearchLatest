@@ -3492,6 +3492,97 @@ class VendorDataRepairTests(unittest.TestCase):
         self.assertEqual(row["substance"], "salmeterol;fluticasone")
 
 
+class ConnectorAuditFixTests(unittest.TestCase):
+    def test_drugs_at_fda_lists_discontinued_applications_with_their_holder(self):
+        from sources.fda_drugsfda import build_rows
+
+        record = {
+            "application_number": "NDA213072",
+            "sponsor_name": "ALTHERA PHARMS",
+            "submissions": [
+                {"submission_type": "SUPPL", "submission_status": "AP", "submission_status_date": "20230101"},
+                {"submission_type": "ORIG", "submission_status": "AP", "submission_status_date": "20210323"},
+            ],
+            "products": [{
+                "product_number": "001", "brand_name": "ROSZET", "dosage_form": "TABLET", "route": "ORAL",
+                "marketing_status": "Discontinued", "te_code": "", "reference_drug": "Yes",
+                "active_ingredients": [
+                    {"name": "EZETIMIBE", "strength": "10MG"},
+                    {"name": "ROSUVASTATIN CALCIUM", "strength": "EQ 5MG BASE **Federal Register determination that product was not discontinued**"},
+                ],
+            }],
+        }
+        (match, row), = build_rows([record], "2026-09-17")
+        self.assertEqual(row["product"], "ROSZET 10MG/EQ 5MG BASE")
+        self.assertEqual((row["company"], row["status"], row["authorisation_scope"]), ("ALTHERA PHARMS", "Discontinued", "NDA"))
+        self.assertEqual((row["registration_date"], row["application_number"]), ("2021-03-23", "NDA213072"))
+        self.assertTrue(row["product_url"].endswith("ApplNo=213072"))
+        self.assertTrue(row_relevant_to_substance(row, "rosuvastatin + ezetimibe"))
+
+    def test_a_uk_licence_takes_the_holder_its_company_number_belongs_to(self):
+        from sources import mhra
+
+        stored = [
+            ("PL 17780/0880", "Zentiva Pharma UK Limited"),
+            ("PL 17780/0123", "Zentiva Pharma UK Limited"),
+            ("PL 17780/0456", "and a different medicine for your diabetes. and"),
+            ("PL 04569/1623", "Generics [UK] Limited t/a Mylan"),
+            ("PL 04569/1000", "Generics [UK] Limited t/a Viatris"),
+            ("PL 99999/0001", "Alpha Pharma Ltd"),
+            ("PL 99999/0002", "Beta Pharma Ltd"),
+        ]
+        conn = MagicMock()
+        conn.execute.return_value.fetchall.return_value = stored
+        connection = MagicMock()
+        connection.__enter__.return_value = conn
+        mhra._holder_cache.clear()
+        try:
+            with patch("repository.get_connection", return_value=connection):
+                rows = mhra._with_holders([
+                    {"registration_number": "PL 17780/0999", "company": ""},
+                    {"registration_number": "PL 04569/9999", "company": ""},
+                    {"registration_number": "PL 99999/0003", "company": ""},
+                    {"registration_number": "PLPI 18799/3699", "company": ""},
+                ])
+        finally:
+            mhra._holder_cache.clear()
+        self.assertEqual([row["company"] for row in rows], [
+            "Zentiva Pharma UK Limited", "Generics [UK] Limited", "", "",
+        ])
+
+    def test_a_manufacturer_is_shown_without_the_address_written_after_it(self):
+        from services.vendor_display import clean_manufacturer
+
+        self.assertEqual(
+            clean_manufacturer("Sanoﬁ Winthrop Industrie; 1 rue de la Vierge; Ambares et Lagrave; France"),
+            "Sanofi Winthrop Industrie",
+        )
+        self.assertEqual(
+            clean_manufacturer("Pharmathen International S. A; Industrial Park Sapes; Rodopi 69300; Greece; Pharmathen S. A ."),
+            "Pharmathen International S. A; Pharmathen S. A .",
+        )
+        self.assertEqual(
+            clean_manufacturer(
+                "and Product Licence Holder Manufactured by: Sanofi Winthrop Industrie, 1 rue de la Vierge, France. "
+                "OR Genzyme Ireland Limited, IDA Industrial Park, Waterford, Ireland. Procured from within the EU by "
+                "Product Licence holder: Star Pharmaceuticals Ltd, 5 Sandridge Close, Harrow"
+            ),
+            "Sanofi Winthrop Industrie; Genzyme Ireland Limited",
+        )
+        self.assertEqual(clean_manufacturer("Laboratorios Cinfa, S.A."), "Laboratorios Cinfa, S.A.")
+
+    def test_an_sfda_details_page_for_another_product_is_not_used(self):
+        from sources import sfda_saudi
+
+        page = ("<table><tr><th>Trade Name</th><td>ZETRON 250 MG CAPSULE</td></tr>"
+                "<tr><th>Register Number</th><td>0606222134</td></tr><tr><th>ATC Code 1</th><td>J01FA10</td></tr></table>")
+        rows = [{"product": "Lamsev 800", "product_url": "https://www.sfda.gov.sa/en/details_data?id=1&page=2"}]
+        with patch("requests.Session.get", return_value=MagicMock(text=page, raise_for_status=lambda: None)):
+            result = sfda_saudi._with_details(rows)
+        self.assertNotIn("registration_number", result[0])
+        self.assertNotIn("atc_code", result[0])
+
+
 class SearchedStrengthTests(unittest.TestCase):
     def test_a_strength_after_the_molecule_is_not_part_of_its_name(self):
         from services.search_pipeline import split_searched_strength

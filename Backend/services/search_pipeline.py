@@ -30,7 +30,7 @@ DEFAULT_SOURCES = [
     "AIFA Italy",
     "MHRA",
     "FDA",
-    "FDA Orange Book",
+    "Drugs@FDA",
     "FDA Purple Book",
     "Health Canada",
     "TGA Australia",
@@ -381,6 +381,7 @@ SOURCE_COUNTRIES = {
     "pmda japan": {"Japan"},
     "mhlw japan": {"Japan"},
     "fda orange book": {"United States"},
+    "drugs@fda": {"United States"},
     "fda purple book": {"United States"},
     "mhra": {"United Kingdom"},
     "ema": {
@@ -533,7 +534,7 @@ REGIONAL_LIVE_SOURCES = {
         "SFDA Saudi Arabia",
     ],
     "EU": EU_NATIONAL_SOURCES,
-    "US": ["FDA", "FDA Orange Book", "FDA Purple Book"],
+    "US": ["FDA", "Drugs@FDA", "FDA Purple Book"],
     "RU": ["GRLS Russia"],
 }
 REGIONAL_REGISTRY_URLS = {

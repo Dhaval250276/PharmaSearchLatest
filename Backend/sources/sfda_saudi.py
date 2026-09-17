@@ -186,6 +186,12 @@ def parse_details(page_html: str) -> dict[str, str]:
     return fields
 
 
+def _same_product(detail_name: str, list_name: str) -> bool:
+    detail = " ".join(re.findall(r"[a-z0-9]+", detail_name.lower()))
+    listed = " ".join(re.findall(r"[a-z0-9]+", list_name.lower()))
+    return bool(detail and listed) and (detail.startswith(listed) or listed.startswith(detail))
+
+
 def _with_details(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not rows:
         return rows
@@ -205,6 +211,12 @@ def _with_details(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             try:
                 row, fields = future.result()
             except requests.RequestException:
+                continue
+            # SFDA's details page has at times answered every id with one
+            # product (ZETRON 250 MG CAPSULE, azithromycin), browsers included.
+            # A page is only used when it describes the row's own product.
+            if not _same_product(fields.get("Trade Name", ""), row.get("product", "")):
+                logger.info("SFDA details for %s showed %s; not used", row.get("product"), fields.get("Trade Name"))
                 continue
             size = " ".join(part for part in (fields.get("Size", ""), fields.get("Size Unit", "")) if part)
             pack = fields.get("Package Size", "")
