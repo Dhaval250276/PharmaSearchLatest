@@ -3593,6 +3593,67 @@ class OpenDataRegisterTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
 
 
+class TaiwanRegisterTests(unittest.TestCase):
+    def _workdir(self, folder):
+        import csv as csv_module
+        import io
+        import zipfile
+
+        licences = io.StringIO()
+        fields = ["許可證字號", "註銷狀態", "註銷日期", "有效日期", "發證日期", "中文品名", "英文品名", "劑型",
+                  "藥品類別", "主成分略述", "申請商名稱", "申請商統一編號", "製造商名稱", "製造廠國別", "製程"]
+        writer = csv_module.DictWriter(licences, fieldnames=fields)
+        writer.writeheader()
+        base = {"許可證字號": "衛署藥輸字第025733號", "註銷狀態": "", "註銷日期": "", "有效日期": "2030/06/25",
+                "發證日期": "2012/06/25", "中文品名": "磷減能口服懸液用粉劑", "英文品名": "Renvela powder for oral suspension",
+                "劑型": "口服懸液用粉劑", "藥品類別": "須由醫師處方使用",
+                "主成分略述": "ANHYDROUS SEVELAMER CARBONATE;;ANHYDROUS SEVELAMER CARBONATE",
+                "申請商名稱": "賽諾菲股份有限公司", "申請商統一編號": "97168356"}
+        writer.writerow({**base, "製造商名稱": "Rovi Pharma Industrial Services S.A.", "製造廠國別": "ES", "製程": "製造"})
+        writer.writerow({**base, "製造商名稱": "永信藥品工業股份有限公司台中幼獅廠", "製造廠國別": "TW", "製程": "分包裝"})
+        writer.writerow({"許可證字號": "衛部藥製字第058140號", "註銷狀態": "已註銷", "註銷日期": "2023/12/03",
+                         "有效日期": "2023/12/03", "發證日期": "2013/12/03", "中文品名": "磷可停",
+                         "英文品名": "Phosout F.C. Tablets 800mg", "劑型": "膜衣錠", "藥品類別": "須由醫師處方使用",
+                         "主成分略述": "SEVELAMER HYDROCHLORIDE", "申請商名稱": "美時化學製藥股份有限公司",
+                         "申請商統一編號": "11456110", "製造商名稱": "未登記藥廠", "製造廠國別": "TW", "製程": ""})
+        path = Path(folder)
+        with zipfile.ZipFile(path / "tfda_licences.zip", "w") as archive:
+            archive.writestr("36_2.csv", "﻿" + licences.getvalue())
+        (path / "trade_names.csv").write_text(
+            "統一編號,廠商中文名稱,廠商英文名稱\n"
+            "97168356,賽諾菲股份有限公司,SANOFI TAIWAN CO. LTD.\n"
+            "56065601,永信藥品工業股份有限公司,YUNG SHIN PHARMACEUTICAL IND. CO. LTD.\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def test_a_licence_takes_english_names_for_its_holder_and_plants(self):
+        from sources import taiwan_fda
+
+        with tempfile.TemporaryDirectory() as folder:
+            records = list(taiwan_fda.read_records(taiwan_fda.TFDA_TAIWAN, self._workdir(folder)))
+        rows = {row["product"]: row for _match, row in taiwan_fda.build_rows(records, "2026-09-17")}
+        renvela = rows["Renvela powder for oral suspension"]
+        self.assertEqual(renvela["company"], "SANOFI TAIWAN CO. LTD.")
+        self.assertEqual(renvela["registration_number"], "DOH-PI 025733")
+        self.assertEqual((renvela["dosage_form"], renvela["classification"]), ("Powder for oral suspension", "Prescription only"))
+        self.assertEqual(renvela["active_substance"], "ANHYDROUS SEVELAMER CARBONATE")
+        self.assertEqual(
+            renvela["manufacturer_name"],
+            "Rovi Pharma Industrial Services S.A.; YUNG SHIN PHARMACEUTICAL IND. CO. LTD. (manufacturing plant)",
+        )
+        self.assertEqual(renvela["manufacturer_country"], "Spain; Taiwan")
+        self.assertEqual((renvela["status"], renvela["expiry_date"]), ("Valid", "2030-06-25"))
+        self.assertTrue(row_relevant_to_substance(renvela, "sevelamer carbonate"))
+
+        phosout = rows["Phosout F.C. Tablets 800mg"]
+        self.assertEqual(phosout["status"], "Cancelled (2023-12-03)")
+        self.assertEqual(phosout["registration_number"], "MOHW-PM 058140")
+        # No registered English name: the Chinese name is kept, not invented.
+        self.assertEqual(phosout["company"], "美時化學製藥股份有限公司")
+        self.assertEqual(phosout["dosage_form"], "Film-coated tablet")
+
+
 class ConnectorAuditFixTests(unittest.TestCase):
     def test_drugs_at_fda_lists_discontinued_applications_with_their_holder(self):
         from sources.fda_drugsfda import build_rows

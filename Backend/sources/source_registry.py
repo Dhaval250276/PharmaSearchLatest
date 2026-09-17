@@ -39,6 +39,7 @@ from sources.lebanon_moph import run_lebanon_moph_search
 from sources.eof_greece import run_eof_greece_search
 from sources.japan_nhi import run_mhlw_japan_search
 from sources.fda_drugsfda import run_drugs_at_fda_search
+from sources.taiwan_fda import run_tfda_taiwan_search
 from sources.open_data_registers import (
     run_hpra_ireland_search,
     run_hsa_singapore_search,
@@ -60,6 +61,16 @@ CONNECTORS: list[SourceConnector] = [
         ),
         # The NDC directory, searched locally: every listing, not the first 100 labels.
         run_fda_ndc_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="TFDA Taiwan",
+            region="AS",
+            countries=("Taiwan",),
+            supports_documents=False,
+        ),
+        # TFDA's licence register, with English names from the trade register.
+        run_tfda_taiwan_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(

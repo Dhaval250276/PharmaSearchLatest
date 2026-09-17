@@ -57,6 +57,7 @@ DEFAULT_SOURCES = [
     "ANVISA Brazil",
     "EOF Greece",
     "HPRA Ireland",
+    "TFDA Taiwan",
 ]
 EU_NATIONAL_SOURCES = [
     "Belgium FAMHP",
@@ -456,6 +457,7 @@ SOURCE_COUNTRIES = {
     "aifa italy": {"Italy"},
     "eof greece": {"Greece"},
     "hpra ireland": {"Ireland"},
+    "tfda taiwan": {"Taiwan"},
     "anvisa brazil": {"Brazil"},
     "cyprus pharmaceutical services": {"Cyprus"},
     "ukraine drlz": {"Ukraine"},
@@ -490,6 +492,7 @@ COUNTRY_SOURCE_DEFAULTS = {
     "Romania": "ANMDMR Romania",
     "Italy": "AIFA Italy",
     "Greece": "EOF Greece",
+    "Taiwan": "TFDA Taiwan",
     "Brazil": "ANVISA Brazil",
 }
 REGION_SOURCE_DEFAULTS = {
@@ -532,6 +535,7 @@ REGIONAL_LIVE_SOURCES = {
         "Thai FDA",
         "DAV Vietnam",
         "MHLW Japan",
+        "TFDA Taiwan",
         "Hong Kong Drug Office",
         "Israel Drug Registry",
         "SFDA Saudi Arabia",
