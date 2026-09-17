@@ -22,10 +22,7 @@ from services.evidence_backfill import backfill_evidence
 from sources.ema import _ema_result_from_record, _expand_xlsx_records
 from sources.synonyms import get_substance_search_terms
 from sources.eu_mri import _parse_table_rows, run_eu_mri_search
-from sources.medsafe import (
-    _fallback_rows as _medsafe_fallback_rows,
-    _parse_product_search_results as _parse_medsafe_product_search_results,
-)
+from sources.medsafe import _fallback_rows as _medsafe_fallback_rows
 from sources.mhra_document_parser import (
     _document_links_from_html,
     _invalid_manufacturer_value,
@@ -1039,41 +1036,72 @@ class TGAConnectorTests(unittest.TestCase):
 
 
 class MedsafeConnectorTests(unittest.TestCase):
-    def test_parses_medsafe_product_search_results(self):
-        rows = _parse_medsafe_product_search_results(
-            """
-            <table>
-              <tr>
-                <th>Trade Name</th>
-                <th>Ingredient</th>
-                <th>Sponsor</th>
-                <th>Classification</th>
-                <th>Status</th>
-                <th>Approval date</th>
-              </tr>
-              <tr>
-                <td><a href="/DbSearch/DrugDetails/123">Paracetamol Example 500 mg tablet</a></td>
-                <td>paracetamol</td>
-                <td>Example Pharma NZ Limited</td>
-                <td>General sale</td>
-                <td>Consent given</td>
-                <td>1 Jan 2024</td>
-              </tr>
-            </table>
-            """,
-            "paracetamol",
-            "https://www.medsafe.govt.nz/DbSearch/",
-        )
+    SEARCH = """<p><strong>1 records found</strong></p><table id="productGrid" class="quickgrid"><thead><tr>
+        <th>Product</th><th>Active ingredients</th><th>Sponsor</th><th>Status</th><th>Approval date</th>
+        <th>Notification date</th></tr></thead><tbody><tr>
+        <td><a href="ProductDetail?Product_id=16908">Renvela, Film coated tablet 800 mg (Prescription)</a></td>
+        <td>Sevelamer</td><td>Sanofi-Aventis New Zealand Limited </td><td>Approval lapsed</td>
+        <td>30/07/2015</td><td>1/03/2022</td></tr></tbody></table>"""
+    DETAIL = """<table><tbody><tr><td></td><th><h2>Medsafe Product Detail</h2></th></tr>
+        <tr><td class="right-justified">File ref: TT50-9571</td></tr></tbody></table>
+        <table class="form-table"><tbody><tr><th>Trade Name</th><th>Dose Form</th><th>Strength</th><th>Identifier</th></tr>
+        <tr><td>Renvela</td><td>Film coated tablet</td><td>800 mg</td><td> </td></tr>
+        <tr><th>Sponsor</th><th>Application date</th><th>Regulatory status</th><th>Classification</th></tr>
+        <tr><td>Sanofi-Aventis New Zealand Limited <br />P O Box 12851<br />AUCKLAND 1642</td><td>5/06/2014</td>
+        <td>Approval lapsed<br>Approval date:30/07/2015<br>Notification date: 1/03/2022</td><td>Prescription</td></tr>
+        </tbody></table><h4>Composition</h4><table><thead><tr><th>Component</th><th>Ingredient</th><th>Manufacturer</th></tr></thead>
+        <tbody><tr><td>film coated tablet</td><td>Active</td><td>&nbsp;</td></tr>
+        <tr><td>&nbsp;</td><td>Sevelamer carbonate 800mg</td><td>EuroAPI UK Limited <br />37 Hollands Road<br />Haverhill<br />UNITED KINGDOM</td></tr>
+        <tr><td>&nbsp;</td><td>Excipient</td><td>&nbsp;</td></tr><tr><td>&nbsp;</td><td>Zinc stearate </td><td></td></tr></tbody></table>
+        <h4>Production</h4><table><thead><tr><th>Manufacturing step</th><th>Manufacturer</th></tr></thead><tbody>
+        <tr><td>Manufacture of Active Ingredient</td><td>EuroAPI UK Limited <br />Haverhill<br />UNITED KINGDOM</td></tr>
+        <tr><td>Manufacture of Final Dose Form</td><td>Genzyme Ireland Ltd <br />Old Kilmeadon Road<br />Waterford<br />IRELAND</td></tr>
+        <tr><td>Packing</td><td>Genzyme Ireland Ltd <br />Waterford<br />IRELAND</td></tr>
+        <tr><td>NZ Site of Product Release</td><td>Pharmacy Retailing (NZ) Ltd<br />AUCKLAND 2022</td></tr></tbody></table>
+        <h4>Packaging</h4><table><thead><tr><th>Package</th><th>Contents</th><th>Shelf life</th></tr></thead>
+        <tbody><tr><td>Bottle, plastic, HDPE</td><td>180 dose units</td><td>36 months</td></tr></tbody></table>"""
 
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["source"], "Medsafe New Zealand")
-        self.assertEqual(rows[0]["country"], "New Zealand")
-        self.assertEqual(rows[0]["region"], "NZ")
-        self.assertEqual(rows[0]["company"], "Example Pharma NZ Limited")
-        self.assertEqual(rows[0]["status"], "Consent given - General sale")
-        self.assertEqual(rows[0]["strength"], "500 mg")
-        self.assertEqual(rows[0]["dosage_form"], "Tablet")
-        self.assertEqual(rows[0]["registration_date"], "1 Jan 2024")
+    def test_a_product_takes_its_sponsor_composition_and_dose_form_site(self):
+        from sources.medsafe import build_row, parse_product_detail, parse_search_results
+
+        listings = parse_search_results(self.SEARCH)
+        self.assertEqual(len(listings), 1)
+        self.assertEqual(listings[0]["url"], "https://www.medsafe.govt.nz/DbSearch/ProductDetail?Product_id=16908")
+        row = build_row(listings[0], parse_product_detail(self.DETAIL))
+
+        self.assertEqual(row["product"], "Renvela 800 mg")
+        self.assertEqual(row["active_substance"], "Sevelamer carbonate")
+        self.assertEqual(row["company"], "Sanofi-Aventis New Zealand Limited")
+        self.assertEqual((row["status"], row["registration_date"]), ("Approval lapsed", "30/07/2015"))
+        self.assertEqual(row["registration_number"], "TT50-9571")
+        self.assertEqual(row["dosage_form"], "Film coated tablet")
+        # The site that makes the tablet, not the release site or the API maker.
+        self.assertEqual((row["manufacturer_name"], row["manufacturer_country"]), ("Genzyme Ireland Ltd", "Ireland"))
+        self.assertEqual(row["api_manufacturer"], "EuroAPI UK Limited")
+        self.assertEqual(row["pack_size"], "Bottle, plastic, HDPE, 180 dose units")
+        self.assertTrue(row_relevant_to_substance(row, "sevelamer carbonate"))
+        self.assertFalse(row_relevant_to_substance(row, "sevelamer hydrochloride"))
+
+    def test_a_salt_the_register_does_not_file_is_searched_by_its_molecule(self):
+        from sources import medsafe
+
+        asked = []
+
+        def get(url, params=None, **_kwargs):
+            asked.append((params or {}).get("ingr"))
+            html = self.SEARCH if params and params.get("ingr") == "sevelamer" else "<p>0 records found</p>"
+            return MagicMock(text=html if params else self.DETAIL, raise_for_status=lambda: None)
+
+        with patch("requests.Session.get", side_effect=get):
+            rows = medsafe.run_medsafe_search("sevelamer carbonate")
+        self.assertEqual(asked[:2], ["sevelamer carbonate", "sevelamer"])
+        self.assertEqual([row["product"] for row in rows], ["Renvela 800 mg"])
+
+    def test_an_empty_register_answer_is_not_a_handoff(self):
+        from sources import medsafe
+
+        with patch("requests.Session.get", return_value=MagicMock(text="<p>0 records found</p>", raise_for_status=lambda: None)):
+            self.assertEqual(medsafe.run_medsafe_search("nonexistentmab"), [])
 
     def test_medsafe_fallback_returns_lookup_row_for_any_substance(self):
         rows = _medsafe_fallback_rows("metformin", 10)
@@ -3462,6 +3490,160 @@ class VendorDataRepairTests(unittest.TestCase):
         self.assertEqual(row["strength"], "")
         self.assertEqual(row["status"], "Berlaku")
         self.assertEqual(row["substance"], "salmeterol;fluticasone")
+
+
+class GreeceConnectorTests(unittest.TestCase):
+    RESULTS = """<partial-response><changes><update id="frmMain:tblResults"><![CDATA[
+        <tr data-ri="0" class="ui-widget-content"><td role="gridcell"><span class="ui-column-title">Κωδικός</span>3168501</td>
+        <td role="gridcell"><span class="ui-column-title">Ονομασία / Περιεκτικότητα</span>SEVELAMER/FARAN F.C.TAB 800MG/TAB</td>
+        <td role="gridcell"><span class="ui-column-title">Κατάσταση Α.Κ.</span><span>Εγκεκριμένο</span></td>
+        <td role="gridcell"><span class="ui-column-title">Αρ. άδειας</span>81664/4-11-2016</td>
+        <td role="gridcell"><span class="ui-column-title">Διαδικασία</span>Αμοιβαίας Αναγνώρισης</td>
+        <td role="gridcell"><span class="ui-column-title">Αρ. διαδικασίας</span>DK/H/1948/001/E/002</td>
+        <td><a href="view.xhtml?id=ad0191ce">x</a></td></tr>]]></update></changes></partial-response>"""
+    PRODUCT = """<div class="surface-section"><div class="text-2xl">Γενικά</div><ul>
+        <li><div>Κωδικός</div><div>3168501</div></li>
+        <li><div>Κατάσταση Α.Κ.</div><div><span>Εγκεκριμένο</span></div></li>
+        <li><div>Κάτοχος Αδείας Κυκλοφορίας</div>
+            <div>ΦΑΡΑΝ ΑΝΩΝΥΜΗ ΒΙΟΜΗΧΑΝΙΚΗ ΕΤΑΙΡΕΙΑ Δ.Τ. ΦΑΡΑΝ Α.Β.Ε.Ε., ΕΛΛΑΔΑ</div>
+            <div><i></i>Αχαίας 5, 145 64 Ν. Κηφισιά<br/>210.6254175</div></li></ul></div>
+        <div class="surface-section"><div class="text-2xl">Συσκευασίες</div><ul>
+        <li><div>2803168501017</div><div>BTx BOTTLE (HDPE) x 180 TABS- με υλικό αφύγρανσης</div>
+            <div>180<span title="ΤΕΜΑΧΙΟ">ΤΕ</span></div><div><span>Εγκεκριμένο</span></div><div></div>
+            <div>€ <span id="j_idt66:0:txtGRP">62,02</span></div></li></ul></div>
+        <div class="surface-section"><div class="text-2xl">Φαρμακοτεχνική μορφή - Περιεκτικότητα</div><ul>
+        <li><div>F.C.TAB</div><div>ΕΠΙΚΑΛΥΜΜΕΝΟ ΜΕ ΛΕΠΤΟ ΥΜΕΝΙΟ ΔΙΣΚΙΟ</div><div>800MG/TAB</div></li></ul></div>
+        <div class="surface-section"><div class="text-2xl">Ταξινόμηση ATC</div><ul>
+        <li><div>V03AE02</div><div>SEVELAMER</div></li></ul></div>
+        <div class="surface-section"><div class="text-2xl">Οδός χορήγησης</div><ul>
+        <li><div></div><div>ΑΠΟ ΤΟΥ ΣΤΟΜΑΤΟΣ</div></li></ul></div>
+        <div class="surface-section"><div class="text-2xl">Δραστική ουσία</div><ul>
+        <li><div></div><div>SEVELAMER CARBONATE</div><div>800<span>MG</span></div></li></ul></div>
+        <div class="surface-section"><div class="text-2xl">Τεκμηρίωση</div><ul>
+        <li><div>Φύλλο Οδηγιών για το Χρήστη</div><div><a href="./download?id=2783&amp;type=246">PL</a></div></li></ul></div>"""
+
+    def test_a_greek_product_is_read_into_english(self):
+        from sources.eof_greece import build_row, parse_product_page, parse_result_rows
+
+        listing = parse_result_rows(self.RESULTS)[0]
+        self.assertEqual((listing["code"], listing["view_id"]), ("3168501", "ad0191ce"))
+        row = build_row(listing, parse_product_page(self.PRODUCT), "sevelamer carbonate")
+
+        self.assertEqual(row["product"], "SEVELAMER/FARAN F.C.TAB 800MG/TAB")
+        self.assertEqual((row["company"], row["ma_holder_country"]), ("FARAN S.A.", "Greece"))
+        self.assertEqual((row["status"], row["authorisation_procedure"]), ("Authorised", "Mutual recognition"))
+        self.assertEqual((row["dosage_form"], row["strength"], row["route"]), ("Film-coated tablet", "800MG/TAB", "Oral"))
+        self.assertEqual(row["pack_size"], "BTX BOTTLE (HDPE) X 180 TABS- WITH DESICCANT (180 units)")
+        self.assertEqual(row["price"], "EUR 62,02 (retail incl. VAT)")
+        self.assertEqual((row["atc_code"], row["registration_number"]), ("V03AE02", "81664/4-11-2016"))
+        self.assertEqual(row["pil_url"], "https://services.eof.gr/human-search/download?id=2783&type=246")
+        self.assertTrue(row_relevant_to_substance(row, "sevelamer carbonate"))
+
+    def test_a_page_showing_another_product_is_not_used(self):
+        from sources import eof_greece
+
+        register = MagicMock()
+        register.page.return_value = eof_greece.parse_result_rows(self.RESULTS)
+        register.product_page.return_value = self.PRODUCT.replace("3168501", "2434002")
+        (listing, detail), = eof_greece._read_pages(register, [0], deadline=float("inf"))
+        self.assertEqual(listing["code"], "3168501")
+        self.assertEqual(detail, {})
+
+    def test_greek_letters_are_transliterated(self):
+        from sources.eof_greece import english_company, transliterate
+
+        self.assertEqual(transliterate("ΥΔΡΟΧΛΩΡΙΚΗ ΣΕΒΕΛΑΜΕΡΗ"), "YDROCHLORIKI SEVELAMERI")
+        self.assertEqual(english_company("ΦΑΡΜΑΤΕΝ ΑΒΕΕ"), "FARMATEN S.A.")
+        self.assertEqual(english_company("SANOFI-AVENTIS ΜΟΝΟΠΡΟΣΩΠΗ Α.Ε. Δ.Τ. SANOFI"), "SANOFI")
+
+
+class AustraliaRepositoryTests(unittest.TestCase):
+    PICMI = """<div class='tblResults'><table><thead><th>Trade Name</th></thead><tbody>
+        <tr><td>ARX-Sevelamer</td><td><a href='pdf?OpenAgent&id=CP-2019-CMI-02288-1'>CMI</a>
+            <a href='pdf?OpenAgent&id=CP-2018-PI-02585-1'>PI</a></td><td>sevelamer carbonate</td></tr>
+        <tr><td>Renagel</td><td><a href='pdf?OpenAgent&id=CP-2011-PI-01839-3'>PI</a></td><td>Sevelamer hydrochloride</td></tr>
+        <tr><td>Sevelamer Lupin</td><td><a href='pdf?OpenAgent&id=CP-2018-PI-02588-1'>PI</a></td><td>sevelamer carbonate</td></tr>
+        <tr><td>SEVELAMER LUPIN</td><td><a href='pdf?OpenAgent&id=CP-2020-CMI-01212-1'>CMI</a></td><td>sevelamer carbonate</td></tr>
+        </tbody></table></div>"""
+
+    def test_the_repository_answers_when_the_artg_does_not(self):
+        from sources import tga
+
+        def get(url, **_kwargs):
+            if "picmi" not in url:
+                raise requests.ReadTimeout("ARTG hangs")
+            return MagicMock(text=self.PICMI, url=url, raise_for_status=lambda: None)
+
+        with patch("sources.tga.requests.get", side_effect=get):
+            rows = tga.run_tga_search("sevelamer carbonate")
+
+        by_name = {row["product"]: row for row in rows}
+        # One product whatever the case its documents are filed under.
+        self.assertEqual(sorted(by_name), ["ARX-Sevelamer", "Renagel", "Sevelamer Lupin"])
+        lupin = by_name["Sevelamer Lupin"]
+        self.assertTrue(lupin["smpc_url"].endswith("CP-2018-PI-02588-1"))
+        self.assertTrue(lupin["pil_url"].endswith("CP-2020-CMI-01212-1"))
+        # The repository does not name the sponsor, and nothing stands in for it.
+        self.assertEqual(lupin["company"], "")
+        self.assertTrue(row_relevant_to_substance(lupin, "sevelamer carbonate"))
+        self.assertFalse(row_relevant_to_substance(by_name["Renagel"], "sevelamer carbonate"))
+
+    def test_artg_pages_link_only_real_documents(self):
+        from sources.tga import _parse_artg_detail
+
+        detail = _parse_artg_detail("""<main><div>Sponsor</div><div>Dr Reddys Laboratories Australia Pty Ltd</div>
+            <div>Licence status</div><div>A</div>
+            <a href="/products/about-artg/product-information-pi">Product information</a>
+            <a href="https://www.ebs.tga.gov.au/ebs/picmi/picmirepository.nsf/pdf?OpenAgent&id=CP-2018-PI-02585-1">X-Product information-[PDF]</a></main>""")
+        self.assertEqual(detail["smpc_url"], "https://www.ebs.tga.gov.au/ebs/picmi/picmirepository.nsf/pdf?OpenAgent&id=CP-2018-PI-02585-1")
+        self.assertEqual(detail["licence_status"], "A")
+
+
+class JapanPriceListTests(unittest.TestCase):
+    KEGG = [
+        "dr_ja:D01966\tエゼチミブ (JAN); Ezetimibe (JAN/USP/INN)",
+        "dr_ja:D02258\tアトルバスタチンカルシウム水和物 (JP19); Atorvastatin calcium (USP)",
+        "dr_ja:D08512\tセベラマー; Sevelamer (INN)",
+    ]
+
+    def _row(self, **record):
+        from sources import japan_nhi
+
+        names = japan_nhi.parse_kegg_names(self.KEGG)
+        record.setdefault("_workbook", "01")
+        record.setdefault("_file", "https://www.mhlw.go.jp/x.xlsx")
+        record["_english"] = japan_nhi.english_ingredients(record["成分名"], names)
+        rows = list(japan_nhi.build_nhi_rows([record], "2026-09-17"))
+        return rows[0] if rows else None
+
+    def test_a_generic_is_named_in_english_with_its_makers_mark(self):
+        match, row = self._row(**{
+            "成分名": "アトルバスタチンカルシウム水和物", "規格": "１０ｍｇ１錠", "品名": "アトルバスタチン錠１０ｍｇ「サワイ」",
+            "メーカー名": "沢井製薬", "診療報酬において加算等の算定対象となる後発医薬品": "後発品", "薬価": 11.5,
+            "薬価基準収載医薬品コード": "2189015F2054",
+        })
+        self.assertEqual(row["product"], "Atorvastatin calcium 10 mg Tablet [Sawai Pharmaceutical]")
+        self.assertEqual(row["company"], "Sawai Pharmaceutical")
+        self.assertEqual((row["authorisation_scope"], row["price"]), ("Generic", "JPY 11.5 per tablet"))
+        self.assertEqual(row["registration_number"], "2189015F2054")
+        self.assertIn(" atorvastatin ", match)
+
+    def test_a_brand_is_romanised_and_says_so(self):
+        _match, row = self._row(**{
+            "成分名": "エゼチミブ・アトルバスタチンカルシウム水和物", "規格": "１錠", "品名": "アトーゼット配合錠ＬＤ",
+            "メーカー名": "オルガノン", "先発医薬品": "先発品", "薬価": 50.4,
+        })
+        self.assertEqual(row["product"], "Atozetto (romanised brand) - Ezetimibe; Atorvastatin calcium Combination tablet LD")
+        self.assertEqual((row["company"], row["authorisation_scope"]), ("Organon", "Originator"))
+        self.assertTrue(row_relevant_to_substance(row, "atorvastatin + ezetimibe"))
+
+    def test_an_ingredient_not_in_the_dictionary_is_left_out(self):
+        self.assertIsNone(self._row(**{"成分名": "黄連湯エキス", "規格": "１ｇ", "品名": "黄連湯エキス顆粒"}))
+
+    def test_a_company_without_an_english_name_keeps_its_own(self):
+        from sources.japan_nhi import english_company
+
+        self.assertEqual(english_company("栃本天海堂"), "栃本天海堂")
 
 
 if __name__ == "__main__":

@@ -67,6 +67,8 @@ SLOW_SOURCES = {
     "SFDA Saudi Arabia",
     # One page per ingredient group: ~7s for rosuvastatin, ~40s for paracetamol.
     "MoPH Lebanon",
+    # One session per results page, one product page at a time: ~30s for 240 products.
+    "EOF Greece",
 }
 _executor = ThreadPoolExecutor(max_workers=JOB_WORKERS)
 _lock = Lock()

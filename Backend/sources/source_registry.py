@@ -38,6 +38,8 @@ from sources.regional_live import (
 from sources.open_registers import run_aifa_italy_search, run_anvisa_brazil_search
 from sources.romania_anmdmr import run_romania_anmdmr_search
 from sources.lebanon_moph import run_lebanon_moph_search
+from sources.eof_greece import run_eof_greece_search
+from sources.japan_nhi import run_mhlw_japan_search
 from sources.sfda_saudi import run_sfda_saudi_search
 from sources.spain_cima import run_spain_cima_search
 from sources.swissmedic import run_swissmedic_search
@@ -319,6 +321,26 @@ CONNECTORS: list[SourceConnector] = [
             enabled=False,
         ),
         run_swissmedic_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="MHLW Japan",
+            region="JP",
+            countries=("Japan",),
+            supports_documents=False,
+        ),
+        # The Ministry's NHI drug price list, downloaded whole and searched
+        # locally. PMDA's own search turns away scripted clients.
+        run_mhlw_japan_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="EOF Greece",
+            region="EU",
+            countries=("Greece",),
+            supports_documents=True,
+        ),
+        run_eof_greece_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(
