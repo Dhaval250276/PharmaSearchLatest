@@ -25,7 +25,6 @@ from sources.regional_live import (
     run_fda_philippines_search,
     run_grls_russia_search,
     run_hong_kong_drug_office_search,
-    run_hsa_singapore_search,
     run_israel_drug_registry_search,
     run_mfds_south_korea_search,
     run_nmpa_china_search,
@@ -33,7 +32,6 @@ from sources.regional_live import (
     run_pmda_japan_search,
     run_sahpra_search,
     run_thai_fda_search,
-    run_ukraine_drlz_search,
 )
 from sources.open_registers import run_aifa_italy_search, run_anvisa_brazil_search
 from sources.romania_anmdmr import run_romania_anmdmr_search
@@ -41,6 +39,11 @@ from sources.lebanon_moph import run_lebanon_moph_search
 from sources.eof_greece import run_eof_greece_search
 from sources.japan_nhi import run_mhlw_japan_search
 from sources.fda_drugsfda import run_drugs_at_fda_search
+from sources.open_data_registers import (
+    run_hpra_ireland_search,
+    run_hsa_singapore_search,
+    run_ukraine_drlz_search,
+)
 from sources.sfda_saudi import run_sfda_saudi_search
 from sources.spain_cima import run_spain_cima_search
 from sources.swissmedic import run_swissmedic_search
@@ -57,6 +60,16 @@ CONNECTORS: list[SourceConnector] = [
         ),
         # The NDC directory, searched locally: every listing, not the first 100 labels.
         run_fda_ndc_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="HPRA Ireland",
+            region="EU",
+            countries=("Ireland",),
+            supports_documents=False,
+        ),
+        # HPRA's daily list of every authorised human medicine.
+        run_hpra_ireland_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(

@@ -533,18 +533,30 @@ def _is_stale(register: OpenRegister, info: dict[str, Any] | None) -> bool:
 
 
 def download_file(register: OpenRegister, url: str, destination: Path) -> Path:
-    """Stream one published file to disk, verifying TLS with the register's roots."""
-    with requests.get(
-        url,
-        stream=True,
-        timeout=DOWNLOAD_TIMEOUT,
-        headers={"User-Agent": "PharmaSearch/1.0 (regulatory register download)"},
-        verify=_ca_bundle(register),
-    ) as response:
-        response.raise_for_status()
-        with destination.open("wb") as handle:
-            for chunk in response.iter_content(chunk_size=1 << 20):
-                handle.write(chunk)
+    """Stream one published file to disk, verifying TLS with the register's roots.
+
+    A dropped connection is tried again: HPRA's server resets about one
+    connection in two, and a weekly refresh should not wait a week for it.
+    """
+    for attempt in range(3):
+        try:
+            with requests.get(
+                url,
+                stream=True,
+                timeout=DOWNLOAD_TIMEOUT,
+                headers={"User-Agent": "PharmaSearch/1.0 (regulatory register download)"},
+                verify=_ca_bundle(register),
+            ) as response:
+                response.raise_for_status()
+                with destination.open("wb") as handle:
+                    for chunk in response.iter_content(chunk_size=1 << 20):
+                        handle.write(chunk)
+            return destination
+        except (requests.ConnectionError, requests.exceptions.ChunkedEncodingError):
+            if attempt == 2:
+                raise
+            logger.info("%s: download interrupted, trying again", register.source)
+            time.sleep(5 * (attempt + 1))
     return destination
 
 

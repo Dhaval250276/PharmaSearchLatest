@@ -56,6 +56,7 @@ DEFAULT_SOURCES = [
     "GRLS Russia",
     "ANVISA Brazil",
     "EOF Greece",
+    "HPRA Ireland",
 ]
 EU_NATIONAL_SOURCES = [
     "Belgium FAMHP",
@@ -66,6 +67,7 @@ EU_NATIONAL_SOURCES = [
     "ANMDMR Romania",
     "AIFA Italy",
     "EOF Greece",
+    "HPRA Ireland",
     "Cyprus Pharmaceutical Services",
     "Ukraine DRLZ",
 ]
@@ -453,6 +455,7 @@ SOURCE_COUNTRIES = {
     "spain cima": {"Spain"},
     "aifa italy": {"Italy"},
     "eof greece": {"Greece"},
+    "hpra ireland": {"Ireland"},
     "anvisa brazil": {"Brazil"},
     "cyprus pharmaceutical services": {"Cyprus"},
     "ukraine drlz": {"Ukraine"},

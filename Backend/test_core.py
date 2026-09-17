@@ -3492,6 +3492,107 @@ class VendorDataRepairTests(unittest.TestCase):
         self.assertEqual(row["substance"], "salmeterol;fluticasone")
 
 
+class OpenDataRegisterTests(unittest.TestCase):
+    def test_a_singapore_product_keeps_every_ingredient_strength_and_maker(self):
+        from sources.open_data_registers import build_singapore_rows
+
+        record = {
+            "LicenceNo": "SIN14567P", "Productname": "ATOZET TABLET 10MG/10MG",
+            "Licenseholder": "ORGANON SINGAPORE PTE. LTD.", "Approvaldate": "5/1/2015",
+            "Forensicclassification": "Prescription Only", "ATCCode": "C10BA05",
+            "Dosageform": "TABLET, FILM COATED", "RouteofAdministration": "ORAL",
+            "Manufacturer": "MSD INTERNATIONAL GMBH&&ORGANON PHARMA (UK) LIMITED",
+            "Countryofmanufacturer": "PUERTO RICO&&UNITED KINGDOM",
+            "Activeingredients": "Atorvastatin Calcium&&Ezetimibe", "Strength": "10mg&&10mg",
+        }
+        (match, row), = build_singapore_rows([record], "2026-09-17")
+        self.assertEqual(row["strength"], "10mg/10mg")
+        self.assertEqual(row["active_substance"], "Atorvastatin Calcium; Ezetimibe")
+        self.assertEqual(row["manufacturer_name"], "MSD INTERNATIONAL GMBH; ORGANON PHARMA (UK) LIMITED")
+        self.assertEqual(row["manufacturer_country"], "Puerto Rico; United Kingdom")
+        self.assertEqual((row["company"], row["registration_date"]), ("ORGANON SINGAPORE PTE. LTD.", "2015-01-05"))
+        self.assertTrue(row_relevant_to_substance(row, "atorvastatin + ezetimibe"))
+
+    def test_a_ukrainian_registration_is_read_into_english(self):
+        from sources.open_data_registers import build_ukraine_rows
+
+        record = {
+            "Торгівельне найменування": "СЕВЕЛАМЕР-ВІСТА",
+            "Міжнародне непатентоване найменування": "Sevelamer",
+            "Форма випуску": "таблетки, вкриті плівковою оболонкою, по 800 мг; по 10 таблеток у блістері",
+            "Склад (діючі)": "1 таблетка містить севеламеру карбонату 800 мг",
+            "Код АТС 1": "V03AE02",
+            "Заявник: назва українською": "Містрал Кепітал Менеджмент Лімітед",
+            "Заявник: країна": "Велика Британія",
+            "Виробник 1: назва українською": "Сінтон Хіспанія, С.Л. (виробництво, випуск серії)",
+            "Виробник 1: країна ": "Іспанія",
+            "Виробник 2: назва українською": "Роттендорф Фарма ГмбХ",
+            "Виробник 2: країна ": "Німеччина",
+            "Номер Реєстраційного посвідчення": "UA/19000/01/01",
+            "Дата початку дії": "01.02.2022",
+            "Дата закінчення": "необмежений",
+            "Дострокове припинення": "Ні",
+            "Гомеопатичний ЛЗ": "Ні",
+        }
+        (match, row), = build_ukraine_rows([record], "2026-09-17")
+        self.assertEqual(row["active_substance"], "Sevelamer carbonate")
+        self.assertEqual((row["strength"], row["dosage_form"]), ("800 mg", "Film-coated tablets"))
+        self.assertEqual(row["ma_holder_country"], "United Kingdom")
+        self.assertEqual(row["manufacturer_name"], "Сінтон Хіспанія, С.Л.; Роттендорф Фарма ГмбХ")
+        self.assertEqual(row["manufacturer_country"], "Spain; Germany")
+        self.assertEqual(row["manufacturers"][0]["role"], "виробництво, випуск серії")
+        self.assertEqual((row["status"], row["registration_date"], row["expiry_date"]), ("Registered", "2022-02-01", "Unlimited"))
+        self.assertTrue(row_relevant_to_substance(row, "sevelamer carbonate"))
+
+        record["Дострокове припинення"] = "Так"
+        (_match, stopped), = build_ukraine_rows([record], "2026-09-17")
+        self.assertEqual(stopped["status"], "Registration terminated early")
+
+    def test_an_irish_product_takes_its_holder_basis_and_strength(self):
+        from sources.open_data_registers import build_ireland_rows
+
+        record = {
+            "LicenceNumber": "PA22683/004/001",
+            "ProductName": "Ezetimibe/Atorvastatin 10 mg/10 mg film-coated tablets",
+            "PAHolder": "Althera Laboratories Limited",
+            "AuthorisedDate": "17/04/2025",
+            "MarketInfo": "Marketed",
+            "DosageForm": "Film-coated tablet",
+            "ATCs": ["C10BA05"],
+            "LegalBasis": "Generic application (Article 10(1) of Directive No 2001/83/EC)",
+            "RoutesOfAdministration": ["Oral use"],
+            "ActiveSubstances": ["Ezetimibe", "Atorvastatin calcium trihydrate"],
+        }
+        (match, row), = build_ireland_rows([record], "2026-09-17")
+        self.assertEqual((row["company"], row["status"], row["authorisation_scope"]),
+                         ("Althera Laboratories Limited", "Marketed", "Generic"))
+        self.assertEqual((row["atc_code"], row["registration_date"]), ("C10BA05", "2025-04-17"))
+        self.assertIn("10 mg", row["strength"])
+        self.assertTrue(row_relevant_to_substance(row, "atorvastatin + ezetimibe"))
+
+    def test_a_dropped_download_is_tried_again(self):
+        from sources import open_registers
+
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.iter_content.return_value = [b"data"]
+        calls = []
+
+        def get(*_args, **_kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise requests.ConnectionError("reset")
+            return response
+
+        with tempfile.TemporaryDirectory() as folder, \
+                patch("sources.open_registers.requests.get", side_effect=get), \
+                patch("sources.open_registers.time.sleep"):
+            target = Path(folder) / "file"
+            open_registers.download_file(open_registers.ITALY, "https://example.org/x", target)
+            self.assertEqual(target.read_bytes(), b"data")
+        self.assertEqual(len(calls), 2)
+
+
 class ConnectorAuditFixTests(unittest.TestCase):
     def test_drugs_at_fda_lists_discontinued_applications_with_their_holder(self):
         from sources.fda_drugsfda import build_rows
