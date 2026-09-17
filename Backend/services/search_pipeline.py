@@ -905,6 +905,17 @@ def row_relevant_to_substance(row: dict[str, Any], substance: str) -> bool:
         return True
 
     parts = combination_parts(substance)
+    folded = str(row.get("inn_fold_tokens") or "")
+    if folded:
+        # A register written in another script (Russia): its INN was
+        # transliterated and folded, and the search is compared the same way.
+        from sources.grls_russia import fold
+        from sources.open_registers import inn_tokens, query_tokens
+
+        have = set(folded.split())
+        if parts:
+            return all(all(fold(token) in have for token in query_tokens(part)) for part in parts)
+        return all(fold(token) in have for token in inn_tokens(substance))
     if parts:
         return _contains_every_molecule(row, substance, parts)
 

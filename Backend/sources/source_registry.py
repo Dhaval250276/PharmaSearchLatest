@@ -23,7 +23,6 @@ from sources.regional_live import (
     run_fda_purple_book_search,
     run_fda_ghana_search,
     run_fda_philippines_search,
-    run_grls_russia_search,
     run_hong_kong_drug_office_search,
     run_israel_drug_registry_search,
     run_mfds_south_korea_search,
@@ -40,6 +39,7 @@ from sources.eof_greece import run_eof_greece_search
 from sources.japan_nhi import run_mhlw_japan_search
 from sources.fda_drugsfda import run_drugs_at_fda_search
 from sources.taiwan_fda import run_tfda_taiwan_search
+from sources.grls_russia import run_grls_register_search
 from sources.open_data_registers import (
     run_hpra_ireland_search,
     run_hsa_singapore_search,
@@ -483,7 +483,8 @@ CONNECTORS: list[SourceConnector] = [
             countries=("Russia",),
             supports_documents=False,
         ),
-        run_grls_russia_search,
+        # The whole register, downloaded daily from GRLS's own export link.
+        run_grls_register_search,
     ),
 ]
 

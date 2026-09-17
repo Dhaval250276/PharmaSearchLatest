@@ -3654,6 +3654,41 @@ class TaiwanRegisterTests(unittest.TestCase):
         self.assertEqual(phosout["dosage_form"], "Film-coated tablet")
 
 
+class RussiaRegisterTests(unittest.TestCase):
+    RECORD = {
+        "number": "ЛП-№(000500)-(РГ-RU)", "registered": "01.02.2022", "expires": "", "cancelled": "",
+        "holder": "Акционерное общество \"Санофи Россия\" (АО \"Санофи Россия\")", "holder_country": "Россия",
+        "trade_name": "Зенон®", "inn": "Розувастатин+Эзетимиб",
+        "forms": "таблетки, покрытые пленочной оболочкой, 10 мг+10 мг - блистеры (10) - пачки картонные - По рецепту; ",
+        "production": "Производитель (Все стадии производства),АО \"КРКА, д.д., Ново место\", Шмарьешка цеста 6, "
+                      "8501 Ново место, Словения_x000D_\nВыпускающий контроль качества,Санофи Винтроп Индастриа, "
+                      "1 рю де ла Вьерж, Франция",
+        "group": "", "state": "Registered",
+    }
+
+    def test_a_russian_registration_is_read_and_found_by_its_english_inn(self):
+        from sources.grls_russia import build_rows, fold
+
+        (match, row), = build_rows([dict(self.RECORD)], "2026-09-17")
+        self.assertEqual(row["company"], 'JSC "Sanofi Rossiya"')
+        self.assertEqual((row["strength"], row["dosage_form"]), ("10 mg+10 mg", "Film-coated tablets"))
+        self.assertEqual(row["manufacturer_name"], 'JSC "KRKA, d.d., Novo mesto"')
+        self.assertEqual(row["manufacturer_country"], "Slovenia")
+        self.assertEqual(row["manufacturers"][1]["role"], "Batch release")
+        self.assertEqual((row["registration_date"], row["status"]), ("2022-02-01", "Registered"))
+        self.assertIn(f" {fold('rosuvastatin')} ", match)
+        self.assertTrue(row_relevant_to_substance(row, "rosuvastatin + ezetimibe"))
+        self.assertFalse(row_relevant_to_substance(row, "atorvastatin + ezetimibe"))
+
+    def test_the_folded_spelling_joins_russian_and_english_inns(self):
+        from sources.grls_russia import fold, latin
+        from sources.open_registers import inn_tokens
+
+        for russian, english in (("Амоксициллин", "amoxicillin"), ("Гидрохлоротиазид", "hydrochlorothiazide"),
+                                 ("Кветиапин", "quetiapine"), ("Эзетимиб", "ezetimibe")):
+            self.assertEqual([fold(t) for t in inn_tokens(latin(russian))], [fold(t) for t in inn_tokens(english)], russian)
+
+
 class ConnectorAuditFixTests(unittest.TestCase):
     def test_drugs_at_fda_lists_discontinued_applications_with_their_holder(self):
         from sources.fda_drugsfda import build_rows
