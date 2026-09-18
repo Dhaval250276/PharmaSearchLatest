@@ -90,6 +90,16 @@ CORE_CONNECTOR_STATUS: dict[str, dict[str, str]] = {
         "status": "ready",
         "notes": "CIMA API connector for Spain.",
     },
+    "BfArM Germany": {
+        "tier": "eu_national",
+        "mode": "live_view_only",
+        "status": "ready_view_only",
+        "notes": (
+            "AMIce public database: holder and batch-release sites with addresses, live per search. "
+            "BfArM's terms allow its results to be shown and printed, not stored or passed on, so rows "
+            "are not saved and are left out of exports until BfArM grants permission to reuse the data."
+        ),
+    },
 }
 
 

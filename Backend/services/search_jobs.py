@@ -71,6 +71,12 @@ SLOW_SOURCES = {
     # One session per results page, one product page at a time: ~30s for 240 products.
     "EOF Greece",
 }
+# BfArM answers a search in about five seconds and each product document in
+# five to eight -- its own disclaimer says complex searches are slow -- so a
+# molecule with twenty products takes over a minute even four documents at a
+# time. The connector stops itself well before this ceiling.
+VERY_SLOW_SOURCES = {"BfArM Germany"}
+JOB_VERY_SLOW_SOURCE_TIMEOUT_SECONDS = 120
 _executor = ThreadPoolExecutor(max_workers=JOB_WORKERS)
 _lock = Lock()
 _jobs: dict[str, "SearchJob"] = {}
@@ -267,6 +273,8 @@ def _append_results(job_id: str, rows: list[dict[str, Any]]) -> None:
 
 
 def _source_timeout(source: str) -> int:
+    if source in VERY_SLOW_SOURCES:
+        return JOB_VERY_SLOW_SOURCE_TIMEOUT_SECONDS
     return JOB_SLOW_SOURCE_TIMEOUT_SECONDS if source in SLOW_SOURCES else JOB_SOURCE_TIMEOUT_SECONDS
 
 

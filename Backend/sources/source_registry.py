@@ -36,6 +36,7 @@ from sources.open_registers import run_aifa_italy_search, run_anvisa_brazil_sear
 from sources.romania_anmdmr import run_romania_anmdmr_search
 from sources.lebanon_moph import run_lebanon_moph_search
 from sources.eof_greece import run_eof_greece_search
+from sources.germany_bfarm import run_germany_bfarm_search
 from sources.japan_nhi import run_mhlw_japan_search
 from sources.fda_drugsfda import run_drugs_at_fda_search
 from sources.taiwan_fda import run_tfda_taiwan_search
@@ -376,6 +377,18 @@ CONNECTORS: list[SourceConnector] = [
             supports_documents=True,
         ),
         run_eof_greece_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="BfArM Germany",
+            region="EU",
+            countries=("Germany",),
+            supports_documents=False,
+            # BfArM holds its public database to 200 sessions at a time and
+            # says its searches are slow; one question a second is plenty.
+            rate_limit_per_minute=60,
+        ),
+        run_germany_bfarm_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(

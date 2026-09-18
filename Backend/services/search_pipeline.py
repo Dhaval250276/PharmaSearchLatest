@@ -58,6 +58,7 @@ DEFAULT_SOURCES = [
     "EOF Greece",
     "HPRA Ireland",
     "TFDA Taiwan",
+    "BfArM Germany",
 ]
 EU_NATIONAL_SOURCES = [
     "Belgium FAMHP",
@@ -69,6 +70,7 @@ EU_NATIONAL_SOURCES = [
     "AIFA Italy",
     "EOF Greece",
     "HPRA Ireland",
+    "BfArM Germany",
     "Cyprus Pharmaceutical Services",
     "Ukraine DRLZ",
 ]
@@ -456,6 +458,7 @@ SOURCE_COUNTRIES = {
     "spain cima": {"Spain"},
     "aifa italy": {"Italy"},
     "eof greece": {"Greece"},
+    "bfarm germany": {"Germany"},
     "hpra ireland": {"Ireland"},
     "tfda taiwan": {"Taiwan"},
     "anvisa brazil": {"Brazil"},
@@ -492,6 +495,7 @@ COUNTRY_SOURCE_DEFAULTS = {
     "Romania": "ANMDMR Romania",
     "Italy": "AIFA Italy",
     "Greece": "EOF Greece",
+    "Germany": "BfArM Germany",
     "Taiwan": "TFDA Taiwan",
     "Brazil": "ANVISA Brazil",
 }
@@ -924,7 +928,16 @@ def row_relevant_to_substance(row: dict[str, Any], substance: str) -> bool:
     if product_has_query:
         return True
 
-    parenthetical_values = re.findall(r"\(([^)]{3,120})\)", product)
+    # A bracket in a product name usually holds the salt -- "Amlodipin
+    # (besilat)" -- and then it says what the product is. Germany's register
+    # names products by pack, "Renagel 800 mg Filmtabletten - OP(1x100)", and
+    # a bracket holding no word at all says nothing about the molecule, so it
+    # must not be allowed to rule the row out.
+    parenthetical_values = [
+        value
+        for value in re.findall(r"\(([^)]{3,120})\)", product)
+        if len(re.findall(r"[^\W\d_]", value)) >= 3
+    ]
     if parenthetical_values:
         return any(contains_all_tokens(value, query_tokens) for value in parenthetical_values)
 

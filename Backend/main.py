@@ -1023,6 +1023,12 @@ def search_page(
     body_rows = []
     for row in visible_product_rows:
         display_row = formatted_result_row(row, searched_substance=substance)
+        view_only_badge = (
+            f' <span class="badge text-bg-warning" title="{h(str(row.get("view_only_reason") or ""))}">'
+            f'view only</span>'
+            if row.get("view_only")
+            else ""
+        )
         product_link = link_or_unavailable(display_row["product_details_url"], "Open Product")
         smpc_link = document_cell(row, display_row, "smpc_url", "SmPC")
         pil_link = document_cell(row, display_row, "pil_url", "PIL")
@@ -1036,7 +1042,7 @@ def search_page(
                 <td>{h(display_row["country"])}</td>
                 <td>{h(display_row["region"])}</td>
                 <td>{h(display_row["registration_status"])}</td>
-                <td>{h(display_row["source"])}</td>
+                <td>{h(display_row["source"])}{view_only_badge}</td>
                 <td>{product_link}</td>
                 <td>{h(display_row["strength"])}</td>
                 <td>{h(display_row["dosage_form"])}</td>
@@ -1204,6 +1210,27 @@ def search_page(
         if row.get("region") == "EU" and row.get("country") in EU_COUNTRIES
     }
     capped_note = capped_sources_note(all_rows)
+    # A regulator whose terms let its data be read but not kept or passed on.
+    # The rows are here to look at; they are not stored and not exported, and
+    # the page has to say so rather than let a reader assume otherwise.
+    view_only_sources = sorted({
+        str(row.get("source") or "") for row in all_rows if row.get("view_only")
+    })
+    view_only_note = ""
+    if view_only_sources:
+        notice = next(
+            (str(row.get("view_only_reason") or "") for row in all_rows if row.get("view_only_reason")),
+            "",
+        )
+        copyright_line = ", ".join(sorted({
+            str(row.get("copyright") or "") for row in all_rows if row.get("view_only") and row.get("copyright")
+        }))
+        view_only_note = (
+            f'<p class="alert alert-warning py-2 mb-2"><strong>View only &mdash; '
+            f'{h(", ".join(view_only_sources))}:</strong> {h(notice)}'
+            + (f' <span class="text-muted">{h(copyright_line)}</span>' if copyright_line else "")
+            + "</p>"
+        )
     eu_coverage_note = ""
     if region == "EU":
         note_class = "success" if len(eu_countries_in_results) == len(EU_COUNTRIES) else "warning"
@@ -1305,6 +1332,7 @@ def search_page(
         <p class="small text-muted">By country: {country_summary}</p>
         <p class="small">Active filters: {active_filter_summary}</p>
         {capped_note}
+        {view_only_note}
         {eu_coverage_note}
         {registry_links_section}
         <div class="d-flex justify-content-between align-items-center mb-3">

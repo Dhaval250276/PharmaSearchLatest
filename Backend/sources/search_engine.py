@@ -18,6 +18,10 @@ logger = get_logger(__name__)
 SINGLE_TERM_SOURCES = {
     "cdsco india",
     "hong kong drug office",
+    # One search at a time and a minute per molecule: asking BfArM the same
+    # question again under each synonym would cost minutes and return the
+    # same products, because its own search already ends-masks the term.
+    "bfarm germany",
 }
 
 
@@ -89,6 +93,11 @@ def _search_substance_cached(
             item.get("country", "").strip().lower(),
             item.get("registration_number", "").strip().lower(),
             item.get("url", "").strip().lower(),
+            # Two companies holding the same licence for the same pack are two
+            # records, not one: Germany lists each parallel importer of Renagel
+            # under the licence it imports against, and without the holder here
+            # they collapsed into whichever arrived first.
+            item.get("company", "").strip().lower(),
         )
         if key not in seen:
             seen.add(key)

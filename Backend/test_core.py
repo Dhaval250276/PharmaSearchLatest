@@ -4168,6 +4168,187 @@ class LiveSourceRefreshJobTests(unittest.TestCase):
         self.assertEqual(molecules.count("old molecule"), 1)
 
 
+GERMAN_RESULT_HTML = """
+<table id="searchResultsForm:searchResultsComponent:titles">
+  <tr><th>Nr.</th><th>Arzneimittelbezeichnung</th><th>Darreichungsform</th>
+      <th>Zulassungsinhaber*</th><th>Eingangsnummer</th><th>Zul.-Nr.</th><th>Version</th></tr>
+  <tr>
+    <td>1.</td>
+    <td><a href="/amguifree/am/docoutput/jpadocdisplay.xhtml?globalDocId=ABC&docid=1">Renagel 800 mg Filmtabletten</a></td>
+    <td>Filmtablette</td>
+    <td>Sanofi Winthrop Industrie Rechtsform: S.A.</td>
+    <td>2702387</td><td>EU/1/99/123/011</td><td>19.0.0</td>
+  </tr>
+</table>
+<span>Gefundene Dokumente: 115</span>
+"""
+
+GERMAN_DOCUMENT_HTML = """
+<table><tr><td>Eingangsnummer</td><td>2702387</td></tr>
+       <tr><td>Arzneimittelbezeichnung</td><td>Renagel 800 mg Filmtabletten</td></tr>
+       <tr><td>Darreichungsform</td><td>Filmtablette</td></tr></table>
+<table><tr><td>Indikation/ATC-Code</td><td>V03AE02</td></tr></table>
+<table><tr><td>Verkehrsf&auml;higkeit</td><td>Ja</td></tr></table>
+<table><tr><td>Zulassungsnummer/ Registrierungsnummer</td><td>EU/1/99/123/011</td></tr>
+       <tr><td>Datum der Zulassung/Registrierung (Wirksamkeitsdatum)</td><td>18.10.2001</td></tr>
+       <tr><td>Verfahrenstyp</td><td>CP - europ&auml;isches zentralisiertes Verfahren</td></tr>
+       <tr><td>Status</td><td>verl&auml;ngert</td></tr></table>
+<h3>Pharmazeutische Unternehmer</h3>
+<h4>Zulassungsinhaber*</h4>
+<table><tr><td>PU-Nummer</td><td>3323442</td></tr>
+       <tr><td>Name</td><td>Sanofi Winthrop Industrie Rechtsform: S.A.</td></tr>
+       <tr><td>Stra&szlig;e Hausnummer</td><td>82 Avenue Raspail -</td></tr>
+       <tr><td>PLZ Ort</td><td>94250 GENTILLY</td></tr>
+       <tr><td>Land</td><td>Frankreich</td></tr></table>
+<h4>Hersteller Endfreigabe</h4>
+<table><tr><td>PU-Nummer</td><td>8080895</td></tr>
+       <tr><td>Name</td><td>Genzyme Ireland Limited</td></tr>
+       <tr><td>Stra&szlig;e Hausnummer</td><td>IDA Industrial Park -</td></tr>
+       <tr><td>PLZ Ort</td><td>X91 TP27 WATERFORD</td></tr>
+       <tr><td>Land</td><td>Irland</td></tr></table>
+<table><tr><td>PU-Nummer</td><td>8001499</td></tr>
+       <tr><td>Name</td><td>Genzyme Ltd.</td></tr>
+       <tr><td>Stra&szlig;e Hausnummer</td><td>37 Hollands Road -</td></tr>
+       <tr><td>PLZ Ort</td><td>CB9 8PU HAVERHILL</td></tr>
+       <tr><td>Land</td><td>Vereinigtes K&ouml;nigreich</td></tr></table>
+<span>Wirkstoffe</span>
+<table><tr><th>ASK-Nr.</th><th>Stoffname</th><th>Potenz</th><th>Mengen- operator</th>
+           <th>Stoffmenge</th><th>Stoffmenge maximal</th><th>Ma&szlig;einheit</th><th>Bemerkung</th><th>Nr.</th></tr>
+       <tr><td>30043</td><td>Sevelamer</td><td>-</td><td>n/a</td><td>800</td><td>-</td><td>Milligramm</td><td>-</td><td>1</td></tr></table>
+<h3>Packungsgr&ouml;&szlig;en-Gruppe/Verkaufsabgrenzung</h3>
+<table><tr><td>Packungsgr&ouml;&szlig;en-ID</td><td>2702387_1</td></tr>
+       <tr><td>Packungsgr&ouml;&szlig;e</td><td>Originalpackung 100 St&uuml;ck</td></tr>
+       <tr><td>Verkaufsabgrenzung</td><td>verschreibungspflichtig</td></tr></table>
+"""
+
+
+class GermanyConnectorTests(unittest.TestCase):
+    """BfArM's AMIce public database, read live and shown but never kept."""
+
+    def test_the_result_list_gives_the_product_the_holder_and_its_document(self):
+        from sources.germany_bfarm import found_documents, parse_result_rows
+
+        rows = parse_result_rows(GERMAN_RESULT_HTML)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["product"], "Renagel 800 mg Filmtabletten")
+        self.assertEqual(rows[0]["registration_number"], "EU/1/99/123/011")
+        self.assertIn("globalDocId=ABC", rows[0]["document_url"])
+        self.assertEqual(found_documents(GERMAN_RESULT_HTML), 115)
+
+    def test_the_holder_and_the_release_sites_are_kept_apart(self):
+        from sources.germany_bfarm import parse_document
+
+        detail = parse_document(GERMAN_DOCUMENT_HTML)
+        roles = {company["role"] for company in detail["companies"]}
+        makers = [company for company in detail["companies"] if company["role"] == "Batch release"]
+
+        self.assertEqual(roles, {"holder", "Batch release"})
+        self.assertEqual([maker["name"] for maker in makers], ["Genzyme Ireland Limited", "Genzyme Ltd."])
+        self.assertEqual([maker["country"] for maker in makers], ["Ireland", "United Kingdom"])
+
+    def test_the_document_is_read_in_english(self):
+        from sources.germany_bfarm import parse_document
+
+        detail = parse_document(GERMAN_DOCUMENT_HTML)
+
+        self.assertEqual(detail["dosage_form"], "Film-coated tablet")
+        self.assertEqual(detail["strength"], "800 mg")
+        self.assertEqual(detail["status"], "Authorised (renewed)")
+        self.assertEqual(detail["authorisation_scope"], "Centralised")
+        self.assertEqual(detail["classification"], "Prescription only")
+        self.assertEqual(detail["pack_size"], "Original pack 100 units")
+        self.assertEqual(detail["registration_date"], "2001-10-18")
+
+    def test_the_legal_form_label_is_not_part_of_the_company_name(self):
+        from sources.germany_bfarm import company_name
+
+        self.assertEqual(
+            company_name("Sanofi Winthrop Industrie Rechtsform: S.A."),
+            "Sanofi Winthrop Industrie S.A.",
+        )
+
+    def test_a_row_says_it_may_be_read_but_not_kept(self):
+        from sources.germany_bfarm import build_row, parse_document, parse_result_rows
+
+        listed = parse_result_rows(GERMAN_RESULT_HTML)[0]
+        row = build_row(listed, parse_document(GERMAN_DOCUMENT_HTML), "sevelamer", listed["document_url"], "2026-09-18T00:00:00Z")
+
+        self.assertTrue(row["view_only"])
+        self.assertEqual(row["copyright"], "© BfArM, Bonn")
+        self.assertEqual(row["country"], "Germany")
+        self.assertEqual(row["company"], "Sanofi Winthrop Industrie S.A.")
+        self.assertEqual(row["manufacturer_name"], "Genzyme Ireland Limited; Genzyme Ltd.")
+        self.assertEqual(row["manufacturer_country"], "Ireland; United Kingdom")
+
+    def test_a_document_about_another_product_is_ignored_rather_than_mixed_in(self):
+        from sources.germany_bfarm import _document
+
+        class Session:
+            def get(self, url, **kwargs):
+                response = MagicMock()
+                response.text = GERMAN_DOCUMENT_HTML
+                response.raise_for_status = lambda: None
+                return response
+
+        _, detail = _document(Session(), {"product": "A different medicine", "document_url": "https://x/doc"})
+
+        self.assertEqual(detail, {})
+
+    def test_the_search_asks_for_the_active_ingredient_and_medicines_on_sale(self):
+        from sources.germany_bfarm import FILTER_PREFIX, FORM_PREFIX, SUBSTANCE_FIELD, search_payload
+
+        form = (
+            '<form id="searchForm">'
+            f'<input name="{FORM_PREFIX}:searchRows:0:searchTerm" value="">'
+            f'<select name="{FORM_PREFIX}:searchRows:0:searchField"><option value="MPD_NAME">Name</option></select>'
+            '<input type="hidden" name="jakarta.faces.ViewState" value="42">'
+            "</form>"
+        )
+        payload = search_payload(form, "sevelamer")
+
+        self.assertEqual(payload[f"{FORM_PREFIX}:searchRows:0:searchTerm"], "sevelamer")
+        self.assertEqual(payload[f"{FORM_PREFIX}:searchRows:0:searchField"], SUBSTANCE_FIELD)
+        self.assertEqual(payload[f"{FILTER_PREFIX}:verkehrsfaehige:verkehrsfaehige"], "AND")
+        self.assertEqual(payload["jakarta.faces.ViewState"], "42")  # JSF rejects a post without it
+
+
+class ViewOnlyRowTests(unittest.TestCase):
+    """A regulator's data that may be shown but not kept or passed on."""
+
+    def _row(self):
+        return {
+            "substance": "sevelamer",
+            "product": "Renagel 800 mg",
+            "company": "Sanofi Winthrop Industrie S.A.",
+            "country": "Germany",
+            "source": "BfArM Germany",
+            "view_only": True,
+        }
+
+    def test_the_store_does_not_keep_it(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            repository.initialize_database()
+            saved = repository.save_product_detail(self._row())
+            with repository.get_connection() as connection:
+                german = connection.execute(
+                    "SELECT COUNT(*) FROM product_details WHERE source = 'BfArM Germany'"
+                ).fetchone()[0]
+
+        self.assertEqual(saved.get("persistence_status"), "SOURCE_RUN_ONLY")
+        self.assertEqual(german, 0)
+
+    def test_the_export_leaves_it_out(self):
+        stored = {**self._row(), "country": "Ireland", "source": "HPRA Ireland"}
+        del stored["view_only"]
+
+        rows = build_export_rows("sevelamer", [self._row(), stored])
+
+        self.assertEqual([row["Country"] for row in rows], ["Ireland"])
+
+
 class ScheduledJobClockTests(unittest.TestCase):
     """The one clock the server runs the three jobs on."""
 

@@ -998,6 +998,11 @@ def _save_product_detail(conn: sqlite3.Connection, record: dict[str, Any]) -> di
     ):
         # A search handoff is a source-run outcome, not a pharmaceutical product.
         return {**record, "persistence_status": "SOURCE_RUN_ONLY"}
+    if record.get("view_only"):
+        # The regulator publishes it to be read, not kept: BfArM's terms allow
+        # its results to be shown and printed, not stored or passed on. The row
+        # reaches the page and stops there.
+        return {**record, "persistence_status": "SOURCE_RUN_ONLY"}
     now = datetime.now(timezone.utc).isoformat()
     manufacturer_name = record.get("manufacturer_name", "")
     manufacturer_country = record.get("manufacturer_country", "")

@@ -202,6 +202,11 @@ def build_export_rows(substance: str, results: list[dict[str, Any]]) -> list[dic
             or "registry search handoff" in str(item.get("document_type") or "").lower()
         ):
             continue
+        if item.get("view_only"):
+            # A regulator that lets its data be looked at but not passed on --
+            # BfArM today. The row is shown on the page and left out of the
+            # file, because the file is what goes to a client.
+            continue
         item = english_row(item)
         ai_metadata = enrichment_metadata(item)
         product = clean_brand_name(item.get("product", ""))
