@@ -569,12 +569,18 @@ class PlatformCoreTests(unittest.TestCase):
         self.assertEqual(rows[0]["document_type"], "EU national lookup fallback")
 
     def test_filtered_search_adds_eu_country_fallback_when_empty(self):
-        rows, _, _ = filtered_search_results(
-            "atorvastatin",
-            live=False,
-            sources=["EMA"],
-            country="Greece",
-        )
+        # Its own empty store: the real one now holds Greek rows, because the
+        # weekly live refresh harvests EOF Greece, and this test is about what
+        # happens when nothing is stored.
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "empty.db"
+        ):
+            rows, _, _ = filtered_search_results(
+                "atorvastatin",
+                live=False,
+                sources=["EMA"],
+                country="Greece",
+            )
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["country"], "Greece")
         self.assertEqual(rows[0]["source"], "EU National Registry")
@@ -4037,6 +4043,189 @@ class JapanPriceListTests(unittest.TestCase):
         from sources.japan_nhi import english_company
 
         self.assertEqual(english_company("栃本天海堂"), "栃本天海堂")
+
+
+class RegisterRefreshJobTests(unittest.TestCase):
+    """The daily job that re-downloads the registers regulators publish whole."""
+
+    def _register(self, max_age_seconds=7 * 24 * 3600):
+        from sources.open_registers import OpenRegister
+
+        return OpenRegister(
+            source="Test Register",
+            country="Testland",
+            region="EU",
+            url="https://example.invalid/register.csv",
+            slug="test_register",
+            max_age_seconds=max_age_seconds,
+            build_rows=lambda records, fetched_at: iter(()),
+        )
+
+    def test_a_copy_older_than_the_regulators_own_cadence_is_due(self):
+        import time
+
+        from tools import refresh_registers
+
+        register = self._register(max_age_seconds=86400)
+        fresh = {"fetched_epoch": str(time.time() - 3600)}
+        stale = {"fetched_epoch": str(time.time() - 200000)}
+
+        with patch.object(refresh_registers, "index_info", return_value=fresh):
+            self.assertFalse(refresh_registers.is_due(register))
+        with patch.object(refresh_registers, "index_info", return_value=stale):
+            self.assertTrue(refresh_registers.is_due(register))
+        with patch.object(refresh_registers, "index_info", return_value=None):
+            self.assertTrue(refresh_registers.is_due(register))  # never downloaded
+
+    def test_one_register_failing_does_not_stop_the_rest_and_the_run_says_so(self):
+        from tools import refresh_registers
+
+        good, bad = self._register(), self._register()
+        object.__setattr__(bad, "source", "Broken Register")
+        asked = []
+
+        def refresh(register):
+            asked.append(register.source)
+            if register.source == "Broken Register":
+                raise RuntimeError("regulator timed out")
+            return Path("index.sqlite")
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ, {"PHARMASEARCH_LOG_DIR": directory}
+        ), patch.object(refresh_registers, "LOG_PATH", Path(directory) / "refresh.log"), patch.object(
+            refresh_registers, "REGISTERS", {"Broken Register": bad, "Test Register": good}
+        ), patch.object(
+            refresh_registers, "refresh_register", refresh
+        ), patch.object(
+            refresh_registers, "index_info", return_value=None
+        ):
+            refreshed, failed = refresh_registers.refresh_due()
+
+        self.assertEqual(refreshed, ["Test Register"])
+        self.assertEqual(failed, ["Broken Register"])
+        self.assertEqual(len(asked), 2)  # the failure did not end the run
+
+    def test_an_unknown_register_name_stops_the_run_rather_than_refreshing_everything(self):
+        from tools import refresh_registers
+
+        with patch.object(refresh_registers, "REGISTERS", {"Test Register": self._register()}):
+            with self.assertRaises(SystemExit):
+                refresh_registers.selected_registers(["Germany BfArM"])
+
+
+class LiveSourceRefreshJobTests(unittest.TestCase):
+    """The weekly job that re-asks the regulators searched one molecule at a time."""
+
+    def test_registers_published_as_a_file_are_not_asked_molecule_by_molecule(self):
+        from tools import refresh_live_sources
+
+        names = refresh_live_sources.live_sources(include_all=True)
+
+        self.assertIn("MHRA", names)
+        self.assertNotIn("AIFA Italy", names)  # refreshed whole by refresh_registers
+        self.assertNotIn("HPRA Ireland", names)
+
+    def test_a_source_that_only_hands_back_a_registry_link_is_left_out(self):
+        from tools import refresh_live_sources
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            repository.initialize_database()
+            for _ in range(3):
+                repository.save_source_run("Link Only", "metformin", "SOURCE_UNSUPPORTED")
+                repository.save_source_run("Answers", "metformin", "SUCCESS", records_found=4)
+
+            self.assertFalse(refresh_live_sources._answers_with_products("Link Only"))
+            self.assertTrue(refresh_live_sources._answers_with_products("Answers"))
+            # Never asked at all: worth one run rather than a permanent skip.
+            self.assertTrue(refresh_live_sources._answers_with_products("Brand New"))
+
+    def test_the_molecules_checked_longest_ago_come_first(self):
+        from tools import refresh_live_sources
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            repository, "DB_PATH", Path(directory) / "test.db"
+        ):
+            repository.initialize_database()
+            for substance, checked in (
+                ("Recent Molecule", "2026-09-17T00:00:00+00:00"),
+                ("Old Molecule", "2026-01-02T00:00:00+00:00"),
+                ("old molecule", "2026-01-03T00:00:00+00:00"),
+            ):
+                repository.save_product_detail({
+                    "substance": substance,
+                    "product": f"{substance} 10 mg",
+                    "country": "United Kingdom",
+                    "source": "MHRA",
+                    "last_checked": checked,
+                })
+
+            molecules = [name.lower() for name in refresh_live_sources.oldest_molecules(5000)]
+
+        self.assertLess(molecules.index("old molecule"), molecules.index("recent molecule"))
+        # The same molecule under two spellings is one question, not two.
+        self.assertEqual(molecules.count("old molecule"), 1)
+
+
+class ScheduledJobClockTests(unittest.TestCase):
+    """The one clock the server runs the three jobs on."""
+
+    def _job(self, **kwargs):
+        from tools.scheduled_jobs import Job
+
+        fields = {"name": "test", "hour": 3, "minute": 0, "run": lambda: 0, **kwargs}
+        return Job(**fields)
+
+    def test_a_daily_job_is_due_once_its_hour_has_passed_and_not_again_that_day(self):
+        from datetime import datetime
+
+        from tools.scheduled_jobs import is_due
+
+        job = self._job()
+        morning = datetime(2026, 9, 18, 4, 0)
+        ran_today = {"test": "2026-09-18T03:05:00"}
+        ran_yesterday = {"test": "2026-09-17T03:05:00"}
+
+        self.assertFalse(is_due(job, morning, ran_today))
+        self.assertTrue(is_due(job, morning, ran_yesterday))
+        # Before today's 03:00, yesterday's run is still the current one.
+        self.assertFalse(is_due(job, datetime(2026, 9, 18, 2, 0), ran_yesterday))
+
+    def test_a_weekly_job_missed_while_the_machine_was_off_runs_at_the_next_check(self):
+        from datetime import datetime
+
+        from tools.scheduled_jobs import is_due
+
+        sunday_job = self._job(weekday=6, hour=2)
+        # Monday: Sunday's moment has passed and the last run was the Sunday before.
+        self.assertTrue(is_due(sunday_job, datetime(2026, 9, 21, 9, 0), {"test": "2026-09-13T02:10:00"}))
+        self.assertFalse(is_due(sunday_job, datetime(2026, 9, 21, 9, 0), {"test": "2026-09-20T02:10:00"}))
+
+    def test_a_job_that_has_never_run_is_due_at_once(self):
+        from datetime import datetime
+
+        from tools.scheduled_jobs import is_due
+
+        self.assertTrue(is_due(self._job(weekday=6), datetime(2026, 9, 18, 12, 0), {}))
+
+    def test_a_failing_job_records_its_run_so_it_is_not_retried_in_a_loop(self):
+        from tools import scheduled_jobs
+
+        def explode() -> int:
+            raise RuntimeError("regulator down")
+
+        job = self._job()
+        object.__setattr__(job, "run", explode)
+        state: dict[str, str] = {}
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            scheduled_jobs, "LOG_PATH", Path(directory) / "jobs.log"
+        ), patch.object(scheduled_jobs, "STATE_PATH", Path(directory) / "jobs.json"):
+            code = scheduled_jobs.run_job(job, state)
+
+        self.assertEqual(code, 1)
+        self.assertIn("test", state)
 
 
 if __name__ == "__main__":

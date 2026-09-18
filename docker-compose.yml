@@ -61,9 +61,13 @@ services:
                sleep 86400;
              done"
 
-  # Monday mornings: back the store up, then replace links to MHRA documents
-  # the regulator has deleted. The Windows task does the same on a laptop.
-  weekly-links:
+  # The three jobs that keep the data current, on one clock:
+  #   every day 03:00  download any register past its own cadence
+  #   Sunday    02:00  re-ask the live regulators about stored molecules
+  #   Monday    10:00  back the store up, then repair links MHRA has deleted
+  # It shares the application's disk, so what it fetches is what the site
+  # serves. The Windows scheduled tasks do the same three on a laptop.
+  jobs:
     build:
       context: .
       dockerfile: Dockerfile
@@ -77,11 +81,7 @@ services:
     volumes:
       - pharmasearch-data:/data
       - ./secrets.env:/app/.env:ro
-    command: >
-      sh -c "while true; do
-               now=$$(date +%%u-%%H);
-               case \"$$now\" in 1-10) python tools/weekly_mhra_links.py || true; sleep 3600;; *) sleep 900;; esac;
-             done"
+    command: ["python", "tools/scheduled_jobs.py"]
 
 volumes:
   pharmasearch-data:

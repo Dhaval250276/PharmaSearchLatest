@@ -101,6 +101,34 @@ Every answer carries `Strict-Transport-Security`, `Content-Security-Policy`,
   to the mounted disk.
 - **The application is not published on any port**; only Caddy is reachable.
 
+## Keeping the data current
+
+The `jobs` container runs three jobs on one clock. Nothing has to be set up for
+them; they start with the rest of the stack.
+
+| When | Job | What it does |
+|---|---|---|
+| Every day 03:00 | `tools/refresh_registers.py` | Downloads any of the twelve published registers that is past its own cadence — a week for most, a month for Brazil. On a day when nothing is due it costs nothing. |
+| Sunday 02:00 | `tools/refresh_live_sources.py` | Re-asks the regulators that are searched one molecule at a time — the UK, the EU national sites, Asia, the Middle East — about the molecules already stored, oldest first, within a five-hour budget. |
+| Monday 10:00 | `tools/weekly_mhra_links.py` | Backs the database up, then replaces links to MHRA documents the regulator has deleted. |
+
+Ask it what it has done, or run one job by hand:
+
+```bash
+docker compose exec jobs python tools/scheduled_jobs.py --status
+docker compose exec jobs python tools/refresh_registers.py --status
+docker compose exec jobs python tools/scheduled_jobs.py --run registers
+```
+
+Each job writes to `/data/logs` on the mounted disk: `refresh_registers.log`,
+`refresh_live_sources.log`, `weekly_mhra_links.log` and `scheduled_jobs.log`.
+A job whose moment passed while the server was down runs at the next check
+rather than being skipped.
+
+On Windows the same three run as scheduled tasks instead — "PharmaSearch daily
+registers", "PharmaSearch weekly live sources" and "PharmaSearch weekly MHRA
+links" — and the container is not involved.
+
 ## Updating
 
 ```bash
