@@ -53,19 +53,24 @@ from services.field_availability import missing_field_value
 from services.harvest import harvest_coverage
 from services.harvest_vocabulary import load_vocabulary
 from services.result_formatter import formatted_result_row
+from services.web_security import add_security, check_production_configuration
 from services.search_jobs import FAST_BACKGROUND_SOURCES, create_search_job, get_search_job, get_search_job_results
 
 
 configure_logging()
 logger = get_logger(__name__)
 app = FastAPI(title="PharmaSearch", version="0.2.0")
+# A deployment that says it is production must have its secrets; this raises
+# before the first request rather than serving an open site.
+check_production_configuration()
+add_security(app)
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.include_router(admin_router)
 
 # The sign-in page is the only way in. Everything below it needs a session:
 # the search pages, the exports and the JSON endpoints alike.
-PUBLIC_PATHS = {"/admin/login", "/favicon.ico"}
+PUBLIC_PATHS = {"/admin/login", "/favicon.ico", "/healthz"}
 PUBLIC_PREFIXES = ("/static",)
 
 
@@ -219,6 +224,16 @@ def global_search(
 ):
     results = search_substance(substance, source_names=parse_sources(sources))
     return {"substance": substance, "count": len(results), "results": results}
+
+
+@app.get("/healthz")
+def healthz():
+    """Whether the process is up, for a load balancer or container check.
+
+    Public on purpose, and it says nothing about the data: a monitor must be
+    able to reach it without a session.
+    """
+    return {"status": "ok", "build": APP_BUILD}
 
 
 @app.get("/api/sources")

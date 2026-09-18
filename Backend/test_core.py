@@ -3654,6 +3654,78 @@ class TaiwanRegisterTests(unittest.TestCase):
         self.assertEqual(phosout["dosage_form"], "Film-coated tablet")
 
 
+class WebSecurityTests(unittest.TestCase):
+    def _request(self, scheme="http", headers=None, host="127.0.0.1"):
+        request = MagicMock()
+        request.url.scheme = scheme
+        request.headers = headers or {}
+        request.client.host = host
+        return request
+
+    def test_https_is_recognised_through_a_declared_proxy_only(self):
+        from services import web_security
+
+        forwarded = self._request(headers={"x-forwarded-proto": "https"})
+        with patch.dict(os.environ, {"PHARMASEARCH_TRUSTED_PROXY": "", "PHARMASEARCH_FORCE_HTTPS": ""}, clear=False):
+            # Anyone can send the header, so it counts for nothing on its own.
+            self.assertFalse(web_security.request_is_secure(forwarded))
+        with patch.dict(os.environ, {"PHARMASEARCH_TRUSTED_PROXY": "1"}, clear=False):
+            self.assertTrue(web_security.request_is_secure(forwarded))
+            self.assertFalse(web_security.request_is_secure(self._request(headers={"x-forwarded-proto": "http"})))
+        with patch.dict(os.environ, {"PHARMASEARCH_FORCE_HTTPS": "1", "PHARMASEARCH_TRUSTED_PROXY": ""}, clear=False):
+            self.assertTrue(web_security.request_is_secure(self._request()))
+
+    def test_the_visitors_address_comes_from_the_proxy_when_there_is_one(self):
+        from services import web_security
+
+        request = self._request(headers={"x-forwarded-for": "203.0.113.9, 10.0.0.2"}, host="10.0.0.2")
+        with patch.dict(os.environ, {"PHARMASEARCH_TRUSTED_PROXY": ""}, clear=False):
+            self.assertEqual(web_security.client_address(request), "10.0.0.2")
+        with patch.dict(os.environ, {"PHARMASEARCH_TRUSTED_PROXY": "1"}, clear=False):
+            self.assertEqual(web_security.client_address(request), "10.0.0.2")
+
+    def test_production_refuses_to_start_without_its_secrets(self):
+        from services import web_security
+
+        settings = {
+            "PHARMASEARCH_ENV": "production", "PHARMASEARCH_ADMIN_USERNAME": "",
+            "PHARMASEARCH_ADMIN_PASSWORD_HASH": "", "PHARMASEARCH_SESSION_SECRET": "",
+            "PHARMASEARCH_ALLOWED_HOSTS": "", "PHARMASEARCH_FORCE_HTTPS": "", "PHARMASEARCH_TRUSTED_PROXY": "",
+        }
+        with patch.dict(os.environ, settings, clear=False):
+            with self.assertRaises(RuntimeError) as refused:
+                web_security.check_production_configuration()
+        said = str(refused.exception)
+        for setting in ("PHARMASEARCH_ADMIN_USERNAME", "PHARMASEARCH_SESSION_SECRET", "PHARMASEARCH_ALLOWED_HOSTS"):
+            self.assertIn(setting, said)
+
+        ready = {
+            "PHARMASEARCH_ENV": "production", "PHARMASEARCH_ADMIN_USERNAME": "admin",
+            "PHARMASEARCH_ADMIN_PASSWORD_HASH": "scrypt$16384$8$1$c2FsdA$ZGlnZXN0",
+            "PHARMASEARCH_SESSION_SECRET": "x" * 40, "PHARMASEARCH_ALLOWED_HOSTS": "search.example.com",
+            "PHARMASEARCH_FORCE_HTTPS": "1",
+        }
+        with patch.dict(os.environ, ready, clear=False):
+            web_security.check_production_configuration()
+
+    def test_development_starts_without_them(self):
+        from services import web_security
+
+        with patch.dict(os.environ, {"PHARMASEARCH_ENV": ""}, clear=False):
+            web_security.check_production_configuration()
+
+    def test_the_headers_name_what_a_page_may_load(self):
+        from services.web_security import SECURITY_HEADERS
+
+        self.assertEqual(SECURITY_HEADERS["X-Frame-Options"], "DENY")
+        self.assertEqual(SECURITY_HEADERS["X-Content-Type-Options"], "nosniff")
+        policy = SECURITY_HEADERS["Content-Security-Policy"]
+        self.assertIn("frame-ancestors 'none'", policy)
+        self.assertIn("form-action 'self'", policy)
+        # The pages load Bootstrap from jsDelivr and nothing else off-site.
+        self.assertIn("https://cdn.jsdelivr.net", policy)
+
+
 class RussiaRegisterTests(unittest.TestCase):
     RECORD = {
         "number": "ЛП-№(000500)-(РГ-RU)", "registered": "01.02.2022", "expires": "", "cancelled": "",

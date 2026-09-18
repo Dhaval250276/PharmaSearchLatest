@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
 import sqlite3
 import tempfile
@@ -44,7 +45,10 @@ from sources.parser import extract_strength
 logger = get_logger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-INDEX_DIR = BASE_DIR / "data" / "open_registers"
+# The indexes are a cache of regulators' files, several gigabytes together. A
+# deployment points this at a mounted disk so a new release does not refetch
+# every register.
+INDEX_DIR = Path(os.getenv("PHARMASEARCH_REGISTER_DIR") or (BASE_DIR / "data" / "open_registers"))
 CERT_DIR = Path(__file__).resolve().parent / "certs"
 
 # A bound, not a sample: the largest molecule in either register (paracetamol,

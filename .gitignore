@@ -4,8 +4,10 @@ __pycache__/
 .venv/
 Backend/.venv/
 
-# Local secrets: the admin sign-in credentials
+# Local secrets: the admin sign-in, the session key and the deployment settings
 Backend/.env
+.env
+secrets.env
 
 # Local runtime data and generated exports
 Backend/pharmasearch.db
@@ -36,3 +38,6 @@ outputs/
 zip.zip
 Backend/backups/
 Backend/logs/
+
+# Nightly database copies written by the deployment
+backups/

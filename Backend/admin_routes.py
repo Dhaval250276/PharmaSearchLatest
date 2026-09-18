@@ -21,6 +21,7 @@ from repository import list_search_jobs, reset_database
 from services import admin_data, admin_metrics, admin_records, admin_tasks
 from services.search_jobs import create_search_job
 from sources.source_registry import connector_metadata
+from services.web_security import client_address, request_is_secure
 from services.admin_auth import (
     SESSION_COOKIE_NAME,
     SESSION_COOKIE_PATH,
@@ -79,7 +80,7 @@ def _safe_next(value: object) -> str:
 
 
 def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    return client_address(request)
 
 
 def _signed_in_user(request: Request) -> str | None:
@@ -172,7 +173,7 @@ async def login(request: Request):
         max_age=SESSION_TTL_SECONDS,
         httponly=True,
         samesite="lax",
-        secure=request.url.scheme == "https",
+        secure=request_is_secure(request),
         path=SESSION_COOKIE_PATH,
     )
     return response

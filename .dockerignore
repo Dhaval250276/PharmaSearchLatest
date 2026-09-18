@@ -1,4 +1,10 @@
 .git
+.env
+secrets.env
+Backend/.env
+backups/
+Backend/backups
+Backend/data/open_registers
 .venv
 Backend/.venv
 __pycache__

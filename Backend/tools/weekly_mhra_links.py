@@ -17,6 +17,7 @@ It is safe while the server is running: SQLite waits for the server's writes.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import traceback
@@ -28,8 +29,9 @@ sys.path.insert(0, str(BACKEND))
 
 from config import DB_PATH  # noqa: E402
 
-BACKUP_DIR = BACKEND / "backups"
-LOG_PATH = BACKEND / "logs" / "weekly_mhra_links.log"
+# On a server these live on the mounted disk, not inside the container.
+BACKUP_DIR = Path(os.getenv("PHARMASEARCH_BACKUP_DIR") or (BACKEND / "backups"))
+LOG_PATH = Path(os.getenv("PHARMASEARCH_LOG_DIR") or (BACKEND / "logs")) / "weekly_mhra_links.log"
 BACKUPS_KEPT = 4
 BACKUP_PREFIX = "weekly-mhra-links-"
 
