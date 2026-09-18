@@ -4,12 +4,16 @@ from functools import lru_cache
 from typing import Any
 
 from sources.source_registry import SOURCES
+from sources.open_registers import REGISTERS
 from sources.synonyms import get_substance_search_terms
 from core.logging_config import get_logger
+from repository import save_source_run
 
 
 LIVE_SEARCH_TIMEOUT_SECONDS = 10
-COMPLETE_SEARCH_TIMEOUT_SECONDS = 30
+# What an export waits for. The registers answer a combination in about 50
+# seconds, so 30 left Italy and Brazil out of the workbook.
+COMPLETE_SEARCH_TIMEOUT_SECONDS = 90
 logger = get_logger(__name__)
 SINGLE_TERM_SOURCES = {
     "cdsco india",
@@ -40,7 +44,12 @@ def _search_substance_cached(
     jobs = {}
     executor = ThreadPoolExecutor(max_workers=min(8, max(1, len(SOURCES) * 2)))
     try:
-        for source in SOURCES:
+        # A register held locally answers in milliseconds, a website in tens of
+        # seconds. Queued behind the websites they waited for a worker and were
+        # cut off with them: a full search for rosuvastatin + ezetimibe lost
+        # Italy, Brazil and half of Belgium. They go first now.
+        local = frozenset(register.source for register in REGISTERS.values())
+        for source in sorted(SOURCES, key=lambda item: item["name"] not in local):
             if allowed_sources is not None and source["name"].strip().lower() not in allowed_sources:
                 continue
             source_name = source["name"].strip().lower()
@@ -90,6 +99,23 @@ def _search_substance_cached(
     return unique
 
 
+def _is_handoff(item: dict[str, Any]) -> bool:
+    return str(item.get("connector_mode") or "").strip().lower() == "manual_registry"
+
+
+def _record_source_run(*args: Any, **kwargs: Any) -> None:
+    """Write the audit row, but never at the cost of the results it describes.
+
+    These run inside eight worker threads that share one SQLite file, so a
+    contended write can raise. Letting that escape would discard rows this
+    source had already fetched and abort every other source's search too.
+    """
+    try:
+        save_source_run(*args, **kwargs)
+    except Exception:
+        logger.exception("Could not record the source run for %s", args[0] if args else "")
+
+
 def _run_source_search(
     source: dict[str, Any],
     search_term: str,
@@ -104,7 +130,17 @@ def _run_source_search(
             item["searched_substance"] = substance
             item["substance"] = substance
             results.append(item)
+        handoffs = [item for item in results if _is_handoff(item)]
+        _record_source_run(
+            source["name"],
+            substance,
+            "SOURCE_UNSUPPORTED" if handoffs and len(handoffs) == len(results)
+            else ("SUCCESS" if results else "NOT_PUBLISHED"),
+            records_found=len(results) - len(handoffs),
+            evidence_url=str((results[0] if results else {}).get("source_url") or ""),
+        )
         return results
-    except Exception:
+    except Exception as exc:
         logger.exception("%s search failed", source["name"])
+        _record_source_run(source["name"], substance, "PARSER_FAILED", error=str(exc))
         return []

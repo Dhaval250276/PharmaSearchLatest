@@ -8,13 +8,18 @@ from bs4 import BeautifulSoup
 
 from core.logging_config import get_logger
 from sources.parser import extract_dosage_form, extract_pack_size, extract_strength
+from sources.salts import base_name
 
 
 TGA_BASE_URL = "https://www.tga.gov.au"
 ARTG_SEARCH_URL = f"{TGA_BASE_URL}/resources/artg"
-REQUEST_TIMEOUT = 20
+PICMI_SEARCH_URL = "https://www.ebs.tga.gov.au/ebs/picmi/picmirepository.nsf/PICMI"
+# The ARTG leaves scripted clients hanging rather than refusing them, so the
+# wait is kept short before the PI/CMI repository is asked instead.
+REQUEST_TIMEOUT = 8
 MAX_RESULTS = 100
 MAX_DETAIL_WORKERS = 6
+LICENCE_STATUS = {"A": "Active on ARTG", "C": "Cancelled from ARTG", "S": "Suspended on ARTG"}
 logger = get_logger(__name__)
 TGA_FALLBACK_ROWS = [
     {
@@ -93,18 +98,29 @@ def _text_after_label(text: str, labels: list[str], max_chars: int = 500) -> str
     return ""
 
 
+def _molecule_words(substance: str) -> list[str]:
+    """The words a product must mention: "atorvastatin + ezetimibe" -> ["atorvastatin", "ezetimibe"]."""
+    return re.findall(r"[a-z0-9]+", base_name(substance).lower())
+
+
 def _document_links(soup: BeautifulSoup) -> dict[str, str]:
     links = {}
     for anchor in soup.select("a[href]"):
         href = urljoin(TGA_BASE_URL, anchor.get("href", ""))
         text = anchor.get_text(" ", strip=True).lower()
         combined = f"{text} {href.lower()}"
+        # Only the documents themselves: every ARTG page also links to TGA's
+        # pages explaining what a PI and a CMI are.
+        if ".pdf" not in href.lower() and "picmi" not in href.lower():
+            continue
         if not links.get("smpc_url") and (
             "product information" in combined or re.search(r"\bpi\b", combined)
         ):
             links["smpc_url"] = href
         elif not links.get("pil_url") and (
-            "consumer medicine information" in combined or re.search(r"\bcmi\b", combined)
+            "consumer medicine information" in combined
+            or "consumer information" in combined
+            or re.search(r"\bcmi\b", combined)
         ):
             links["pil_url"] = href
     return links
@@ -117,11 +133,13 @@ def _parse_artg_detail(html: str) -> dict[str, str]:
         "product": _text_after_label(text, ["Product name", "Name"]),
         "company": _text_after_label(text, ["Sponsor", "Sponsor name"]),
         "manufacturer_name": _text_after_label(text, ["Manufacturer", "Manufacturer name"]),
-        "substance": _text_after_label(text, ["Active ingredient", "Active ingredients"]),
+        "substance": _text_after_label(text, ["Active ingredient", "Active ingredients", "Ingredients"]),
         "dosage_form": _text_after_label(text, ["Dosage form", "Form"]),
         "route": _text_after_label(text, ["Route of administration", "Route"]),
         "registration_number": _text_after_label(text, ["ARTG ID", "ARTG number", "AUST R", "AUST L"]),
-        "registration_date": _text_after_label(text, ["Start date", "Effective date", "Registration date"]),
+        "registration_date": _text_after_label(text, ["ARTG Date", "Start date", "Effective date", "Registration date"]),
+        "licence_status": _text_after_label(text, ["Licence status"]),
+        "licence_category": _text_after_label(text, ["Licence category"]),
     }
     metadata.update(_document_links(soup))
     return {key: value for key, value in metadata.items() if value}
@@ -136,7 +154,9 @@ def _parse_artg_search_results(html: str, substance: str, source_url: str) -> li
         title = _clean_text(anchor.get_text(" ", strip=True))
         if not title or href in seen_urls:
             continue
-        if substance.lower() not in title.lower():
+        # "atorvastatin (as calcium trihydrate)": the molecule is in the title
+        # even when the salt is worded differently from the search.
+        if not all(token in title.lower() for token in _molecule_words(substance)):
             continue
         seen_urls.add(href)
         sponsor, product = _split_sponsor_and_product(title)
@@ -223,6 +243,11 @@ def _fetch_detail(url: str) -> dict[str, str]:
 
 def _merge_detail(row: dict[str, Any], detail: dict[str, str]) -> dict[str, Any]:
     merged = dict(row)
+    if detail.get("substance"):
+        merged["active_substance"] = detail["substance"]
+        merged["source_substance"] = detail["substance"]
+    if detail.get("licence_status"):
+        merged["status"] = LICENCE_STATUS.get(detail["licence_status"].upper(), detail["licence_status"])
     for field in [
         "substance",
         "product",
@@ -244,6 +269,25 @@ def _merge_detail(row: dict[str, Any], detail: dict[str, str]) -> dict[str, Any]
         merged["dosage_form"] = extract_dosage_form(product)
     if not merged.get("pack_size"):
         merged["pack_size"] = extract_pack_size(product)
+    manufacturer = detail.get("manufacturer_name", "")
+    if manufacturer:
+        merged["manufacturer_source"] = "TGA ARTG product detail"
+        merged["manufacturers"] = [{
+            "name": manufacturer,
+            "role": "MANUFACTURER_UNKNOWN_ROLE",
+            "verification_status": "VERIFIED_PRODUCT_PAGE",
+        }]
+        merged["evidence"] = [{
+            "field_name": "manufacturer_name",
+            "value": manufacturer,
+            "role": "MANUFACTURER_UNKNOWN_ROLE",
+            "source_regulator": "TGA Australia",
+            "document_type": "ARTG product detail",
+            "evidence_url": merged.get("product_url", ""),
+            "evidence_section": "Manufacturer",
+            "extraction_method": "OFFICIAL_HTML_FIELD",
+            "verification_status": "VERIFIED_PRODUCT_PAGE",
+        }]
     return merged
 
 
@@ -259,14 +303,93 @@ def _enrich_details(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [_merge_detail(row, detail_by_url.get(row.get("product_url"), {})) for row in rows]
 
 
+def parse_picmi_results(html: str) -> list[dict[str, str]]:
+    """Trade name, PI and CMI links and active ingredients, one entry per table row."""
+    soup = BeautifulSoup(html, "html.parser")
+    entries = []
+    for row in soup.select("div.tblResults tbody tr"):
+        cells = row.find_all("td")
+        if len(cells) < 3:
+            continue
+        links = {}
+        for anchor in cells[1].find_all("a", href=True):
+            kind = _clean_text(anchor.get_text()).upper()
+            if kind in ("PI", "CMI"):
+                links[kind] = urljoin(PICMI_SEARCH_URL, anchor["href"])
+        entries.append({
+            "trade_name": _clean_text(cells[0].get_text(" ")),
+            "ingredients": _clean_text(cells[2].get_text(" ")),
+            "pi_url": links.get("PI", ""),
+            "cmi_url": links.get("CMI", ""),
+        })
+    return entries
+
+
+def _picmi_rows(substance: str, entries: list[dict[str, str]], source_url: str) -> list[dict[str, Any]]:
+    """One row per trade name; "Sevelamer Lupin" and "SEVELAMER LUPIN" are one product."""
+    molecule = _molecule_words(substance)
+    grouped: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        if not all(token in f"{entry['trade_name']} {entry['ingredients']}".lower() for token in molecule):
+            continue
+        row = grouped.setdefault(entry["trade_name"].upper(), {
+            "substance": entry["ingredients"],
+            "active_substance": entry["ingredients"],
+            "source_substance": entry["ingredients"],
+            "product": entry["trade_name"],
+            "company": "",
+            "country": "Australia",
+            "region": "AU",
+            "status": "PI/CMI published by TGA",
+            "registration_number": "",
+            "source": "TGA Australia",
+            "source_url": source_url,
+            "product_url": source_url,
+            "url": source_url,
+            "document_type": "TGA PI/CMI repository entry",
+        })
+        if entry["pi_url"] and not row.get("smpc_url"):
+            row["smpc_url"] = entry["pi_url"]
+        if entry["cmi_url"] and not row.get("pil_url"):
+            row["pil_url"] = entry["cmi_url"]
+        if len(entry["ingredients"]) > len(row["active_substance"]):
+            row["active_substance"] = row["source_substance"] = row["substance"] = entry["ingredients"]
+    return list(grouped.values())
+
+
+def _picmi_search(substance: str, limit: int) -> list[dict[str, Any]]:
+    # A combination is found through its first molecule and kept only when
+    # the ingredients name every one of them.
+    words = _molecule_words(substance)
+    for term in dict.fromkeys([substance, base_name(substance), *words[:1]]):
+        response = requests.get(
+            PICMI_SEARCH_URL,
+            params={"OpenForm": "", "t": "", "q": term},
+            timeout=REQUEST_TIMEOUT,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        response.raise_for_status()
+        rows = _picmi_rows(substance, parse_picmi_results(response.text), response.url)
+        if rows:
+            return rows[:limit]
+    return []
+
+
 def run_tga_search(substance: str, limit: int = MAX_RESULTS) -> list[dict[str, Any]]:
     try:
         html, source_url = _fetch_search_results(substance)
+        rows = _parse_artg_search_results(html, substance, source_url)[:limit]
+        if rows:
+            return _enrich_details(rows)
     except requests.RequestException as exc:
         logger.warning("TGA ARTG search unavailable: %s", exc)
-        return _fallback_rows(substance, limit)
 
-    rows = _parse_artg_search_results(html, substance, source_url)[:limit]
-    if not rows:
+    # The ARTG search answers browsers but not scripts. TGA's PI/CMI
+    # repository does, and lists every product with a published PI or CMI
+    # (all prescription medicines) with its active ingredients. It does not
+    # name the sponsor, so the company stays empty rather than guessed.
+    try:
+        return _picmi_search(substance, limit)
+    except requests.RequestException as exc:
+        logger.warning("TGA PI/CMI repository unavailable: %s", exc)
         return _fallback_rows(substance, limit)
-    return _enrich_details(rows)

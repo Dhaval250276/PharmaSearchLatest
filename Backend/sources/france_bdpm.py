@@ -119,6 +119,15 @@ def run_france_bdpm_search(substance, limit=1000):
                 "source_url": "https://www.data.gouv.fr/fr/datasets/base-de-donnees-publique-des-medicaments-base-officielle/",
                 "product_url": product_url,
                 "url": product_url,
+                # The BDPM product page is the French product information: it
+                # carries the "Resume des caracteristiques du produit" -- the
+                # SmPC -- and the "Notice", which is the patient leaflet, both
+                # rendered on the page itself under a CIS unique to the
+                # product. Without them a French row has no document of its own
+                # and borrows another country's label.
+                "smpc_url": product_url,
+                "pil_url": product_url,
+                "document_type": "BDPM product information (RCP and notice)",
             }
         )
         if len(results) >= limit:

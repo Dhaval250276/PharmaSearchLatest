@@ -29,9 +29,14 @@ class RegulatoryProduct:
     product_name: str
     country: str
     region: str = ""
+    authorisation_scope: str = ""
     marketing_authorisation_holder: str = ""
+    applicant_sponsor: str = ""
     manufacturer_name: str = ""
     manufacturer_country: str = ""
+    manufacturer_address: str = ""
+    manufacturer_role: str = ""
+    batch_release_manufacturer: str = ""
     strength: str = ""
     dosage_form: str = ""
     route: str = ""
@@ -49,6 +54,9 @@ class RegulatoryProduct:
     document_type: str = ""
     last_checked: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
+    manufacturers: list[dict[str, Any]] = field(default_factory=list)
+    documents: list[dict[str, Any]] = field(default_factory=list)
+    evidence: list[dict[str, Any]] = field(default_factory=list)
 
     def to_source_record(self) -> dict[str, Any]:
         """Return the legacy source record shape used by search/export today."""
@@ -57,8 +65,10 @@ class RegulatoryProduct:
             "substance": self.active_substance,
             "product": self.product_name,
             "company": self.marketing_authorisation_holder,
+            "applicant_sponsor": self.applicant_sponsor,
             "country": self.country,
             "region": self.region,
+            "authorisation_scope": self.authorisation_scope,
             "status": self.status,
             "strength": self.strength,
             "dosage_form": self.dosage_form,
@@ -69,6 +79,12 @@ class RegulatoryProduct:
             "expiry_date": self.expiry_date,
             "manufacturer_name": self.manufacturer_name,
             "manufacturer_country": self.manufacturer_country,
+            "manufacturer_address": self.manufacturer_address,
+            "manufacturer_role": self.manufacturer_role,
+            "batch_release_manufacturer": self.batch_release_manufacturer,
+            "manufacturers": self.manufacturers,
+            "documents": self.documents,
+            "evidence": self.evidence,
             "smpc_url": self.smpc_url,
             "pil_url": self.pil_url,
             "assessment_report_url": self.assessment_report_url,

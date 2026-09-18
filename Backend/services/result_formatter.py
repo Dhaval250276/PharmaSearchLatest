@@ -3,7 +3,7 @@ import re
 
 from repository import region_for_country
 from services.english_normalizer import english_row
-from services.field_availability import field_value
+from services.field_availability import drugs_at_fda_url, field_value
 from services.therapeutic_category import short_therapeutic_category
 from sources.parser import (
     clean_product_name,
@@ -93,8 +93,7 @@ def smpc_document_url(item: dict[str, Any]) -> str:
 def pil_or_assessment_url(item: dict[str, Any]) -> str:
     smpc_url = smpc_document_url(item)
     pil_url = distinct_url(item.get("pil_url", ""), smpc_url)
-    assessment_url = distinct_url(item.get("assessment_report_url", ""), smpc_url, pil_url)
-    return first_value(pil_url, assessment_url)
+    return first_value(pil_url, assessment_report_url(item))
 
 
 def pil_document_url(item: dict[str, Any]) -> str:
@@ -105,7 +104,31 @@ def pil_document_url(item: dict[str, Any]) -> str:
 def assessment_report_url(item: dict[str, Any]) -> str:
     smpc_url = smpc_document_url(item)
     pil_url = item.get("pil_url", "")
-    return distinct_url(item.get("assessment_report_url", ""), smpc_url, pil_url)
+    return distinct_url(item.get("assessment_report_url", ""), smpc_url, pil_url) or drugs_at_fda_url(item)
+
+
+HOLDER_SUFFIX = "(licence holder)"
+
+
+def manufacturer_or_holder(item: dict[str, Any], manufacturer: str) -> str:
+    """The maker, or the licence holder said to be one.
+
+    Most registers publish only the marketing authorisation holder: Italy names
+    Organon for Atozet, not the plant that makes it. Leaving the column empty
+    sends a buyer to look the company up elsewhere, and filling it silently
+    would present a holder as a factory, so the holder is named and labelled.
+    """
+    from services.vendor_display import clean_manufacturer
+
+    # Names from a structured list or a leaflet can carry addresses and
+    # sentences; the column shows the names.
+    manufacturer = clean_manufacturer(manufacturer)
+    if manufacturer:
+        return manufacturer
+    holder = first_value(
+        company_display_value(item), item.get("company"), item.get("mah"), item.get("ma_holder")
+    )
+    return f"{holder} {HOLDER_SUFFIX}" if holder else ""
 
 
 def manufacturer_name_value(item: dict[str, Any]) -> str:
@@ -159,6 +182,17 @@ def manufacturer_country_value(item: dict[str, Any]) -> str:
     return manufacturer_country
 
 
+def structured_manufacturer_value(item: dict[str, Any], field: str) -> str:
+    values = []
+    for manufacturer in item.get("manufacturers") or []:
+        if not isinstance(manufacturer, dict):
+            continue
+        value = first_value(manufacturer.get(field))
+        if value and value not in values:
+            values.append(value)
+    return "; ".join(values)
+
+
 def formatted_result_row(item: dict[str, Any], searched_substance: str = "") -> dict[str, str]:
     item = english_row(item)
     product = clean_brand_name(item.get("product", ""))
@@ -188,10 +222,30 @@ def formatted_result_row(item: dict[str, Any], searched_substance: str = "") -> 
                 item.get("atc_code"),
             )
         ),
-        "company": field_value(item, "company", company_display_value(item)),
+        # The commercial company where a registry names one apart from the
+        # holder, otherwise the holder: an empty Company column on every row
+        # hid the company a vendor is looking for.
+        "company": field_value(item, "company", company_display_value(item), company),
         "ma_holder": field_value(item, "company", company),
-        "manufacturer_name": field_value(item, "manufacturer_name", manufacturer_name_value(item)),
-        "manufacturer_country": field_value(item, "manufacturer_country", manufacturer_country_value(item)),
+        "manufacturer_name": field_value(
+            item,
+            "manufacturer_name",
+            manufacturer_or_holder(
+                item,
+                first_value(structured_manufacturer_value(item, "name"), manufacturer_name_value(item)),
+            ),
+        ),
+        "manufacturer_country": field_value(
+            item, "manufacturer_country", structured_manufacturer_value(item, "country"), manufacturer_country_value(item)
+        ),
+        "manufacturer_address": field_value(
+            item, "manufacturer_address", structured_manufacturer_value(item, "address")
+        ),
+        "manufacturer_role": field_value(
+            item, "manufacturer_role", structured_manufacturer_value(item, "role")
+        ),
+        "applicant_sponsor": display_value(item.get("applicant_sponsor")),
+        "verification_status": display_value(item.get("verification_status"), "UNVERIFIED"),
         "registration_status": display_value(item.get("status")),
         "registration_number": display_value(
             item.get("registration_number"),
@@ -200,8 +254,7 @@ def formatted_result_row(item: dict[str, Any], searched_substance: str = "") -> 
         "registration_date": display_value(
             item.get("registration_date"),
             item.get("approval_date"),
-            item.get("created"),
-            item.get("last_checked"),
+            item.get("authorisation_date"),
         ),
         "country": display_value(country),
         "region": display_value(item.get("region"), region_for_country(country)),

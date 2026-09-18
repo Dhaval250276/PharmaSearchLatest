@@ -124,7 +124,17 @@ def _has_cyrillic(text: str) -> bool:
 
 
 def _has_untranslated_non_latin(text: str) -> bool:
-    return bool(re.search(r"[^\x00-\x7F]", text)) and not _has_cyrillic(text)
+    """Letters of another script; symbols such as ®, µ or € are not a language."""
+    if _has_cyrillic(text):
+        return False
+    return any(
+        ord(char) > 0x7F
+        and unicodedata.category(char).startswith("L")
+        and "LATIN" not in unicodedata.name(char, "")
+        # The micro sign, which NFKD turns into Greek mu: "5 µg".
+        and char not in "µμ"
+        for char in text
+    )
 
 
 def _strip_latin_accents(text: str) -> str:
@@ -185,4 +195,8 @@ def english_row(row: dict[str, Any]) -> dict[str, Any]:
     ):
         if field in normalized:
             normalized[field] = english_text(normalized[field])
-    return normalized
+    # Imported here: vendor_display is presentation, and english_text is also
+    # used on its own where no row is being shown.
+    from services.vendor_display import vendor_row
+
+    return vendor_row(normalized)

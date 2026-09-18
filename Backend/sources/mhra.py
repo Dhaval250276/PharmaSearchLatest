@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from core.logging_config import get_logger
+from sources.document_links import dead_links
 from sources.mhra_document_parser import enrich_mhra_document_metadata
 from sources.parser import (
     clean_product_name,
@@ -27,7 +28,119 @@ MHRA_MAX_WORKERS = 6
 logger = get_logger(__name__)
 
 
+# Seconds a live search spends checking document links before showing them.
+LINK_CHECK_DEADLINE_SECONDS = 8
+DOCUMENT_LINK_FIELDS = ("smpc_url", "pil_url", "assessment_report_url")
+
+
+def _without_dead_documents(results):
+    """Drop links to PDFs MHRA has deleted, before related documents are shared.
+
+    MHRA's index still lists some files it has replaced. Checking before the
+    merge lets a licence's current document fill the gap the deleted one
+    leaves; a record whose only document is gone is dropped when another
+    record for the same licence remains.
+    """
+    urls = {
+        item.get(field)
+        for item in results
+        for field in ("url", "product_url", *DOCUMENT_LINK_FIELDS)
+        if item.get(field)
+    }
+    dead = dead_links(urls, deadline_seconds=LINK_CHECK_DEADLINE_SECONDS)
+    if not dead:
+        return results
+    kept = []
+    for item in results:
+        had_document = any(item.get(field) for field in DOCUMENT_LINK_FIELDS)
+        for field in ("url", "product_url", *DOCUMENT_LINK_FIELDS):
+            if item.get(field) in dead:
+                item[field] = ""
+        if had_document and not any(item.get(field) for field in DOCUMENT_LINK_FIELDS):
+            item["dead_document"] = True
+        kept.append(item)
+    licences_with_documents = {
+        item.get("registration_number")
+        for item in kept
+        if not item.get("dead_document")
+    }
+    logger.info("MHRA: %s of %s document links no longer exist", len(dead), len(urls))
+    return [
+        item for item in kept
+        if not (item.get("dead_document") and item.get("registration_number") in licences_with_documents)
+    ]
+
+
+_COMPANY_NUMBER = re.compile(r"^(?:PLGB|PLNI|PLPI|PL|THRGB|THRNI|THR)\s*(\d{5})")
+_HOLDER_WORDS = re.compile(r"\b(?:ltd|limited|plc|gmbh|s\.?a\.?|b\.?v\.?|inc|llc|ag|a/s|s\.?r\.?l|s\.?p\.?a|ab|oy|kft|d\.?o\.?o|sl|pharma\w*|laborator\w*|healthcare)\b", re.I)
+_holder_cache: dict[str, object] = {}
+
+
+def _holders_by_company_number(max_age_seconds=3600):
+    """The holder MHRA's records name for each company number.
+
+    A UK licence number is PL <company number>/<product number>, and the
+    company number belongs to one holder. Search results often come without
+    the holder's name; MHRA's own documents for the same company number,
+    already stored, give it. A company number whose stored names disagree, or
+    that no clean company name backs twice, is left unnamed.
+    """
+    import time
+
+    from repository import get_connection
+    from services.vendor_display import LEAFLET_WORDS
+
+    if _holder_cache.get("at", 0) > time.time() - max_age_seconds:
+        return _holder_cache["holders"]
+    counts = {}
+    try:
+        with get_connection() as conn:
+            stored = conn.execute(
+                "SELECT registration_number, company FROM product_details WHERE source = 'MHRA' AND company != ''"
+            ).fetchall()
+    except Exception:
+        logger.exception("MHRA: stored holders unavailable")
+        stored = []
+    for registration, company in stored:
+        match = _COMPANY_NUMBER.match(_format_pl_number(registration))
+        # "Generics [UK] Limited t/a Mylan", later "t/a Viatris": one holder
+        # under two trading names.
+        name = re.split(r"\s+t/a\s+", " ".join(str(company or "").split()), flags=re.I)[0].rstrip(" .")
+        if not match or not name or len(name) > 80 or LEAFLET_WORDS.search(name) or not _HOLDER_WORDS.search(name):
+            continue
+        key = re.sub(r"\W+", "", name.lower().replace("limited", "ltd"))
+        bucket = counts.setdefault(match.group(1), {})
+        entry = bucket.setdefault(key, [0, name])
+        entry[0] += 1
+    holders = {}
+    for number, names in counts.items():
+        ranked = sorted(names.values(), key=lambda item: -item[0])
+        total = sum(count for count, _ in ranked)
+        if ranked[0][0] >= 2 and ranked[0][0] >= 0.8 * total:
+            holders[number] = ranked[0][1]
+    _holder_cache.update(at=time.time(), holders=holders)
+    return holders
+
+
+def _with_holders(results):
+    holders = None
+    for item in results:
+        if str(item.get("company") or "").strip():
+            continue
+        match = _COMPANY_NUMBER.match(_format_pl_number(item.get("registration_number")))
+        if not match:
+            continue
+        if holders is None:
+            holders = _holders_by_company_number()
+        holder = holders.get(match.group(1))
+        if holder:
+            item["company"] = holder
+            item["company_source"] = f"MHRA records for company number {match.group(1)}"
+    return results
+
+
 def _finalize_mhra_results(results, enrich_documents=False):
+    results = _with_holders(_without_dead_documents(results))
     merged_results = _sort_document_results(_merge_related_document_urls(results))
     if enrich_documents:
         return enrich_mhra_document_metadata(merged_results)
@@ -137,8 +250,32 @@ def _company_from_highlights(record, registration_number):
     return ""
 
 
+def _substance_from_title(title, substance):
+    """The actives a document title names, for records with no substance field.
+
+    Assessment reports often carry no substance_name, and filing them under the
+    searched molecule turns "Amlodipine/Valsartan 5 mg/80 mg Tablets" into an
+    amlodipine product. The title states the actives either in brackets --
+    "(amlodipine besilate)" -- or as the name ahead of the first strength.
+    """
+    query_tokens = set(_normalized_tokens(substance))
+    text = str(title or "")
+    for bracketed in re.findall(r"\(([^()]*)\)", text):
+        if query_tokens & set(_normalized_tokens(bracketed)) and not re.search(r"\d", bracketed):
+            return bracketed.strip()
+    name = re.split(r"\d|\s-\s", text, maxsplit=1)[0].strip(" ,-")
+    if (
+        query_tokens & set(_normalized_tokens(name))
+        and re.search(r"/|\+|\band\b|\bwith\b", name, re.IGNORECASE)
+    ):
+        return name
+    return substance
+
+
 def _extract_mhra_json_record(record, substance):
     active_substances = _active_substances(record)
+    if not active_substances:
+        active_substances = [_substance_from_title(record.get("title"), substance)]
     product = clean_product_name(record.get("product_name") or record.get("title") or "")
     pl_numbers = record.get("pl_number") or []
     if isinstance(pl_numbers, str):
@@ -168,7 +305,9 @@ def _extract_mhra_json_record(record, substance):
         "dosage_form": extract_dosage_form(product),
         "pack_size": extract_pack_size(product),
         "registration_number": registration_number,
-        "registration_date": record.get("created", ""),
+        # MHRA's index has no authorisation date. "created" is when this PDF
+        # was indexed, which is not a registration date.
+        "registration_date": "",
         "document_type": document_type,
         "source": "MHRA",
         "source_url": f"{MHRA_BASE_URL}/search/?search={quote(substance)}&page=1",

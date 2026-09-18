@@ -104,7 +104,7 @@ def enrichment_metadata(row: dict[str, Any]) -> dict[str, str]:
     elif missing:
         status = "Connector result; AI enrichment recommended"
     else:
-        status = "Connector result verified"
+        status = "Connector result complete; evidence verification required"
 
     next_action = ""
     if missing:
