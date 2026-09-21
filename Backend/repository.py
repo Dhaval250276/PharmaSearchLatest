@@ -331,6 +331,19 @@ def _create_and_migrate_schema() -> None:
                 checked_at TEXT NOT NULL
             );
 
+            -- A live search that stored every row it found for a molecule.
+            -- source_runs says a source was asked; this says the store kept
+            -- the answer, which is what lets the next search skip asking.
+            CREATE TABLE IF NOT EXISTS live_saves (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                query TEXT NOT NULL,
+                rows_saved INTEGER NOT NULL DEFAULT 0,
+                saved_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_live_saves_source_query
+            ON live_saves(source, query);
+
             CREATE INDEX IF NOT EXISTS idx_roles_product_detail
             ON registration_organization_roles(product_detail_id);
             CREATE INDEX IF NOT EXISTS idx_documents_product_detail
@@ -1145,6 +1158,19 @@ def save_source_run(
                 source, query, status, records_found, error[:1000], evidence_url,
                 datetime.now(timezone.utc).isoformat(),
             ),
+        )
+
+
+def save_live_saves(query: str, rows_by_source: dict[str, int]) -> None:
+    """Record that a live search stored every row each source returned for ``query``."""
+    if not rows_by_source:
+        return
+    initialize_database()
+    now = datetime.now(timezone.utc).isoformat()
+    with get_connection() as conn:
+        conn.executemany(
+            "INSERT INTO live_saves(source, query, rows_saved, saved_at) VALUES (?, ?, ?, ?)",
+            [(source, query.strip(), int(count), now) for source, count in rows_by_source.items()],
         )
 
 

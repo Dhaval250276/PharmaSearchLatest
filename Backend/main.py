@@ -294,6 +294,7 @@ def api_search(
     country: str = "",
     region: str = "",
     source: str = "",
+    refresh: bool = False,
 ):
     if not substance.strip():
         return {
@@ -302,6 +303,7 @@ def api_search(
             "results": [],
             "message": "Please enter the active substance name.",
         }
+    freshness = []
     results, _, _ = filtered_search_results(
         substance,
         live=live,
@@ -309,8 +311,18 @@ def api_search(
         country=country,
         region=region,
         source=source,
+        force_live=refresh,
+        freshness_report=freshness,
     )
-    return {"substance": substance, "count": len(results), "results": results}
+    return {
+        "substance": substance,
+        "count": len(results),
+        "results": results,
+        "answered_from_store": [
+            {"source": item.source, "checked_at": item.checked_at}
+            for item in freshness if not item.ask_live
+        ],
+    }
 
 
 @app.get("/search/{substance:path}")
@@ -318,8 +330,9 @@ def search_saved(
     substance: str,
     live: bool = True,
     sources: list[str] = Query(default=DEFAULT_SOURCES),
+    refresh: bool = False,
 ):
-    return combined_search(substance, include_live=live, sources=sources)
+    return combined_search(substance, include_live=live, sources=sources, force_live=refresh)
 
 
 @app.get("/search_jobs/start")
@@ -327,10 +340,11 @@ def start_search_job(
     substance: str,
     sources: list[str] = Query(default=DEFAULT_SOURCES),
     mode: str = "fast",
+    refresh: bool = False,
 ):
     if not substance.strip():
         return RedirectResponse(url="/", status_code=303)
-    job_id = create_search_job(substance, sources, mode=mode)
+    job_id = create_search_job(substance, sources, mode=mode, refresh=refresh)
     return RedirectResponse(url=f"/search_jobs/{job_id}", status_code=303)
 
 
@@ -739,6 +753,7 @@ def search_page(
     sort_dir: str = "asc",
     search_mode: str = "fast",
     export_all: bool = False,
+    refresh: bool = False,
 ):
     if not substance.strip():
         return HTMLResponse(
@@ -813,6 +828,7 @@ def search_page(
         live_sources = [
             item for item in selected_for_live if item in FAST_BACKGROUND_SOURCES
         ]
+    freshness = []
     rows, selected_sources, all_rows = filtered_search_results(
         substance,
         live=effective_live,
@@ -840,6 +856,8 @@ def search_page(
         live_timeout=live_timeout,
         live_sources=live_sources,
         include_lookup_rows=True,
+        force_live=refresh,
+        freshness_report=freshness,
     )
     SEARCH_RESULT_CACHE[
         result_cache_key(
@@ -1231,6 +1249,22 @@ def search_page(
             + (f' <span class="text-muted">{h(copyright_line)}</span>' if copyright_line else "")
             + "</p>"
         )
+    # Sources the store answered for, because they were checked for this
+    # molecule recently and every row they found is stored. The reader can
+    # still ask them all again.
+    from_store = [item for item in freshness if not item.ask_live]
+    store_note = ""
+    if from_store:
+        oldest = min(item.checked_at for item in from_store)[:10]
+        refresh_href = "/search_page?" + urlencode(common_query + [("refresh", "true")])
+        store_note = (
+            '<p class="alert alert-light border py-2 mb-2 small">'
+            f'<strong>{len(from_store)} source{"s" if len(from_store) != 1 else ""} answered from the store</strong>, '
+            f'each checked for this molecule since {h(oldest)}: '
+            f'{h(", ".join(sorted(item.source for item in from_store)))}. '
+            f'<a href="{h(refresh_href)}">Check them live now</a> (slower).'
+            "</p>"
+        )
     eu_coverage_note = ""
     if region == "EU":
         note_class = "success" if len(eu_countries_in_results) == len(EU_COUNTRIES) else "warning"
@@ -1333,6 +1367,7 @@ def search_page(
         <p class="small">Active filters: {active_filter_summary}</p>
         {capped_note}
         {view_only_note}
+        {store_note}
         {eu_coverage_note}
         {registry_links_section}
         <div class="d-flex justify-content-between align-items-center mb-3">

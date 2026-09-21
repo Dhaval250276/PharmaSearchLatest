@@ -16,10 +16,15 @@ from repository import (
     save_search_job,
     save_search_job_progress,
     save_search_job_results,
+    search_medicines,
+    search_product_details,
 )
+from services.freshness import source_freshness
 from services.search_pipeline import (
     parse_sources,
+    row_relevant_to_substance,
     split_searched_strength,
+    store_live_rows,
 )
 from services.connector_health import record_source_health
 from sources.search_engine import SINGLE_TERM_SOURCES
@@ -114,6 +119,8 @@ class SearchJob:
     sources: list[str]
     mode: str = "fast"
     status: str = "queued"
+    # Ask every source live, even those the store could answer for.
+    refresh: bool = False
     created_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     started_at: str = ""
     finished_at: str = ""
@@ -150,7 +157,9 @@ def source_skipped_in_mode(source: str, mode: str) -> bool:
     return mode != "full" and source not in FAST_BACKGROUND_SOURCES
 
 
-def create_search_job(substance: str, sources: list[str] | str | None, mode: str = "fast") -> str:
+def create_search_job(
+    substance: str, sources: list[str] | str | None, mode: str = "fast", refresh: bool = False
+) -> str:
     selected_sources = parse_sources(sources)
     selected_sources = order_sources_for_job(selected_sources)
     normalized_mode = "full" if mode == "full" else "fast"
@@ -173,6 +182,7 @@ def create_search_job(substance: str, sources: list[str] | str | None, mode: str
         substance=split_searched_strength(clean_search_term(substance))[0],
         sources=selected_sources,
         mode=normalized_mode,
+        refresh=refresh,
         progress=progress,
     )
     with _lock:
@@ -349,12 +359,42 @@ def _run_source_for_job(job_id: str, substance: str, source: str) -> tuple[str, 
         return source, [], str(exc)
 
 
+def _answer_from_store(job_id: str, substance: str, sources: list[str]) -> list[str]:
+    """Fill in the sources the store can answer for; return the ones to ask live.
+
+    The same rule as a page search (services/freshness.py): a source checked
+    for this molecule recently, whose answer the store kept, is not asked again.
+    """
+    try:
+        stored = [
+            row for row in search_product_details(substance) + search_medicines(substance)
+            if row_relevant_to_substance(row, substance)
+        ]
+        decisions = source_freshness(substance, sources)
+    except Exception:
+        logger.exception("Search job %s could not read the store; asking every source", job_id)
+        return sources
+    ask = []
+    for decision in decisions:
+        if decision.ask_live:
+            ask.append(decision.source)
+            continue
+        rows = [dict(row) for row in stored if row.get("source") == decision.source]
+        _append_results(job_id, rows)
+        _set_source_progress(
+            job_id, decision.source, "done", records=len(rows),
+            error=f"From the store, checked {decision.checked_at[:10]}",
+        )
+    return ask
+
+
 def _run_job(job_id: str) -> None:
     with _lock:
         job = _jobs.get(job_id)
         if not job:
             return
         substance = job.substance
+        refresh = job.refresh
         sources = [
             source
             for source in job.sources
@@ -362,6 +402,8 @@ def _run_job(job_id: str) -> None:
         ]
     _set_job_status(job_id, "running")
     try:
+        if sources and not refresh:
+            sources = _answer_from_store(job_id, substance, sources)
         if not sources:
             _set_job_status(job_id, "done", finished=True)
             return
@@ -386,6 +428,10 @@ def _run_job(job_id: str) -> None:
                     _set_source_progress(job_id, source_name, status, error=error)
                     continue
                 _append_results(job_id, rows)
+                try:
+                    store_live_rows(substance, rows)
+                except Exception:
+                    logger.exception("Search job %s could not store the %s rows", job_id, source_name)
                 _set_source_progress(
                     job_id, source_name, "done", records=len(rows),
                     available=max((int(row.get("available_total") or 0) for row in rows), default=0),

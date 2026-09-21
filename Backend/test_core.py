@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 import os
 import tempfile
 from pathlib import Path
@@ -81,7 +82,9 @@ from services.search_pipeline import (
     suppress_generic_lookup_rows,
     is_connector_lookup_fallback,
     row_relevant_to_substance,
+    store_live_rows,
 )
+from services.freshness import source_freshness
 from services.search_jobs import SLOW_SOURCES, _dedupe_rows, order_sources_for_job, source_skipped_in_mode
 from services.therapeutic_category import short_therapeutic_category
 
@@ -256,11 +259,181 @@ class LiveSourceSelectionTests(unittest.TestCase):
             sources=["FDA", "MHRA"],
             live_sources=["FDA"],
             live_timeout=5,
+            force_live=True,
         )
 
         self.assertEqual(rows[0]["source"], "MHRA")
         self.assertEqual(search_substance_mock.call_args.kwargs["source_names"], ["FDA"])
 
+
+class StoreFirstFreshnessTests(unittest.TestCase):
+    """A source is asked live unless it was checked recently and the store kept its answer."""
+
+    def setUp(self):
+        self._directory = tempfile.TemporaryDirectory()
+        self._db = patch.object(repository, "DB_PATH", Path(self._directory.name) / "fresh.db")
+        self._db.start()
+        repository.initialize_database()
+
+    def tearDown(self):
+        self._db.stop()
+        self._directory.cleanup()
+
+    def _run(self, source, status, found, days_ago=0.0, query="metformin"):
+        when = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+        with repository.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO source_runs(source, query, status, records_found, checked_at) VALUES (?, ?, ?, ?, ?)",
+                (source, query, status, found, when),
+            )
+
+    def _save(self, source, rows, days_ago=0.0, query="metformin"):
+        when = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+        with repository.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO live_saves(source, query, rows_saved, saved_at) VALUES (?, ?, ?, ?)",
+                (source, query, rows, when),
+            )
+
+    def _decision(self, source, max_age_days=7):
+        decisions = source_freshness("metformin", [source], max_age_days=max_age_days)
+        return {item.source: item for item in decisions}[source]
+
+    def test_a_source_never_checked_is_asked(self):
+        self.assertTrue(self._decision("MHRA").ask_live)
+
+    def test_a_molecule_the_source_does_not_list_is_not_asked_again(self):
+        self._run("MHRA", "NOT_PUBLISHED", 0, days_ago=1)
+        self.assertFalse(self._decision("MHRA").ask_live)
+
+    def test_presence_is_not_coverage(self):
+        # Checked, and the store may hold rows for it, but no search stored the
+        # answer and read it back: the old search saved only the page it showed.
+        self._run("MHRA", "SUCCESS", 300, days_ago=1)
+        decision = self._decision("MHRA")
+        self.assertTrue(decision.ask_live)
+        self.assertEqual(decision.reason, "answer not held in the store")
+
+    def test_a_recent_check_whose_answer_was_stored_is_not_asked(self):
+        self._run("MHRA", "SUCCESS", 12, days_ago=1)
+        self._save("MHRA", 8, days_ago=0.99)
+        decision = self._decision("MHRA")
+        self.assertFalse(decision.ask_live)
+        self.assertTrue(decision.checked_at)
+
+    def test_a_check_after_the_save_is_not_covered(self):
+        # A synonym that answered after the search stopped waiting: its rows were never stored.
+        self._save("MHRA", 8, days_ago=1)
+        self._run("MHRA", "SUCCESS", 12, days_ago=0.99)
+        self.assertTrue(self._decision("MHRA").ask_live)
+
+    def test_an_old_check_is_asked_again(self):
+        self._run("MHRA", "SUCCESS", 3, days_ago=8)
+        self._save("MHRA", 3, days_ago=7.9)
+        self.assertTrue(self._decision("MHRA").ask_live)
+
+    def test_a_failed_check_is_asked_again(self):
+        self._run("MHRA", "SUCCESS", 3, days_ago=2)
+        self._save("MHRA", 3, days_ago=1.9)
+        self._run("MHRA", "PARSER_FAILED", 0, days_ago=1)
+        self.assertTrue(self._decision("MHRA").ask_live)
+
+    def test_max_age_zero_asks_everything(self):
+        self._run("MHRA", "NOT_PUBLISHED", 0, days_ago=0.01)
+        self.assertTrue(self._decision("MHRA", max_age_days=0).ask_live)
+
+    def test_local_registers_and_view_only_sources_are_always_asked(self):
+        for source in ["AIFA Italy", "BfArM Germany"]:
+            self._run(source, "NOT_PUBLISHED", 0, days_ago=0.1)
+            self.assertTrue(self._decision(source).ask_live, source)
+
+    def test_query_matches_whatever_the_case(self):
+        self._run("MHRA", "NOT_PUBLISHED", 0, days_ago=1, query="Metformin")
+        self.assertFalse(self._decision("MHRA").ask_live)
+
+    @patch("services.search_pipeline.store_live_rows_in_background")
+    @patch("services.search_pipeline.search_substance", return_value=[])
+    @patch("services.search_pipeline.search_medicines", return_value=[])
+    @patch("services.search_pipeline.search_product_details")
+    def test_combined_search_asks_only_the_stale_sources(self, stored_mock, _medicines, live_mock, _store):
+        stored_mock.return_value = [
+            {"substance": "metformin", "product": "Metformin 500 mg tablets", "source": "MHRA",
+             "country": "United Kingdom"}
+        ]
+        self._run("MHRA", "SUCCESS", 1, days_ago=1)
+        self._save("MHRA", 1, days_ago=0.9)
+        report = []
+
+        rows = combined_search("metformin", sources=["MHRA", "Spain CIMA"], freshness_report=report)
+
+        self.assertEqual(live_mock.call_args.kwargs["source_names"], ["Spain CIMA"])
+        self.assertEqual([row["product"] for row in rows], ["Metformin 500 mg tablets"])
+        self.assertEqual({item.source: item.ask_live for item in report}, {"MHRA": False, "Spain CIMA": True})
+
+        combined_search("metformin", sources=["MHRA", "Spain CIMA"], force_live=True)
+        self.assertEqual(live_mock.call_args.kwargs["source_names"], ["MHRA", "Spain CIMA"])
+
+    @patch("services.search_pipeline.store_live_rows_in_background")
+    @patch("services.search_pipeline.search_substance")
+    @patch("services.search_pipeline.search_medicines", return_value=[])
+    @patch("services.search_pipeline.search_product_details", return_value=[])
+    def test_combined_search_skips_the_live_call_when_the_store_answers_everything(
+        self, _stored, _medicines, live_mock, store_mock
+    ):
+        self._run("MHRA", "NOT_PUBLISHED", 0, days_ago=1)
+
+        combined_search("metformin", sources=["MHRA"])
+
+        live_mock.assert_not_called()
+        store_mock.assert_called_once_with("metformin", [])
+
+    def _saves(self):
+        with repository.get_connection() as conn:
+            return {row[0]: row[1] for row in conn.execute("SELECT source, rows_saved FROM live_saves")}
+
+    def test_store_live_rows_keeps_the_molecule_and_logs_what_came_back(self):
+        rows = [
+            {"substance": "metformin", "product": "Metformin 500 mg tablets", "source": "MHRA",
+             "country": "United Kingdom", "registration_number": "PL 1"},
+            # A full-text hit for another molecule is not stored under this one.
+            {"substance": "metformin", "product": "Amlodipine 5 mg tablets", "source": "MHRA",
+             "country": "United Kingdom", "registration_number": "PL 2"},
+            {"substance": "metformin", "product": "Metformin Heumann", "source": "BfArM Germany",
+             "country": "Germany", "registration_number": "1", "view_only": True},
+        ]
+
+        counts = store_live_rows("metformin", rows)
+
+        self.assertEqual(counts, {"MHRA": 1})
+        self.assertEqual(self._saves(), {"MHRA": 1})
+        with repository.get_connection() as conn:
+            products = [
+                row[0] for row in conn.execute(
+                    "SELECT product FROM product_details WHERE registration_number IN ('PL 1', 'PL 2', '1')"
+                )
+            ]
+        self.assertEqual(products, ["Metformin 500 mg tablets"])
+
+    def test_a_source_that_answered_only_about_other_molecules_holds_nothing(self):
+        rows = [{"substance": "metformin", "product": "Amlodipine 5 mg tablets", "source": "MHRA",
+                 "country": "United Kingdom", "registration_number": "PL 2"}]
+
+        self.assertEqual(store_live_rows("metformin", rows), {"MHRA": 0})
+        self.assertEqual(self._saves(), {"MHRA": 0})
+
+    def test_a_source_the_store_cannot_hold_row_for_row_is_not_logged(self):
+        # MHRA shows the SmPC and the leaflet of one licence as two rows; the
+        # store keeps one row for the licence. Read back, one is missing, so
+        # the store never answers for MHRA with half the rows.
+        spc = {"substance": "metformin", "product": "Metformin 500 mg tablets", "source": "MHRA",
+               "country": "United Kingdom", "registration_number": "PL 1",
+               "product_url": "https://mhra.test/spc", "document_type": "SPC"}
+        pil = dict(spc, product_url="https://mhra.test/pil", document_type="PIL")
+
+        counts = store_live_rows("metformin", [spc, pil])
+
+        self.assertEqual(counts, {})
+        self.assertEqual(self._saves(), {})
 
 class SearchPageFilterTests(unittest.TestCase):
     def test_every_result_column_has_a_header_filter(self):

@@ -1,9 +1,11 @@
 import re
+import threading
 from typing import Any
 from urllib.parse import quote
 
 from repository import (
     clean_search_term,
+    save_live_saves,
     save_product_details,
     search_medicines,
     search_product_details,
@@ -13,10 +15,14 @@ from sources.ema import EU_COUNTRIES
 from sources.mhra_document_parser import enrich_mhra_document_metadata
 from sources.parser import clean_product_name
 from sources.search_engine import LIVE_SEARCH_TIMEOUT_SECONDS, search_substance
+from core.logging_config import get_logger
 from services.ai_enrichment import attach_ai_enrichment_metadata
+from services.freshness import SourceFreshness, covered_sources, source_freshness
 from services.harvest_vocabulary import is_combination, molecule_group_key
 from services.regulatory_dates import parse_regulatory_date
 from services.result_formatter import formatted_result_row
+
+logger = get_logger(__name__)
 
 
 DEFAULT_SOURCES = [
@@ -1280,6 +1286,8 @@ def combined_search(
     sources: list[str] | None = None,
     live_sources: list[str] | None = None,
     live_timeout: int | None = None,
+    force_live: bool = False,
+    freshness_report: list[SourceFreshness] | None = None,
 ) -> list[dict[str, Any]]:
     rows = []
     seen = set()
@@ -1299,11 +1307,20 @@ def combined_search(
 
     if include_live:
         selected_live_sources = parse_sources(live_sources) if live_sources is not None else selected_sources
-        for item in search_substance(
+        if not force_live:
+            # Store first: a source checked recently whose answer the store
+            # kept is not asked again. See services/freshness.py.
+            decisions = source_freshness(substance, selected_live_sources)
+            if freshness_report is not None:
+                freshness_report.extend(decisions)
+            selected_live_sources = [item.source for item in decisions if item.ask_live]
+        live_items = search_substance(
             substance,
             source_names=selected_live_sources,
             timeout_seconds=live_timeout or LIVE_SEARCH_TIMEOUT_SECONDS,
-        ):
+        ) if selected_live_sources else []
+        store_live_rows_in_background(substance, live_items)
+        for item in live_items:
             if is_connector_lookup_fallback(item):
                 continue
             key = result_key(item)
@@ -1318,6 +1335,61 @@ def combined_search(
                 rows.append(item)
 
     return sort_rows(propagate_molecule_fields(rows), selected_sources)
+
+
+_live_store_lock = threading.Lock()
+
+
+def store_live_rows(substance: str, items: list[dict[str, Any]]) -> dict[str, int]:
+    """Keep every row a live search found, so the next search need not ask.
+
+    Only rows about the molecule are kept: a full-text register returns
+    products that merely mention it, and storing those under it is how
+    amlodipine came to be saved as atorvastatin. View-only rows and search
+    handoffs are refused by the save itself.
+
+    The rows are then read back from the store, and each source whose every
+    row came back is logged in live_saves -- what lets the store answer for
+    it next time (services/freshness.py). A source that answered only with
+    rows about other molecules has nothing to hold, and is logged too.
+    """
+    answered = {
+        str(item.get("source") or "")
+        for item in items
+        if not is_connector_lookup_fallback(item) and not item.get("view_only")
+        and str(item.get("connector_mode") or "").strip().lower() != "manual_registry"
+    }
+    keep = [
+        item for item in items
+        if not is_connector_lookup_fallback(item) and row_relevant_to_substance(item, substance)
+    ]
+    with _live_store_lock:
+        stored = save_product_details(keep) if keep else []
+        kept = [
+            item for item, saved in zip(keep, stored)
+            if saved.get("persistence_status") != "SOURCE_RUN_ONLY"
+        ]
+        with_rows = {str(item.get("source") or "") for item in kept}
+        counts = covered_sources(substance, kept)
+        counts.update({source: 0 for source in answered - with_rows})
+        save_live_saves(substance, counts)
+    return counts
+
+
+def store_live_rows_in_background(substance: str, items: list[dict[str, Any]]) -> None:
+    """Store without making the reader wait: thousands of rows take seconds."""
+    if not items:
+        return
+    # Copied here, not in the thread: the page goes on merging into these rows.
+    rows = [dict(item) for item in items]
+
+    def run() -> None:
+        try:
+            store_live_rows(substance, rows)
+        except Exception:
+            logger.exception("Could not store the live rows for %s", substance)
+
+    threading.Thread(target=run, name=f"store-live-{substance[:20]}", daemon=True).start()
 
 
 def enriched_cached_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1375,6 +1447,8 @@ def filtered_search_results(
     live_timeout: int | None = None,
     live_sources: list[str] | None = None,
     include_lookup_rows: bool = True,
+    force_live: bool = False,
+    freshness_report: list[SourceFreshness] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
     substance, searched_strength = split_searched_strength(clean_search_term(substance))
     selected_sources = parse_sources(sources)
@@ -1400,6 +1474,8 @@ def filtered_search_results(
         sources=scoped_sources,
         live_sources=scoped_live_sources,
         live_timeout=live_timeout,
+        force_live=force_live,
+        freshness_report=freshness_report,
     )
     all_rows = [
         row for row in all_rows
