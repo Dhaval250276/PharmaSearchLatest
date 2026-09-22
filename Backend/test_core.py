@@ -1,3 +1,4 @@
+import csv
 import json
 import unittest
 import zipfile
@@ -9,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 import repository
-from sources import europe_registers, national_registers
+from sources import americas_registers, europe_registers, national_registers
 from bs4 import BeautifulSoup
 
 from export_service import build_export_rows
@@ -762,13 +763,16 @@ class PlatformCoreTests(unittest.TestCase):
         self.assertEqual(rows[0]["source"], "EU National Registry")
 
     def test_country_lookup_returns_row_for_any_country(self):
-        # Brazil was the example here until ANVISA gave it a connector and its
-        # own region; Argentina still has neither.
-        rows = _country_lookup_rows("atorvastatin", country="Argentina")
+        # Brazil, then Argentina, were the example here until each gained a
+        # region; Iceland has neither a connector nor a region.
+        rows = _country_lookup_rows("atorvastatin", country="Iceland")
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["country"], "Argentina")
+        self.assertEqual(rows[0]["country"], "Iceland")
         self.assertEqual(rows[0]["region"], "Global")
         self.assertEqual(rows[0]["source"], "Regulatory Registry Lookup")
+        # A Latin American country without a connector is looked up in its region.
+        argentina = _country_lookup_rows("atorvastatin", country="Argentina")
+        self.assertEqual((argentina[0]["region"], argentina[0]["source"]), ("LA", "Latin America Generic Registry Lookup"))
 
     def test_filtered_search_adds_global_country_fallback_when_empty(self):
         rows, _, _ = filtered_search_results(
@@ -5059,6 +5063,86 @@ class EuropeRegisterTests(unittest.TestCase):
             self.assertIn(source, names)
             self.assertIn(source, sources_for_scope(DEFAULT_SOURCES, country=country))
             self.assertIn(source, sources_for_scope(DEFAULT_SOURCES, region=region))
+
+
+class MatchingVersionTests(unittest.TestCase):
+    """The shared stemmer, and indexes built under older matching rules."""
+
+    def test_ch_and_the_italian_idro_prefix_meet_the_english_spelling(self):
+        from sources.grls_russia import fold, latin
+        from sources.open_registers import inn_tokens, query_tokens
+
+        wanted = set(query_tokens("losartan + hydrochlorothiazide"))
+        for register_text in ("LOSARTAN POTASSICO/IDROCLOROTIAZIDE", "losartana potássica + hidroclorotiazida",
+                              "LOSARTAN POTASICO; HIDROCLOROTIAZIDA"):
+            self.assertTrue(wanted <= set(inn_tokens(register_text)), register_text)
+        self.assertTrue(set(query_tokens("chlorhexidine")) <= set(inn_tokens("CLORHEXIDINA DIGLUCONATO")))
+        # Russian keeps meeting English through the fold: Г for H, Х for CH.
+        for russian, english in (("Гидрохлоротиазид", "hydrochlorothiazide"), ("Гепарин", "heparin"),
+                                 ("Хлоргексидин", "chlorhexidine")):
+            self.assertEqual([fold(t) for t in inn_tokens(latin(russian))], [fold(t) for t in inn_tokens(english)], russian)
+
+    def test_an_index_built_under_older_rules_is_stale(self):
+        import time
+
+        from sources.open_registers import ITALY, MATCH_VERSION, _is_stale
+
+        fresh = {"fetched_epoch": str(time.time()), "match_version": str(MATCH_VERSION)}
+        self.assertFalse(_is_stale(ITALY, fresh))
+        self.assertTrue(_is_stale(ITALY, {**fresh, "match_version": str(MATCH_VERSION - 1)}))
+        self.assertTrue(_is_stale(ITALY, {"fetched_epoch": str(time.time())}))  # built before versions
+
+
+class LatinAmericaTests(unittest.TestCase):
+    def test_colombia_puts_a_product_back_together_from_its_rows(self):
+        header = ["expediente", "producto", "titular", "registrosanitario", "fechaexpedicion", "fechavencimiento",
+                  "estadoregistro", "descripcioncomercial", "estadocum", "atc", "viaadministracion",
+                  "principioactivo", "cantidad", "unidadmedida", "unidadreferencia", "formafarmaceutica",
+                  "nombrerol", "tiporol", "modalidad"]
+        base = {"expediente": "20048021", "producto": "COUPET 10/20 MG TABLETAS", "titular": "LAFRANCOL S.A.S.",
+                "registrosanitario": "INVIMA 2019M-0019123", "fechaexpedicion": "03/05/2019",
+                "fechavencimiento": "03/05/2029", "estadoregistro": "Vigente", "estadocum": "Activo",
+                "atc": "C10BA06", "viaadministracion": "ORAL", "unidadreferencia": "TABLETA",
+                "formafarmaceutica": "TABLETA RECUBIERTA", "modalidad": "IMPORTAR Y VENDER"}
+        rows = []
+        for pack in ("CAJA X 30 TABLETAS", "CAJA X 10 TABLETAS"):
+            for ingredient, amount in (("ROSUVASTATINA CALCICA", "20"), ("EZETIMIBA", "10")):
+                for role, name in (("FABRICANTE", "LABORATORIOS ABC"), ("IMPORTADOR", "LAFRANCOL S.A.S.")):
+                    rows.append({**base, "descripcioncomercial": pack, "principioactivo": ingredient,
+                                 "cantidad": amount, "unidadmedida": "mg", "nombrerol": name, "tiporol": role})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invima_cum.csv"
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=header)
+                writer.writeheader()
+                writer.writerows(rows)
+            records = list(americas_registers.read_colombia(americas_registers.INVIMA_COLOMBIA, path))
+        built = [row for _, row in americas_registers.build_colombia_rows(records, "2026-09-22")]
+
+        self.assertEqual(len(built), 1)
+        row = built[0]
+        self.assertEqual(row["substance"], "Rosuvastatina calcica; Ezetimiba")
+        self.assertEqual(row["strength"], "20 mg/TABLETA / 10 mg/TABLETA")
+        self.assertEqual(row["pack_size"], "CAJA X 30 TABLETAS; CAJA X 10 TABLETAS")
+        self.assertEqual(row["manufacturer_name"], "LABORATORIOS ABC")
+        self.assertIn("importer: LAFRANCOL S.A.S.", row["document_type"])
+        # Month first: 3 May, not 5 March.
+        self.assertEqual((row["registration_date"], row["expiry_date"]), ("2019-03-05", "2029-03-05"))
+        self.assertEqual(row["status"], "Current")
+        self.assertEqual(row["region"], "LA")
+        self.assertTrue(row_relevant_to_substance(row, "rosuvastatin + ezetimibe"))
+
+    def test_the_latin_america_region_includes_brazil(self):
+        from services.search_pipeline import DEFAULT_SOURCES, _country_region, filter_rows
+
+        self.assertEqual(sources_for_scope(DEFAULT_SOURCES, region="LA"), ["ANVISA Brazil", "INVIMA Colombia"])
+        self.assertEqual(sources_for_scope(DEFAULT_SOURCES, country="Colombia"), ["INVIMA Colombia"])
+        self.assertEqual((_country_region("Colombia"), _country_region("Brazil")), ("LA", "BR"))
+        rows = [{"country": "Brazil", "region": "BR", "product": "a", "source": "ANVISA Brazil"},
+                {"country": "Colombia", "region": "LA", "product": "b", "source": "INVIMA Colombia"},
+                {"country": "Italy", "region": "EU", "product": "c", "source": "AIFA Italy"}]
+        self.assertEqual([row["country"] for row in filter_rows(rows, region="LA")], ["Brazil", "Colombia"])
+        self.assertEqual([row["country"] for row in filter_rows(rows, region="BR")], ["Brazil"])
 
 if __name__ == "__main__":
     unittest.main()

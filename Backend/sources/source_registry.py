@@ -52,6 +52,7 @@ from sources.national_registers import (
     run_sukl_czech_search,
     run_urpl_poland_search,
 )
+from sources.americas_registers import run_invima_colombia_search
 from sources.europe_registers import (
     run_alims_serbia_search,
     run_bda_bulgaria_search,
@@ -207,6 +208,16 @@ CONNECTORS: list[SourceConnector] = [
         ),
         # BDA's register of medicinal products authorised for use, monthly.
         run_bda_bulgaria_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="INVIMA Colombia",
+            region="LA",
+            countries=("Colombia",),
+            supports_documents=False,
+        ),
+        # INVIMA's current marketing authorisations (CUM), on datos.gov.co.
+        run_invima_colombia_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(

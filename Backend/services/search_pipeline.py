@@ -73,6 +73,7 @@ DEFAULT_SOURCES = [
     "ALIMS Serbia",
     "Malta Medicines Authority",
     "BDA Bulgaria",
+    "INVIMA Colombia",
     "TITCK Turkey",
     "TFDA Taiwan",
     "BfArM Germany",
@@ -228,12 +229,44 @@ ASIA_COUNTRIES = [
     "Vietnam",
     "Yemen",
 ]
+LATIN_AMERICA_COUNTRIES = [
+    "Argentina",
+    "Bahamas",
+    "Barbados",
+    "Belize",
+    "Bolivia",
+    "Brazil",
+    "Chile",
+    "Colombia",
+    "Costa Rica",
+    "Cuba",
+    "Dominican Republic",
+    "Ecuador",
+    "El Salvador",
+    "Guatemala",
+    "Guyana",
+    "Haiti",
+    "Honduras",
+    "Jamaica",
+    "Mexico",
+    "Nicaragua",
+    "Panama",
+    "Paraguay",
+    "Peru",
+    "Suriname",
+    "Trinidad and Tobago",
+    "Uruguay",
+    "Venezuela",
+]
 REGIONAL_COUNTRIES = {
     "AF": AFRICA_COUNTRIES,
     "ME": MIDDLE_EAST_COUNTRIES,
     "AS": ASIA_COUNTRIES,
+    "LA": LATIN_AMERICA_COUNTRIES,
 }
-REGION_OPTIONS = ["ALL", "EU", "UK", "US", "CA", "AU", "NZ", "AF", "ME", "AS", "CH", "JP", "RU", "BR"]
+# A region's rows can carry a narrower region of their own: Brazil keeps "BR".
+REGION_MEMBERS = {"LA": {"LA", "BR"}}
+REGION_OPTIONS = ["ALL", "EU", "UK", "US", "CA", "AU", "NZ", "AF", "ME", "AS", "LA", "CH", "JP", "RU", "BR"]
 GLOBAL_COUNTRIES = [
     "Afghanistan",
     "Albania",
@@ -498,6 +531,7 @@ SOURCE_COUNTRIES = {
     "alims serbia": {"Serbia"},
     "malta medicines authority": {"Malta"},
     "bda bulgaria": {"Bulgaria"},
+    "invima colombia": {"Colombia"},
     "tfda taiwan": {"Taiwan"},
     "anvisa brazil": {"Brazil"},
     "cyprus pharmaceutical services": {"Cyprus"},
@@ -547,6 +581,7 @@ COUNTRY_SOURCE_DEFAULTS = {
     "Serbia": "ALIMS Serbia",
     "Malta": "Malta Medicines Authority",
     "Bulgaria": "BDA Bulgaria",
+    "Colombia": "INVIMA Colombia",
 }
 REGION_SOURCE_DEFAULTS = {
     "AU": "TGA Australia",
@@ -565,6 +600,7 @@ GLOBAL_LOOKUP_SOURCE = "Global Generic Registry Lookup"
 AFRICA_LOOKUP_SOURCE = "Africa Generic Registry Lookup"
 MIDDLE_EAST_LOOKUP_SOURCE = "Middle East Generic Registry Lookup"
 ASIA_LOOKUP_SOURCE = "Asia Generic Registry Lookup"
+LATIN_AMERICA_LOOKUP_SOURCE = "Latin America Generic Registry Lookup"
 LOOKUP_ONLY_SOURCE = "__regional_lookup_only__"
 GENERIC_LOOKUP_SOURCES = {
     REGISTRY_LOOKUP_SOURCE,
@@ -572,6 +608,7 @@ GENERIC_LOOKUP_SOURCES = {
     AFRICA_LOOKUP_SOURCE,
     MIDDLE_EAST_LOOKUP_SOURCE,
     ASIA_LOOKUP_SOURCE,
+    LATIN_AMERICA_LOOKUP_SOURCE,
     EU_LOOKUP_SOURCE,
 }
 REGIONAL_LIVE_SOURCES = {
@@ -596,6 +633,7 @@ REGIONAL_LIVE_SOURCES = {
     "EU": EU_NATIONAL_SOURCES,
     "US": ["FDA", "Drugs@FDA", "FDA Purple Book"],
     "RU": ["GRLS Russia"],
+    "LA": ["ANVISA Brazil", "INVIMA Colombia"],
 }
 REGIONAL_REGISTRY_URLS = {
     "Egypt": "https://edaegypt.gov.eg/",
@@ -688,6 +726,8 @@ def _country_region(country: str) -> str:
         return "RU"
     if country == "Brazil":
         return "BR"
+    if country in LATIN_AMERICA_COUNTRIES:
+        return "LA"
     if country in ASIA_COUNTRIES:
         return "AS"
     return "Global"
@@ -709,6 +749,9 @@ def _registry_lookup_row(substance: str, country: str, region_override: str = ""
     elif region_override == "AS":
         source = ASIA_LOOKUP_SOURCE
         document_type = "Generic Asia registry lookup fallback"
+    elif region_override == "LA" or region == "LA":
+        source = LATIN_AMERICA_LOOKUP_SOURCE
+        document_type = "Generic Latin America registry lookup fallback"
     elif country in EU_COUNTRIES:
         source = EU_LOOKUP_SOURCE
         document_type = "EU national lookup fallback"
@@ -795,7 +838,7 @@ def _country_lookup_rows(
         existing_countries = {
             row.get("country")
             for row in existing_rows or []
-            if row.get("region") == region and row.get("country")
+            if row.get("region") in REGION_MEMBERS.get(region, {region}) and row.get("country")
         }
         return [
             _registry_lookup_row(substance, region_country, region_override=region)
@@ -1146,7 +1189,7 @@ def filter_rows(
             continue
         if country and row.get("country") != country:
             continue
-        if region and region != "ALL" and row.get("region") != region:
+        if region and region != "ALL" and row.get("region") not in REGION_MEMBERS.get(region, {region}):
             continue
         if source and row.get("source") != source:
             continue
@@ -1311,7 +1354,7 @@ def sources_for_scope(
     if country:
         if country in COUNTRY_SOURCE_DEFAULTS:
             selected = _ensure_source(selected, COUNTRY_SOURCE_DEFAULTS[country])
-        elif country in AFRICA_COUNTRIES or country in MIDDLE_EAST_COUNTRIES or country in ASIA_COUNTRIES:
+        elif any(country in countries for countries in REGIONAL_COUNTRIES.values()):
             return [LOOKUP_ONLY_SOURCE]
         scoped = []
         for item in selected:

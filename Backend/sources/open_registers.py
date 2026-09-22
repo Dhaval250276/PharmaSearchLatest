@@ -98,6 +98,11 @@ def _fold(text: object) -> str:
     return re.sub(r"[^a-z0-9]+", " ", plain.lower())
 
 
+# The version of the matching rules (_stem and what feeds it). An index keeps
+# the version it was built under; one built under another is rebuilt.
+MATCH_VERSION = 2
+
+
 def _stem(word: str) -> str:
     """One INN word reduced to what English, Italian and Portuguese share.
 
@@ -110,8 +115,16 @@ def _stem(word: str) -> str:
         simvastatin   / sinvastatina      consonant other than b or p
         metformin     / metformina        a final e, a or o is dropped
         paracetamol   / paracetamolo
+        hydrochlorothiazide / idroclorotiazide / hidroclorotiazida
+                                      ch -> c; Italian idro- is hydro-
+
+    Changing a rule changes every index's match text: raise MATCH_VERSION
+    with it, so indexes built under the old rules are rebuilt.
     """
     word = word.replace("ph", "f").replace("th", "t").replace("y", "i").replace("k", "c")
+    word = word.replace("ch", "c")
+    if word.startswith("idro"):
+        word = "h" + word
     word = re.sub(r"([a-z])\1+", r"\1", word)
     word = re.sub(r"m(?=[^aeioubpm])", "n", word)
     if len(word) > 4:
@@ -530,6 +543,10 @@ def index_info(register: OpenRegister) -> dict[str, Any] | None:
 def _is_stale(register: OpenRegister, info: dict[str, Any] | None) -> bool:
     if not info:
         return True
+    if info.get("match_version") != str(MATCH_VERSION):
+        # Built under older matching rules: its match text no longer meets
+        # the search's, so it is out of date whatever its age.
+        return True
     try:
         return time.time() - float(info.get("fetched_epoch", 0)) > register.max_age_seconds
     except (TypeError, ValueError):
@@ -615,6 +632,7 @@ def build_index(register: OpenRegister, source_path: Path) -> Path:
                 ("fetched_at", fetched_at),
                 ("fetched_epoch", str(fetched_epoch)),
                 ("rows", str(count)),
+                ("match_version", str(MATCH_VERSION)),
             ],
         )
     previous = current_index(register)
