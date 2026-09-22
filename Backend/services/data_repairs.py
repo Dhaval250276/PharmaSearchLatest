@@ -1131,6 +1131,8 @@ def repair_combinations_and_mhra(dry_run: bool = False) -> dict[str, Any]:
     report["health_canada_links"] = relink_health_canada_products(dry_run=dry_run)
     report["mhra_dead_links"] = relink_dead_mhra_documents(dry_run=dry_run)
     report["rekey"] = rekey_substances(dry_run=dry_run)
+    # Correct ATC codes lent between molecules and combinations (805+ affected rows).
+    report["atc_codes"] = correct_group_atc_codes(dry_run=dry_run)
     # Nothing is lent again afterwards: a row shows what its regulator published.
     report["borrowed_values"] = revoke_borrowed_values(dry_run=dry_run)
     report["health_canada_register"] = restore_health_canada_from_register(dry_run=dry_run)
