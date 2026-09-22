@@ -137,7 +137,7 @@ def _date(value: object) -> str:
     if isinstance(value, date):
         return value.isoformat()
     text = _clean(value)
-    for pattern in ("%Y/%m/%d", "%Y-%m-%d", "%d.%m.%Y", "%d-%m-%Y", "%y%m%d"):
+    for pattern in ("%Y/%m/%d", "%Y-%m-%d", "%d.%m.%Y", "%d-%m-%Y", "%d/%m/%Y", "%y%m%d"):
         try:
             return datetime.strptime(text, pattern).date().isoformat()
         except ValueError:

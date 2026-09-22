@@ -4949,12 +4949,81 @@ class EuropeRegisterTests(unittest.TestCase):
         self.assertEqual(rows[0]["classification"], "Medicinal product")
         self.assertTrue(rows[0]["smpc_url"].endswith("P1.pdf"))
 
+    def test_serbian_spellings_fold_to_the_english_search(self):
+        from sources.grls_russia import fold
+        from sources.open_registers import query_tokens
+
+        def finds(serbian, english):
+            have = set(europe_registers.serbian_tokens(serbian))
+            return all(fold(token) in have for token in query_tokens(english))
+
+        self.assertTrue(finds("deksametazon", "dexamethasone"))
+        self.assertTrue(finds("ciprofloksacin", "ciprofloxacin"))
+        self.assertTrue(finds("zoledronska kiselina", "zoledronic acid"))
+        self.assertTrue(finds("acetilsalicilna kiselina", "acetylsalicylic acid"))
+        self.assertTrue(finds("levotiroksin-natrijum", "levothyroxine sodium"))
+        self.assertTrue(finds("metformin-hidrohlorid", "metformin hydrochloride"))
+        self.assertFalse(finds("deksametazon", "dexpanthenol"))
+
+    def test_serbia_groups_packs_under_the_decision_and_splits_the_manufacturer(self):
+        def line(pack):
+            return ";".join(f'"{value}"' for value in [
+                "OBNOVA", "Arkinaza&#174;", "metformin", "R", f"film tableta; 1000mg; {pack}",
+                "515-01-03379-22-001", "2023-08-03", "2028-08-03", "HEMOFARM AD VR&#352;AC - Republika Srbija ",
+                "HEMOFARM AD VR&#352;AC", "A10BA02", "8600097408486", "1043062", "Humani lekovi", "494354", "/", "",
+                "1081", "1081", "Beogradski put bb, Vr&#353;ac 26300, Republika Srbija", "oralno",
+            ]) + ";"
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "lekovi_humani.csv"
+            path.write_text("\n".join([line("blister, 2x15kom"), line("blister, 4x15kom")]), encoding="utf-8")
+            records = list(europe_registers.read_serbia(europe_registers.ALIMS_SERBIA, path))
+        rows = [row for _, row in europe_registers.build_serbia_rows(records, "2026-09-22")]
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["product"], "Arkinaza® 1000mg film tableta")
+        self.assertEqual(row["pack_size"], "blister, 2x15kom; blister, 4x15kom")
+        self.assertEqual(row["company"], "HEMOFARM AD VRŠAC")
+        self.assertEqual((row["manufacturer_name"], row["manufacturer_country"]), ("HEMOFARM AD VRŠAC", "Republika Srbija"))
+        self.assertEqual(row["expiry_date"], "2028-08-03")
+        self.assertEqual(row["route"], "Oral use")
+        self.assertTrue(row_relevant_to_substance(row, "metformin"))
+
+    def test_malta_strips_quotes_and_splits_ingredients_from_strengths(self):
+        header = ["[Medicine Name]", " [Active Ingredients]", " [Pharmaceutical Forms]", " [Therapeutic Class]",
+                  " [Classification]", " [ATC Code]", " [Status]", " [Authorisation Number]", " [Authorisation Date]",
+                  " [Authorization Holder]", " [Authorization Holder Address]", " [MAH Contact Details 1]",
+                  " [MAH Contact Details 2]", " [Licence Number]"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._workbook(directory, "malta_medicines.xlsx", [
+                header,
+                ["'Ezehron Duo 10 mg/10 mg, tablet'", " 'ROSUVASTATIN 10 milligram(s) | EZETIMIBE 10 milligram(s)'",
+                 " 'TABLET'", " 'LIPID MODIFYING AGENTS'", " 'POM'", " 'C10BA06'", " 'Authorised'",
+                 " 'MA948/00402'", " '24/01/2024'", " 'Adamed Sp. Z.o.o.'", " ''", " ''", " ''", " 'NOT APPLICABLE'"],
+                ["'Eltroxin 100 microgram Tablets'", " 'LEVOTHYROXINE SODIUM 100 microgram(s)'", " 'TABLET'",
+                 " 'THYROID THERAPY'", " 'POM'", " 'H03AA01'", " 'Authorised'", " 'PI1513/02103A'", " '01/02/2020'",
+                 " 'Pharma Regulatory Services Ltd'", " ''", " ''", " ''", " 'United Kingdom - PL 39699/0035'"],
+            ])
+            records = list(europe_registers.read_malta(europe_registers.MALTA_MEDICINES, path))
+        rows = [row for _, row in europe_registers.build_malta_rows(records, "2026-09-22")]
+
+        combo, parallel = rows
+        self.assertEqual(combo["substance"], "Rosuvastatin; Ezetimibe")
+        self.assertEqual(combo["strength"], "10 milligram(s) / 10 milligram(s)")
+        self.assertEqual(combo["registration_date"], "2024-01-24")
+        self.assertEqual(combo["status"], "Authorised")
+        self.assertTrue(row_relevant_to_substance(combo, "rosuvastatin + ezetimibe"))
+        self.assertEqual(parallel["authorisation_scope"], "Parallel import")
+        self.assertIn("United Kingdom - PL 39699/0035", parallel["document_type"])
+
     def test_the_four_registers_are_wired_into_search(self):
         from services.search_pipeline import DEFAULT_SOURCES
 
         names = {item["name"] for item in connector_metadata()}
         for source, country, region in (("DMP Norway", "Norway", "EU"), ("SUKL Slovakia", "Slovakia", "EU"),
-                                        ("ZVA Latvia", "Latvia", "EU"), ("TITCK Turkey", "Turkey", "ME")):
+                                        ("ZVA Latvia", "Latvia", "EU"), ("TITCK Turkey", "Turkey", "ME"),
+                                        ("ALIMS Serbia", "Serbia", "EU"), ("Malta Medicines Authority", "Malta", "EU")):
             self.assertIn(source, names)
             self.assertIn(source, sources_for_scope(DEFAULT_SOURCES, country=country))
             self.assertIn(source, sources_for_scope(DEFAULT_SOURCES, region=region))

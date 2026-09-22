@@ -1,4 +1,4 @@
-"""National registers four more European regulators publish whole.
+"""National registers six more European regulators publish whole.
 
     Norway    DMP's FEST, the prescribing catalogue, published every two weeks
               as one XML file (NLOD 2.0); product, form and strength, ATC, the
@@ -12,12 +12,18 @@
     Turkey    TITCK's weekly list of licensed human medicinal products; holder,
               licence number and date, ATC, and whether the licence is
               suspended.
+    Serbia    ALIMS's register of medicines for human use, daily (Serbian open
+              data licence); holder, manufacturer and its country, decision
+              number and dates, ATC, route.
+    Malta     The Medicines Authority's list of authorised medicines, in
+              English; holder, authorisation number and date, status, ATC.
 
 Indexed locally like the others (open_registers). Norway's substances come in
 English from FEST itself; Slovakia's list names no substance, so its rows are
 matched on the English WHO name of their ATC code and their product name.
 Turkish spells an INN as it is said ("dekzametazon", "parasetamol"), so
-Turkey is matched the way Russia is: both sides folded to one spelling.
+Turkey and Serbia are matched the way Russia is: both sides folded to one
+spelling.
 """
 from __future__ import annotations
 
@@ -586,30 +592,243 @@ TITCK_TURKEY = add_register(OpenRegister(
 ))
 
 
-def run_titck_turkey_search(substance: str) -> list[dict[str, Any]]:
-    """Rows whose INN holds every word of the molecule, both spelled the folded way."""
+def _folded_search(register: OpenRegister, substance: str, label: str) -> list[dict[str, Any]]:
+    """Rows whose folded INN holds every folded word of the molecule, as Russia's are searched."""
     from sources.grls_russia import fold
 
     tokens = [fold(token) for token in query_tokens(substance)]
     if not tokens:
         return []
-    path = current_index(TITCK_TURKEY)
+    path = current_index(register)
     if path is None:
-        started = refresh_in_background(TITCK_TURKEY)
+        started = refresh_in_background(register)
         raise RegisterNotReady(
-            "TITCK Turkey list is being downloaded for the first time"
+            f"{label} is being downloaded for the first time"
             f"{'' if started else ' (already in progress)'}; search again in a few minutes."
         )
-    if _is_stale(TITCK_TURKEY, index_info(TITCK_TURKEY)):
-        refresh_in_background(TITCK_TURKEY)
+    if _is_stale(register, index_info(register)):
+        refresh_in_background(register)
     where = " AND ".join("match LIKE ?" for _ in tokens)
     with _connect(path) as conn:
         rows = [json.loads(payload) for (payload,) in conn.execute(
             f"SELECT payload FROM rows WHERE {where}", [f"% {token} %" for token in tokens]
         )]
     rows.sort(key=lambda row: (_status_rank(row), row.get("product", "").lower()))
-    bound = TITCK_TURKEY.max_results
+    bound = register.max_results
     if len(rows) > bound:
         for row in rows[:bound]:
             row["available_total"] = len(rows)
     return rows[:bound]
+
+
+def run_titck_turkey_search(substance: str) -> list[dict[str, Any]]:
+    return _folded_search(TITCK_TURKEY, substance, "TITCK Turkey list")
+
+
+# ----------------------------------------------------------------- Serbia
+
+SERBIA_URL = "https://www.alims.gov.rs/lekovi/lekovi_humani.csv"
+SERBIA_PAGE = "https://www.alims.gov.rs/humani-lekovi/pretrazivanje-humanih-lekova/"
+# The CSV has no header row; ALIMS's XLS of the same register names the columns.
+SERBIA_COLUMNS = (
+    "decision", "name", "inn", "dispensing", "form_strength_pack", "number", "issued", "valid_until",
+    "manufacturer", "holder", "atc", "ean", "jkl", "kind", "product_code", "cooperation_code",
+    "cooperation", "manufacturer_code", "holder_code", "holder_address", "route",
+)
+SERBIAN_WORDS = {
+    "hidrohlorid": "hydrochloride", "dihidrohlorid": "dihydrochloride", "hlorid": "chloride",
+    "natrijum": "sodium", "dinatrijum": "disodium", "kalcijum": "calcium", "kalijum": "potassium",
+    "magnezijum": "magnesium", "kiselina": "acid",
+}
+SERBIAN_ROUTES = {"oralno": "Oral use", "parenteralno": "Parenteral use", "kutano": "Cutaneous use"}
+
+
+def serbian_tokens(text: object) -> list[str]:
+    """Serbian INN words folded the way English ones are.
+
+    Serbian writes an acid as an adjective before "kiselina" ("zoledronska
+    kiselina", "acetilsalicilna kiselina"); the adjective ending becomes the
+    English -ic. An h stands where English writes ch ("hidrohlorid").
+    """
+    from sources.grls_russia import fold
+
+    words = _fold(text).split()
+    tokens: list[str] = []
+    for index, word in enumerate(words):
+        if index + 1 < len(words) and words[index + 1] == "kiselina":
+            word = re.sub(r"(?:in)?(?:ska|na|ova)$", "", word) + "ic"
+        word = SERBIAN_WORDS.get(word, word).replace("hl", "chl")
+        tokens.extend(fold(token) for token in inn_tokens(word))
+    return list(dict.fromkeys(tokens))
+
+
+def read_serbia(register: OpenRegister, path: Path) -> Iterator[dict[str, Any]]:
+    """One record per decision and product, its packs gathered together.
+
+    ALIMS lists every pack on its own line ("film tableta; 1000mg; blister,
+    2x15kom"), and one decision often covers several of them.
+    """
+    import csv
+    import html
+
+    grouped: dict[tuple[str, ...], dict[str, Any]] = {}
+    with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
+        for values in csv.reader(handle, delimiter=";"):
+            if len(values) < len(SERBIA_COLUMNS):
+                continue
+            record = {name: html.unescape(value) for name, value in zip(SERBIA_COLUMNS, values)}
+            form, _, rest = _clean(record["form_strength_pack"]).partition("; ")
+            strength, _, pack = rest.partition("; ")
+            key = (_clean(record["number"]), _clean(record["name"]), strength, form)
+            found = grouped.get(key)
+            if found is None:
+                found = grouped[key] = {**record, "form": form, "strength": strength, "packs": []}
+            if pack:
+                found["packs"].append(pack)
+    yield from grouped.values()
+
+
+def _serbian_party(value: str) -> tuple[str, str]:
+    """ "INFAI GMBH - Nemačka" -> ("INFAI GMBH", "Nemačka")."""
+    name, _, country = _clean(value).rpartition(" - ")
+    return (name, country) if name else (_clean(value), "")
+
+
+def build_serbia_rows(records: Iterable[dict[str, Any]], fetched_at: str) -> Iterator[tuple[str, dict[str, Any]]]:
+    for record in records:
+        inn = _clean(record.get("inn"))
+        product = _clean(record.get("name"))
+        if not (inn or product):
+            continue
+        form, strength = record["form"], record["strength"]
+        maker, maker_country = _serbian_party(record.get("manufacturer", ""))
+        tokens = serbian_tokens(inn or product)
+        yield " " + " ".join(tokens) + " ", {
+            "substance": "; ".join(part.strip() for part in inn.split(",") if part.strip()),
+            "active_substance": inn,
+            "source_substance": inn,
+            # One registration per pack: the name is shared, the strength and form are not.
+            "product": " ".join(part for part in (product, strength, form) if part),
+            "company": _clean(record.get("holder")),
+            "country": "Serbia",
+            "region": "EU",
+            "status": "Authorised",
+            "authorisation_scope": "Renewal" if record.get("decision") == "OBNOVA" else "Registration",
+            "strength": strength,
+            "dosage_form": form,
+            "pack_size": _unique(record["packs"]),
+            "route": SERBIAN_ROUTES.get(_clean(record.get("route")), _clean(record.get("route"))),
+            "atc_code": _clean(record.get("atc")),
+            "registration_number": _clean(record.get("number")),
+            "registration_date": _date(record.get("issued")),
+            "expiry_date": _date(record.get("valid_until")),
+            "manufacturer_name": maker,
+            "manufacturer_country": maker_country,
+            "manufacturer_source": "ALIMS register of medicines for human use" if maker else "",
+            "source": "ALIMS Serbia",
+            "source_url": SERBIA_PAGE,
+            "product_url": "",
+            "document_type": "ALIMS register of medicines for human use",
+            "inn_fold_tokens": " ".join(tokens),
+            "last_checked": fetched_at,
+        }
+
+
+ALIMS_SERBIA = add_register(OpenRegister(
+    source="ALIMS Serbia",
+    country="Serbia",
+    region="EU",
+    url=SERBIA_URL,
+    slug="alims_serbia",
+    max_age_seconds=24 * 3600,
+    build_rows=build_serbia_rows,
+    read_records=read_serbia,
+))
+
+
+def run_alims_serbia_search(substance: str) -> list[dict[str, Any]]:
+    return _folded_search(ALIMS_SERBIA, substance, "ALIMS Serbia register")
+
+
+# ------------------------------------------------------------------ Malta
+
+MALTA_URL = "https://medicinesauthority.gov.mt/Exports/Local/AdvancedSearchResultsLocal.xls"
+MALTA_PAGE = "https://medicinesauthority.gov.mt/medicinesdatabase"
+
+
+def fetch_malta(register: OpenRegister, workdir: Path) -> Path:
+    # Named .xls, but a current Excel workbook; openpyxl goes by the extension.
+    return download_file(register, register.url, workdir / "malta_medicines.xlsx")
+
+
+def _malta(value: object) -> str:
+    """Every value is wrapped in single quotes: " 'Authorised'"."""
+    return _clean(value).strip("'").strip()
+
+
+def read_malta(register: OpenRegister, path: Path) -> Iterator[dict[str, str]]:
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        rows = workbook[workbook.sheetnames[0]].iter_rows(values_only=True)
+        header = [_clean(cell).strip("[] ") for cell in next(rows)]
+        for row in rows:
+            record = {name: _malta(value) for name, value in zip(header, row)}
+            if record.get("Medicine Name"):
+                yield record
+    finally:
+        workbook.close()
+
+
+def build_malta_rows(records: Iterable[dict[str, str]], fetched_at: str) -> Iterator[tuple[str, dict[str, Any]]]:
+    for record in records:
+        ingredients = [part.strip() for part in record.get("Active Ingredients", "").split("|") if part.strip()]
+        # "METFORMIN HYDROCHLORIDE 500 milligram(s)": the substance, then its strength.
+        actives = [re.split(r"\s+\d", part, maxsplit=1)[0].strip() for part in ingredients]
+        strengths = [part[len(name):].strip() for part, name in zip(ingredients, actives)]
+        active = "; ".join(name.capitalize() for name in actives if name)
+        product = record.get("Medicine Name", "")
+        number = record.get("Authorisation Number", "")
+        origin = record.get("Licence Number", "")
+        yield _indexed(national_match_text(" ".join(actives) or product), {
+            "substance": active,
+            "active_substance": active,
+            "source_substance": record.get("Active Ingredients", ""),
+            "product": product,
+            "company": record.get("Authorization Holder", ""),
+            "country": "Malta",
+            "region": "EU",
+            "status": record.get("Status", ""),
+            "authorisation_scope": "Parallel import" if number.startswith("PI") else "",
+            "strength": " / ".join(strength for strength in strengths if strength),
+            "dosage_form": record.get("Pharmaceutical Forms", "").capitalize(),
+            "atc_code": record.get("ATC Code", ""),
+            "classification": record.get("Classification", ""),
+            "therapeutic_category": record.get("Therapeutic Class", "").capitalize(),
+            "registration_number": number,
+            "registration_date": _date(record.get("Authorisation Date")),
+            "source": "Malta Medicines Authority",
+            "source_url": MALTA_PAGE,
+            "product_url": "",
+            "document_type": "Malta Medicines Authority list of authorised medicines"
+            + (f" (source licence: {origin})" if origin and origin != "NOT APPLICABLE" else ""),
+            "last_checked": fetched_at,
+        })
+
+
+MALTA_MEDICINES = add_register(OpenRegister(
+    source="Malta Medicines Authority",
+    country="Malta",
+    region="EU",
+    url=MALTA_URL,
+    slug="malta_medicines",
+    max_age_seconds=7 * 24 * 3600,
+    build_rows=build_malta_rows,
+    fetch=fetch_malta,
+    read_records=read_malta,
+))
+
+
+def run_malta_medicines_search(substance: str) -> list[dict[str, Any]]:
+    return search_register(MALTA_MEDICINES, substance)

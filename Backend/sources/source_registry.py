@@ -53,7 +53,9 @@ from sources.national_registers import (
     run_urpl_poland_search,
 )
 from sources.europe_registers import (
+    run_alims_serbia_search,
     run_dmp_norway_search,
+    run_malta_medicines_search,
     run_sukl_slovakia_search,
     run_titck_turkey_search,
     run_zva_latvia_search,
@@ -174,6 +176,26 @@ CONNECTORS: list[SourceConnector] = [
         ),
         # TITCK's weekly list of licensed human medicinal products.
         run_titck_turkey_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="ALIMS Serbia",
+            region="EU",
+            countries=("Serbia",),
+            supports_documents=False,
+        ),
+        # ALIMS's register of medicines for human use, published daily.
+        run_alims_serbia_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="Malta Medicines Authority",
+            region="EU",
+            countries=("Malta",),
+            supports_documents=False,
+        ),
+        # The Medicines Authority's list of authorised medicines.
+        run_malta_medicines_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(

@@ -865,6 +865,7 @@ ATC_PUBLISHERS = frozenset({
     "EOF Greece", "HSA Singapore", "Ukraine DRLZ", "HPRA Ireland",
     "CBG Netherlands", "URPL Poland", "SUKL Czech Republic", "DKMA Denmark",
     "DMP Norway", "SUKL Slovakia", "ZVA Latvia", "TITCK Turkey",
+    "ALIMS Serbia", "Malta Medicines Authority",
 })
 CATEGORY_PUBLISHERS = frozenset({
     "EMA", "FDA", "Health Canada", "AIFA Italy", "ANMDMR Romania", "CDSCO India", "ANVISA Brazil",
