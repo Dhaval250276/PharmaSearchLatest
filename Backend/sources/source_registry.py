@@ -54,6 +54,7 @@ from sources.national_registers import (
 )
 from sources.europe_registers import (
     run_alims_serbia_search,
+    run_bda_bulgaria_search,
     run_dmp_norway_search,
     run_malta_medicines_search,
     run_sukl_slovakia_search,
@@ -196,6 +197,16 @@ CONNECTORS: list[SourceConnector] = [
         ),
         # The Medicines Authority's list of authorised medicines.
         run_malta_medicines_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="BDA Bulgaria",
+            region="EU",
+            countries=("Bulgaria",),
+            supports_documents=False,
+        ),
+        # BDA's register of medicinal products authorised for use, monthly.
+        run_bda_bulgaria_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(

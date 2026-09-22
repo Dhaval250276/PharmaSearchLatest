@@ -72,6 +72,7 @@ DEFAULT_SOURCES = [
     "ZVA Latvia",
     "ALIMS Serbia",
     "Malta Medicines Authority",
+    "BDA Bulgaria",
     "TITCK Turkey",
     "TFDA Taiwan",
     "BfArM Germany",
@@ -95,6 +96,7 @@ EU_NATIONAL_SOURCES = [
     "ZVA Latvia",
     "ALIMS Serbia",
     "Malta Medicines Authority",
+    "BDA Bulgaria",
     "BfArM Germany",
     "Cyprus Pharmaceutical Services",
     "Ukraine DRLZ",
@@ -495,6 +497,7 @@ SOURCE_COUNTRIES = {
     "titck turkey": {"Turkey"},
     "alims serbia": {"Serbia"},
     "malta medicines authority": {"Malta"},
+    "bda bulgaria": {"Bulgaria"},
     "tfda taiwan": {"Taiwan"},
     "anvisa brazil": {"Brazil"},
     "cyprus pharmaceutical services": {"Cyprus"},
@@ -543,6 +546,7 @@ COUNTRY_SOURCE_DEFAULTS = {
     "Turkey": "TITCK Turkey",
     "Serbia": "ALIMS Serbia",
     "Malta": "Malta Medicines Authority",
+    "Bulgaria": "BDA Bulgaria",
 }
 REGION_SOURCE_DEFAULTS = {
     "AU": "TGA Australia",

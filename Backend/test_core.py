@@ -5017,13 +5017,45 @@ class EuropeRegisterTests(unittest.TestCase):
         self.assertEqual(parallel["authorisation_scope"], "Parallel import")
         self.assertIn("United Kingdom - PL 39699/0035", parallel["document_type"])
 
-    def test_the_four_registers_are_wired_into_search(self):
+    def test_bulgaria_groups_packs_and_restores_the_atc_code(self):
+        self.assertEqual(europe_registers.bulgarian_atc("J01MA 2"), "J01MA02")
+        self.assertEqual(europe_registers.bulgarian_atc("A10BD 15"), "A10BD15")
+        header = ["Рег. №", "Идентификатор", "Търговско име", "Описание", "Лек. форма", "Лек. форма EN",
+                  "Количество на акт.в-во", "Опаковка", "Обем/Дозова единица", "Количество в крайна опаковка",
+                  "Притежател на РУ", "Държава /BG/", "INN", "АТС-Код", "Режим на предписване"]
+
+        def pack(identifier, count):
+            return [20020760, identifier, "Sophamet", "", "филмирани таблетки", "film-coated tablets",
+                    "500 mg film-coated tablets", "Blister PVC/Al", "", count, "Софарма АД", "България",
+                    "Metformin", "A10BA 2", "По лекарско предписание"]
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._workbook(directory, "bda.xlsx", [
+                header, pack(" BG / 20020760 / 001", 50), pack(" BG / 20020760 / 002", 100),
+                [20190001, " BG / 20190001 / 001", "Co-Roswera", "", "", "film-coated tablets",
+                 "10 mg/10 mg film-coated tablets", "Blister", "", 30, "KRKA", "Словения",
+                 "Rosuvastatin and ezetimibe", "C10BA 6", "По лекарско предписание"],
+            ])
+            records = list(europe_registers.read_bulgaria(europe_registers.BDA_BULGARIA, path))
+        rows = [row for _, row in europe_registers.build_bulgaria_rows(records, "2026-09-22")]
+
+        sophamet, combo = rows
+        self.assertEqual(sophamet["product"], "Sophamet 500 mg film-coated tablets")
+        self.assertEqual(sophamet["pack_size"], "Blister PVC/Al x 50; Blister PVC/Al x 100")
+        self.assertEqual(sophamet["atc_code"], "A10BA02")
+        self.assertEqual(sophamet["registration_number"], "20020760")
+        self.assertEqual(combo["substance"], "Rosuvastatin; ezetimibe")
+        self.assertIn("holder in Slovenia", combo["document_type"])
+        self.assertTrue(row_relevant_to_substance(combo, "rosuvastatin + ezetimibe"))
+
+    def test_the_registers_are_wired_into_search(self):
         from services.search_pipeline import DEFAULT_SOURCES
 
         names = {item["name"] for item in connector_metadata()}
         for source, country, region in (("DMP Norway", "Norway", "EU"), ("SUKL Slovakia", "Slovakia", "EU"),
                                         ("ZVA Latvia", "Latvia", "EU"), ("TITCK Turkey", "Turkey", "ME"),
-                                        ("ALIMS Serbia", "Serbia", "EU"), ("Malta Medicines Authority", "Malta", "EU")):
+                                        ("ALIMS Serbia", "Serbia", "EU"), ("Malta Medicines Authority", "Malta", "EU"),
+                                        ("BDA Bulgaria", "Bulgaria", "EU")):
             self.assertIn(source, names)
             self.assertIn(source, sources_for_scope(DEFAULT_SOURCES, country=country))
             self.assertIn(source, sources_for_scope(DEFAULT_SOURCES, region=region))

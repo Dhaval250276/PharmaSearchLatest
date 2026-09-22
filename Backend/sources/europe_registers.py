@@ -832,3 +832,160 @@ MALTA_MEDICINES = add_register(OpenRegister(
 
 def run_malta_medicines_search(substance: str) -> list[dict[str, Any]]:
     return search_register(MALTA_MEDICINES, substance)
+
+
+# --------------------------------------------------------------- Bulgaria
+
+BULGARIA_PAGE = (
+    "https://www.bda.bg/bg/%D1%80%D0%B5%D0%B3%D0%B8%D1%81%D1%82%D1%80%D0%B8/"
+    "%D1%80%D0%B5%D0%B3%D0%B8%D1%81%D1%82%D1%80%D0%B8-%D0%BD%D0%B0-"
+    "%D0%BB%D0%B5%D0%BA%D0%B0%D1%80%D1%81%D1%82%D0%B2%D0%B5%D0%BD%D0%B8-"
+    "%D0%BF%D1%80%D0%BE%D0%B4%D1%83%D0%BA%D1%82%D0%B8"
+)
+BULGARIAN_COUNTRIES = {
+    "България": "Bulgaria", "Германия": "Germany", "Словения": "Slovenia", "Австрия": "Austria",
+    "Полша": "Poland", "Кипър": "Cyprus", "Ирландия": "Ireland", "Унгария": "Hungary", "Франция": "France",
+    "Чешка Република": "Czech Republic", "Белгия": "Belgium", "Румъния": "Romania", "Латвия": "Latvia",
+    "Италия": "Italy", "Испания": "Spain", "Люксембург": "Luxembourg", "Малта": "Malta", "Хърватия": "Croatia",
+    "Дания": "Denmark", "Норвегия": "Norway", "Словакия": "Slovakia", "Финландия": "Finland",
+    "Гърция": "Greece", "Португалия": "Portugal", "Швеция": "Sweden", "Нидерландия": "Netherlands",
+    "Литва": "Lithuania", "Естония": "Estonia", "Исландия": "Iceland", "Швейцария": "Switzerland",
+    "Великобритания": "United Kingdom", "Обединено кралство": "United Kingdom", "САЩ": "United States",
+    "Индия": "India", "Израел": "Israel", "Турция": "Turkey", "Сърбия": "Serbia",
+}
+BULGARIA_COLUMNS = {
+    "Рег. №": "number", "Търговско име": "name", "Лек. форма EN": "form",
+    "Количество на акт.в-во": "strength", "Опаковка": "container", "Обем/Дозова единица": "volume",
+    "Количество в крайна опаковка": "count", "Притежател на РУ": "holder", "Държава /BG/": "holder_country",
+    "INN": "inn", "АТС-Код": "atc", "Режим на предписване": "prescription",
+}
+
+
+def _bulgaria_session():
+    """A session on Python's standard TLS settings.
+
+    bda.bg resets connections made with urllib3's own TLS context, though it
+    answers the same request, same headers, over Python's default context (and
+    over curl). The client still names itself; only the TLS set-up differs.
+    """
+    import ssl
+
+    import requests
+    from requests.adapters import HTTPAdapter
+
+    class _StandardTLS(HTTPAdapter):
+        def init_poolmanager(self, *args: Any, **kwargs: Any) -> Any:
+            kwargs["ssl_context"] = ssl.create_default_context()
+            return super().init_poolmanager(*args, **kwargs)
+
+    session = requests.Session()
+    session.mount("https://", _StandardTLS())
+    session.headers["User-Agent"] = "PharmaSearch/1.0 (regulatory register download)"
+    return session
+
+
+def fetch_bulgaria(register: OpenRegister, workdir: Path) -> Path:
+    """BDA republishes its register each month under a new name; the page names the latest."""
+    from sources.open_registers import DOWNLOAD_TIMEOUT
+
+    session = _bulgaria_session()
+    page = session.get(BULGARIA_PAGE, timeout=DOWNLOAD_TIMEOUT)
+    page.raise_for_status()
+    links = re.findall(r'href="([^"]*IAL_Register_(\d{2})_(\d{4})\.xlsx)"', page.text)
+    if not links:
+        raise RuntimeError("BDA's page names no IAL register")
+    href, _month, _year = max(links, key=lambda link: (link[2], link[1]))
+    url = href if href.startswith("http") else "https://www.bda.bg" + href
+    destination = workdir / "bda_register.xlsx"
+    with session.get(url, timeout=DOWNLOAD_TIMEOUT, stream=True) as response:
+        response.raise_for_status()
+        with destination.open("wb") as handle:
+            for chunk in response.iter_content(chunk_size=1 << 20):
+                handle.write(chunk)
+    return destination
+
+
+def bulgarian_atc(value: object) -> str:
+    """ "J01MA 2" -> "J01MA02": BDA drops the fifth level's leading zero."""
+    text = _clean(value)
+    found = re.match(r"^([A-Z]\d{2}[A-Z]{2})\s*(\d{1,2})$", text)
+    return f"{found.group(1)}{int(found.group(2)):02d}" if found else text
+
+
+def read_bulgaria(register: OpenRegister, path: Path) -> Iterator[dict[str, Any]]:
+    """One record per registration, strength and form, its packs gathered together."""
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        rows = workbook[workbook.sheetnames[0]].iter_rows(values_only=True)
+        header = [_clean(cell) for cell in next(rows)]
+        missing = [name for name in BULGARIA_COLUMNS if name not in header]
+        if missing:
+            raise RuntimeError(f"BDA's register has changed: no {', '.join(missing)} column")
+        position = {field: header.index(name) for name, field in BULGARIA_COLUMNS.items()}
+        grouped: dict[tuple[str, ...], dict[str, Any]] = {}
+        for row in rows:
+            record = {field: row[index] if index < len(row) else None for field, index in position.items()}
+            if not record["number"]:
+                continue
+            key = (_clean(record["number"]), _clean(record["strength"]), _clean(record["form"]), _clean(record["name"]))
+            found = grouped.get(key)
+            if found is None:
+                found = grouped[key] = {**record, "packs": []}
+            pack = " ".join(_clean(part) for part in (record["container"], record["volume"]) if _clean(part))
+            count = _clean(record["count"])
+            found["packs"].append(f"{pack} x {count}".strip(" x") if count else pack)
+        yield from grouped.values()
+    finally:
+        workbook.close()
+
+
+def build_bulgaria_rows(records: Iterable[dict[str, Any]], fetched_at: str) -> Iterator[tuple[str, dict[str, Any]]]:
+    for record in records:
+        inn = _clean(record.get("inn"))
+        name = _clean(record.get("name"))
+        if not (inn or name):
+            continue
+        strength = _clean(record.get("strength"))
+        active = "; ".join(part.strip() for part in re.split(r"\s+and\s+|,\s*", inn) if part.strip())
+        country = _clean(record.get("holder_country"))
+        yield _indexed(national_match_text(f"{inn} {name}"), {
+            "substance": active,
+            "active_substance": active,
+            "source_substance": inn,
+            "product": f"{name} {strength}".strip(),
+            "company": _clean(record.get("holder")),
+            "country": "Bulgaria",
+            "region": "EU",
+            "status": "Authorised",
+            "strength": strength,
+            "dosage_form": _clean(record.get("form")).capitalize(),
+            "pack_size": _unique(record["packs"]),
+            "atc_code": bulgarian_atc(record.get("atc")),
+            "classification": _clean(record.get("prescription")),
+            "registration_number": _clean(record.get("number")),
+            "source": "BDA Bulgaria",
+            "source_url": BULGARIA_PAGE,
+            "product_url": "",
+            "document_type": "BDA register of medicinal products authorised for use in Bulgaria"
+            + (f" (holder in {BULGARIAN_COUNTRIES.get(country, country)})" if country else ""),
+            "last_checked": fetched_at,
+        })
+
+
+BDA_BULGARIA = add_register(OpenRegister(
+    source="BDA Bulgaria",
+    country="Bulgaria",
+    region="EU",
+    url=BULGARIA_PAGE,
+    slug="bda_bulgaria",
+    max_age_seconds=7 * 24 * 3600,
+    build_rows=build_bulgaria_rows,
+    fetch=fetch_bulgaria,
+    read_records=read_bulgaria,
+))
+
+
+def run_bda_bulgaria_search(substance: str) -> list[dict[str, Any]]:
+    return search_register(BDA_BULGARIA, substance)
