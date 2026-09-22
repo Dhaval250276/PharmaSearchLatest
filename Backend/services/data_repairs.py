@@ -863,6 +863,7 @@ ATC_PUBLISHERS = frozenset({
     "EMA", "EU MRI Product Index", "Health Canada", "AIFA Italy", "BPOM Indonesia",
     "ANMDMR Romania", "Spain CIMA", "MoPH Lebanon", "SFDA Saudi Arabia",
     "EOF Greece", "HSA Singapore", "Ukraine DRLZ", "HPRA Ireland",
+    "CBG Netherlands", "URPL Poland", "SUKL Czech Republic", "DKMA Denmark",
 })
 CATEGORY_PUBLISHERS = frozenset({
     "EMA", "FDA", "Health Canada", "AIFA Italy", "ANMDMR Romania", "CDSCO India", "ANVISA Brazil",

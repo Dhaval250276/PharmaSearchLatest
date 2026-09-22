@@ -1,4 +1,5 @@
 import unittest
+import zipfile
 from datetime import datetime, timedelta, timezone
 import os
 import tempfile
@@ -7,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 import repository
+from sources import national_registers
 from bs4 import BeautifulSoup
 
 from export_service import build_export_rows
@@ -4581,6 +4583,198 @@ class ScheduledJobClockTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("test", state)
 
+
+
+class NationalRegisterTests(unittest.TestCase):
+    """Netherlands, Poland, Czechia and Denmark, read from their published files."""
+
+    def _tokens(self, text, latin=False):
+        return set(national_registers.national_match_text(text, latin=latin).split())
+
+    def _finds(self, register_text, query, latin=False):
+        from sources.open_registers import query_tokens
+
+        return set(query_tokens(query)) <= self._tokens(register_text, latin)
+
+    def test_latin_names_match_the_english_search(self):
+        self.assertTrue(self._finds("Metformini hydrochloridum", "metformin", latin=True))
+        self.assertTrue(self._finds("Atorvastatinum; Amlodipinum", "atorvastatin", latin=True))
+        self.assertTrue(self._finds("Acidum zoledronicum", "zoledronic acid", latin=True))
+        self.assertTrue(self._finds("Insulinum glarginum", "insulin glargine", latin=True))
+
+    def test_salts_and_acids_glued_to_the_name_are_split_off(self):
+        self.assertTrue(self._finds("METFORMINEHYDROCHLORIDE", "metformin hydrochloride"))
+        self.assertTrue(self._finds("AMLODIPINEBESILAAT", "amlodipine"))
+        self.assertTrue(self._finds("ATORVASTATINCALCIUM (trihydrat)", "atorvastatin"))
+        self.assertTrue(self._finds("ZOLEDRONINEZUUR", "zoledronic acid"))
+        self.assertTrue(self._finds("Zoledronsyre", "zoledronic acid"))
+        self.assertTrue(self._finds("VALPROINEZUUR", "valproic acid"))
+        # A short name is not cut down to nothing.
+        self.assertEqual(national_registers._unglue("calcium"), ["calcium"])
+
+    def test_latin_is_undone_only_where_the_register_writes_latin(self):
+        self.assertIn("metformini", self._tokens("metformini", latin=False))
+
+    def test_rows_carry_the_tokens_the_page_checks_a_combination_against(self):
+        _, row = next(national_registers.build_poland_rows([{
+            "Rodzaj preparatu": "Ludzki", "Nazwa Produktu Leczniczego": "Coroswera",
+            "Nazwa powszechnie stosowana": "Rosuvastatinum + Ezetimibum", "Moc": "10 mg + 10 mg",
+            "Postać farmaceutyczna": "Tabletki powlekane", "Numer pozwolenia": "25209",
+        }], "2026-09-22"))
+        self.assertTrue(row_relevant_to_substance(row, "rosuvastatin + ezetimibe"))
+        self.assertFalse(row_relevant_to_substance(row, "rosuvastatin + fenofibrate"))
+
+    def test_netherlands_row(self):
+        match, row = next(national_registers.build_netherlands_rows([{
+            "REGISTRATIENUMMER": "103638", "SOORT": "RVG ",
+            "PRODUCTNAAM": "Metformine HCl Viatris 500 mg, filmomhulde tabletten",
+            "INSCHRIJVINGSDATUM": "2010/01/13", "HANDELSVERGUNNINGHOUDER": "Viatris Limited",
+            "AFLEVERSTATUS": "Uitsluitend recept", "FARMACEUTISCHEVORM": "Filmomhulde tablet",
+            "POTENTIE": "", "PROCEDURENUMMER": "NL/H/1570/001", "TOEDIENINGSWEG": "Oraal gebruik",
+            "ATC": "A10BA02 - Metformin", "WERKZAMESTOFFEN": "METFORMINEHYDROCHLORIDE",
+            "PRODUCTDETAIL_LINK": "https://www.geneesmiddeleninformatiebank.nl/nl/rvg103638",
+            "SMPC_FILENAAM": "https://www.geneesmiddeleninformatiebank.nl/smpc/h103638_smpc.pdf",
+            "BIJSLUITER_FILENAAM": "https://www.geneesmiddeleninformatiebank.nl/bijsluiters/h103638.pdf",
+        }], "2026-09-22"))
+        self.assertIn(" metformin ", match)
+        self.assertEqual(row["registration_number"], "RVG 103638")
+        self.assertEqual(row["dosage_form"], "Film-coated tablet")
+        self.assertEqual(row["atc_code"], "A10BA02")
+        self.assertEqual(row["authorisation_scope"], "Mutual recognition / decentralised")
+        self.assertEqual(row["registration_date"], "2010-01-13")
+        self.assertEqual(row["strength"], "500 mg")
+        self.assertTrue(row["smpc_url"].endswith("h103638_smpc.pdf"))
+
+    def test_netherlands_keeps_eu_numbers_as_published(self):
+        _, row = next(national_registers.build_netherlands_rows([{
+            "REGISTRATIENUMMER": "EU/1/14/944", "SOORT": "", "PRODUCTNAAM": "ABASAGLAR 100 E/ml",
+            "WERKZAMESTOFFEN": "INSULINE GLARGINE", "PROCEDURENUMMER": "",
+        }], "2026-09-22"))
+        self.assertEqual(row["registration_number"], "EU/1/14/944")
+        self.assertEqual(row["authorisation_scope"], "Centralised")
+
+    def test_poland_row_names_the_manufacturers_in_english(self):
+        rows = list(national_registers.build_poland_rows([
+            {
+                "Rodzaj preparatu": "Ludzki", "Nazwa Produktu Leczniczego": "Metformax 500",
+                "Nazwa powszechnie stosowana": "Metformini hydrochloridum", "Moc": "500 mg",
+                "Postać farmaceutyczna": "Tabletki", "Typ procedury": "NAR", "Numer pozwolenia": "01263",
+                "Ważność pozwolenia": "Bezterminowe", "Kod ATC": "A10BA02",
+                "Podmiot odpowiedzialny": "Teva Pharmaceuticals Polska Sp. z o.o.",
+                "Opakowanie": "05909990012634 ¦ Rp ¦ 1\n30 tabl.\n05909990012641 ¦ Rp ¦ 2\n60 tabl.",
+                "Nazwa wytwórcy": "Teva Operations Polska Sp. z o.o.\nPliva Hrvatska d.o.o.",
+                "Kraj wytwórcy": "Polska\nChorwacja",
+            },
+            {"Rodzaj preparatu": "Weterynaryjny", "Nazwa Produktu Leczniczego": "Vet",
+             "Nazwa powszechnie stosowana": "Metformini hydrochloridum"},
+        ], "2026-09-22"))
+        self.assertEqual(len(rows), 1)  # the veterinary product is left out
+        _, row = rows[0]
+        self.assertEqual(row["manufacturer_name"], "Teva Operations Polska Sp. z o.o.; Pliva Hrvatska d.o.o.")
+        self.assertEqual(row["manufacturer_country"], "Poland; Croatia")
+        self.assertEqual(row["manufacturer_source"], "Polish Register of Medicinal Products")
+        self.assertEqual(row["pack_size"], "30 tabl.; 60 tabl.")
+        self.assertEqual(row["expiry_date"], "Unlimited")
+        self.assertEqual(row["authorisation_scope"], "National")
+        self.assertEqual(row["product"], "Metformax 500")
+
+    def test_poland_tells_central_products_apart_by_strength_and_form(self):
+        rows = [
+            row for _, row in national_registers.build_poland_rows([
+                {"Rodzaj preparatu": "Ludzki", "Nazwa Produktu Leczniczego": "Zometa",
+                 "Nazwa powszechnie stosowana": "Acidum zoledronicum", "Moc": strength,
+                 "Postać farmaceutyczna": form, "Typ procedury": "CEN", "Numer pozwolenia": ""}
+                for strength, form in (("4 mg/5 ml", "Koncentrat do sporządzania roztworu do infuzji"),
+                                       ("4 mg/100 ml", "Roztwór do infuzji"))
+            ], "2026-09-22")
+        ]
+        self.assertEqual(
+            [row["product"] for row in rows],
+            ["Zometa 4 mg/5 ml Concentrate for solution for infusion", "Zometa 4 mg/100 ml Solution for infusion"],
+        )
+
+    def test_czech_register_groups_packs_and_uses_sukls_english_names(self):
+        def table(header, *rows):
+            lines = [";".join(header)] + [";".join(row) for row in rows]
+            return ("\r\n".join(lines) + "\r\n").encode("cp1250")
+
+        pack = ["KOD_SUKL", "NAZEV", "SILA", "FORMA", "CESTA", "DOPLNEK", "DRZ", "ZEMDRZ", "REG",
+                "V_PLATDO", "NEOMEZ", "ATC_WHO", "RC", "REG_PROC", "DODAVKY", "MRP_CISLO"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dlp.zip"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("dlp_latky.csv", table(["KOD_LATKY", "NAZEV_INN", "NAZEV_EN", "NAZEV"],
+                                                        ["2417", "METFORMINUM", "METFORMIN HYDROCHLORIDE", "METFORMIN"]))
+                archive.writestr("dlp_slozeni.csv", table(["KOD_SUKL", "KOD_LATKY", "SQ", "S"],
+                                                          ["0011114", "2417", "1", "L"], ["0011120", "2417", "1", "L"],
+                                                          ["0099999", "2417", "1", "L"]))
+                archive.writestr("dlp_formy.csv", table(["FORMA", "NAZEV", "NAZEV_EN"], ["TBL FLM", "Potahovaná tableta", "Film-coated tablet"]))
+                archive.writestr("dlp_cesty.csv", table(["CESTA", "NAZEV", "NAZEV_EN"], ["POR", "Perorální podání", "Oral use"]))
+                archive.writestr("dlp_zeme.csv", table(["ZEM", "NAZEV", "NAZEV_EN"], ["CZ", "ČESKÁ REPUBLIKA", "CZECH REPUBLIC"]))
+                archive.writestr("dlp_organizace.csv", table(["ZKR_ORG", "ZEM", "NAZEV"], ["TPP", "CZ", "Teva Pharmaceuticals CR, s.r.o., Praha"]))
+                archive.writestr("dlp_lecivepripravky.csv", table(
+                    pack,
+                    ["0011114", "METFORMIN TEVA", "850MG", "TBL FLM", "POR", "850MG TBL FLM 30", "TPP", "CZ", "R", "", "X", "A10BA02", "18/386/05-C", "CMS", "1", "DE/H/4523/002"],
+                    ["0011120", "METFORMIN TEVA", "850MG", "TBL FLM", "POR", "850MG TBL FLM 40", "TPP", "CZ", "R", "", "X", "A10BA02", "18/386/05-C", "CMS", "0", "DE/H/4523/002"],
+                    # A food for special medical purposes is not a marketing authorisation.
+                    ["0099999", "NUTRI", "", "TBL FLM", "POR", "", "TPP", "CZ", "P", "", "", "", "", "", "0", ""],
+                ))
+            records = list(national_registers.read_czech(national_registers.SUKL_CZECH, path))
+            rows = [row for _, row in national_registers.build_czech_rows(records, "2026-09-22")]
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["product"], "METFORMIN TEVA 850MG")
+        self.assertEqual(row["substance"], "Metformin hydrochloride")
+        self.assertEqual(row["pack_size"], "850MG TBL FLM 30; 850MG TBL FLM 40")
+        self.assertEqual(row["dosage_form"], "Film-coated tablet")
+        self.assertEqual(row["route"], "Oral use")
+        self.assertEqual(row["company"], "Teva Pharmaceuticals CR, s.r.o., Praha")
+        self.assertEqual(row["registration_number"], "18/386/05-C")
+        self.assertEqual(row["status"], "Registered, supplied in the last six months")
+        self.assertEqual(row["expiry_date"], "Unlimited")
+        self.assertEqual(row["authorisation_scope"], "Mutual recognition / decentralised")
+
+    def test_denmark_reads_the_workbook_and_leaves_out_veterinary_medicines(self):
+        import openpyxl
+
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.append(["Drugid", None, "Navn", None, "Lægemiddelform", "Styrketekst", "AktiveSubstanser",
+                      "MftIndehaver", "ATC-kode", "Godkendt procedure", "Godkendt rolle", "Registreringsdato",
+                      "Er i Medicinpriser"])
+        sheet.append([None] * 13)
+        sheet.append([28100000001, None, "Eltroxin", None, "tabletter", "100 mikrogram", "LEVOTHYROXINNATRIUM",
+                      "Aspen Pharma Trading Ltd.", "H03AA01", "National", "DKMA", datetime(1955, 3, 22), "Ja"])
+        sheet.append([28100000002, None, "Eltroxin", None, "tabletter", "100 mikrogram", "LEVOTHYROXINNATRIUM",
+                      "Orifarm A/S", "H03AA01", "Par-Imp", "DKMA", datetime(2014, 8, 15), "Ja"])
+        sheet.append([28100000003, None, "Adequan Vet.", None, "injektionsvæske, opløsning", "250 mg/ml",
+                      "POLYSULFATERET GLYCOSAMINOGLYCAN", "Vet Co", "QM01AX12", "National", "DKMA", None, "Nej"])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dkma_authorised.xlsx"
+            workbook.save(path)
+            records = list(national_registers.read_denmark(national_registers.DKMA_DENMARK, path))
+        rows = [row for _, row in national_registers.build_denmark_rows(records, "2026-09-22")]
+
+        self.assertEqual([row["product"] for row in rows], [
+            "Eltroxin 100 mikrogram tabletter",
+            "Eltroxin 100 mikrogram tabletter (parallel import: Orifarm A/S)",
+        ])
+        self.assertEqual(rows[0]["dosage_form"], "Tablet")
+        self.assertEqual(rows[0]["registration_date"], "1955-03-22")
+        self.assertEqual(rows[0]["status"], "Authorised, on the price list")
+        self.assertEqual(rows[1]["authorisation_scope"], "Parallel import")
+        self.assertEqual(rows[0]["registration_number"], "")  # the list carries no authorisation number
+
+    def test_the_four_registers_are_wired_into_search(self):
+        from services.search_pipeline import DEFAULT_SOURCES
+
+        names = {item["name"] for item in connector_metadata()}
+        for source, country in (("CBG Netherlands", "Netherlands"), ("URPL Poland", "Poland"),
+                                ("SUKL Czech Republic", "Czech Republic"), ("DKMA Denmark", "Denmark")):
+            self.assertIn(source, names)
+            self.assertIn(source, sources_for_scope(DEFAULT_SOURCES, country=country))
+            self.assertIn(source, sources_for_scope(DEFAULT_SOURCES, region="EU"))
 
 if __name__ == "__main__":
     unittest.main()

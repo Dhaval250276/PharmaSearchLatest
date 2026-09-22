@@ -46,6 +46,12 @@ from sources.open_data_registers import (
     run_hsa_singapore_search,
     run_ukraine_drlz_search,
 )
+from sources.national_registers import (
+    run_cbg_netherlands_search,
+    run_dkma_denmark_search,
+    run_sukl_czech_search,
+    run_urpl_poland_search,
+)
 from sources.sfda_saudi import run_sfda_saudi_search
 from sources.spain_cima import run_spain_cima_search
 from sources.swissmedic import run_swissmedic_search
@@ -82,6 +88,46 @@ CONNECTORS: list[SourceConnector] = [
         ),
         # HPRA's daily list of every authorised human medicine.
         run_hpra_ireland_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="CBG Netherlands",
+            region="EU",
+            countries=("Netherlands",),
+            supports_documents=True,
+        ),
+        # CBG's Medicines Information Bank, published whole each week.
+        run_cbg_netherlands_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="URPL Poland",
+            region="EU",
+            countries=("Poland",),
+            supports_documents=True,
+        ),
+        # The Register of Medicinal Products, published whole each day.
+        run_urpl_poland_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="SUKL Czech Republic",
+            region="EU",
+            countries=("Czech Republic",),
+            supports_documents=False,
+        ),
+        # SUKL's medicinal products database (DLP), published monthly.
+        run_sukl_czech_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="DKMA Denmark",
+            region="EU",
+            countries=("Denmark",),
+            supports_documents=False,
+        ),
+        # DKMA's daily list of authorised medicines.
+        run_dkma_denmark_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(
