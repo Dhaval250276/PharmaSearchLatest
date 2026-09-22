@@ -100,7 +100,7 @@ def _fold(text: object) -> str:
 
 # The version of the matching rules (_stem and what feeds it). An index keeps
 # the version it was built under; one built under another is rebuilt.
-MATCH_VERSION = 2
+MATCH_VERSION = 3
 
 
 def _stem(word: str) -> str:

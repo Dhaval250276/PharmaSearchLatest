@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 import repository
-from sources import americas_registers, europe_registers, national_registers
+from sources import americas_registers, asia_registers, europe_registers, national_registers
 from bs4 import BeautifulSoup
 
 from export_service import build_export_rows
@@ -5143,6 +5143,49 @@ class LatinAmericaTests(unittest.TestCase):
                 {"country": "Italy", "region": "EU", "product": "c", "source": "AIFA Italy"}]
         self.assertEqual([row["country"] for row in filter_rows(rows, region="LA")], ["Brazil", "Colombia"])
         self.assertEqual([row["country"] for row in filter_rows(rows, region="BR")], ["Brazil"])
+
+
+class KazakhstanTests(unittest.TestCase):
+    def test_russian_acids_meet_the_english_search(self):
+        from sources.grls_russia import fold, match_text
+        from sources.open_registers import query_tokens
+
+        for russian, english in (("Золедроновая кислота", "zoledronic acid"),
+                                 ("Ацетилсалициловая кислота", "acetylsalicylic acid"),
+                                 ("Фолиевая кислота", "folic acid"), ("Вальпроевая кислота", "valproic acid"),
+                                 ("Аскорбиновая кислота", "ascorbic acid")):
+            have = set(match_text(russian).split())
+            self.assertTrue(all(fold(token) in have for token in query_tokens(english)), russian)
+        self.assertNotIn("acid", match_text("Метформин"))
+
+    def test_kazakhstan_row_is_put_into_english(self):
+        record = {
+            "id": 1, "sourceId": "abc", "drugTradeName": "Лориста® Н", "regNumber": "ЛП-№001972-РГ-KZ",
+            "mnn": "Гидрохлоротиазид + Лозартан", "lekFormName": "таблетки, покрытые пленочной оболочкой",
+            "producerName": "1. КРКА, д.д., Ново место, 2. КРКА-РУС", "countryName": "1. СЛОВЕНИЯ, 2. РОССИЯ",
+            "regDate": "2021-03-02T00:00:00", "expirationDate": None, "recipeSign": True, "sourceType": "Eaes",
+            "atcCode": "C09DA01",
+        }
+        rows = list(asia_registers.build_kazakhstan_rows([record, dict(record)], "2026-09-22"))
+
+        self.assertEqual(len(rows), 1)  # the same record twice is one row
+        match, row = rows[0]
+        self.assertEqual(row["manufacturer_country"], "Slovenia; Russia")
+        self.assertEqual(len(row["manufacturer_name"].split("; ")), 2)
+        self.assertEqual(row["company"], "")  # the register names the producer, not the holder
+        self.assertEqual(row["authorisation_scope"], "EAEU registration")
+        self.assertEqual((row["registration_date"], row["expiry_date"]), ("2021-03-02", "Unlimited"))
+        self.assertEqual(row["classification"], "Prescription")
+        # Transliterated; "№" is part of the number as NDDA writes it.
+        self.assertNotRegex(row["registration_number"], "[А-Яа-яЁё]")
+        self.assertTrue(row_relevant_to_substance(row, "losartan + hydrochlorothiazide"))
+
+    def test_kazakhstan_is_wired_into_asia(self):
+        from services.search_pipeline import DEFAULT_SOURCES
+
+        self.assertIn("NDDA Kazakhstan", {item["name"] for item in connector_metadata()})
+        self.assertEqual(sources_for_scope(DEFAULT_SOURCES, country="Kazakhstan"), ["NDDA Kazakhstan"])
+        self.assertIn("NDDA Kazakhstan", sources_for_scope(DEFAULT_SOURCES, region="AS"))
 
 if __name__ == "__main__":
     unittest.main()

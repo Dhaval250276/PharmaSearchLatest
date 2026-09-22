@@ -53,6 +53,7 @@ from sources.national_registers import (
     run_urpl_poland_search,
 )
 from sources.americas_registers import run_invima_colombia_search
+from sources.asia_registers import run_ndda_kazakhstan_search
 from sources.europe_registers import (
     run_alims_serbia_search,
     run_bda_bulgaria_search,
@@ -218,6 +219,16 @@ CONNECTORS: list[SourceConnector] = [
         ),
         # INVIMA's current marketing authorisations (CUM), on datos.gov.co.
         run_invima_colombia_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="NDDA Kazakhstan",
+            region="AS",
+            countries=("Kazakhstan",),
+            supports_documents=False,
+        ),
+        # NDDA's State Register of Medicinal Products, from its public JSON service.
+        run_ndda_kazakhstan_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(

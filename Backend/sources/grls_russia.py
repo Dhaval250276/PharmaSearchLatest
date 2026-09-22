@@ -160,8 +160,22 @@ def fold(token: str) -> str:
     return re.sub(r"([a-z])\1+", r"\1", token)
 
 
+# Russian names an acid with an adjective: "Золедроновая кислота" is
+# zoledronic acid, "Фолиевая кислота" folic acid.
+_ACID = re.compile(r"([А-Яа-яЁё]+?)(?:ин)?(?:ов|ев)?ая\s+кислота", re.IGNORECASE)
+
+
+def _acids_in_english(inn: str) -> str:
+    def english(found: re.Match) -> str:
+        stem = found.group(1)
+        # Фоли-евая is folic, Золедрон-овая zoledronic.
+        return f"{stem}{'c' if stem[-1:].lower() == 'и' else 'ic'} acid"
+
+    return _ACID.sub(english, inn)
+
+
 def match_text(inn: str) -> str:
-    return " " + " ".join(fold(token) for token in inn_tokens(latin(inn))) + " "
+    return " " + " ".join(fold(token) for token in inn_tokens(latin(_acids_in_english(inn)))) + " "
 
 
 def english_company(name: str) -> str:

@@ -481,11 +481,17 @@ def read_czech(register: OpenRegister, path: Path) -> Iterator[dict[str, Any]]:
         for row in _czech_table(archive, "dlp_lecivepripravky.csv"):
             if row.get("REG") not in CZECH_STATUS:
                 continue
-            key = (row.get("RC") or row["KOD_SUKL"], row.get("NAZEV") or "", row.get("SILA") or "", row.get("FORMA") or "")
+            number = _clean(row.get("RC"))
+            # A centrally authorised product's number names the pack in its
+            # last part (EU/1/14/944/012); its packs are one product.
+            if number.startswith("EU/"):
+                number = "/".join(number.split("/")[:4])
+            key = (number or row["KOD_SUKL"], row.get("NAZEV") or "", row.get("SILA") or "", row.get("FORMA") or "")
             record = grouped.get(key)
             if record is None:
                 record = grouped[key] = {
                     **row,
+                    "RC": number,
                     "actives": [name for _, name in sorted(composition.get(row["KOD_SUKL"], []))],
                     "form_en": forms.get(row.get("FORMA") or "", row.get("FORMA") or ""),
                     "route_en": routes.get(row.get("CESTA") or "", row.get("CESTA") or ""),

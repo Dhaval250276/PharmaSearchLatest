@@ -74,6 +74,7 @@ DEFAULT_SOURCES = [
     "Malta Medicines Authority",
     "BDA Bulgaria",
     "INVIMA Colombia",
+    "NDDA Kazakhstan",
     "TITCK Turkey",
     "TFDA Taiwan",
     "BfArM Germany",
@@ -532,6 +533,7 @@ SOURCE_COUNTRIES = {
     "malta medicines authority": {"Malta"},
     "bda bulgaria": {"Bulgaria"},
     "invima colombia": {"Colombia"},
+    "ndda kazakhstan": {"Kazakhstan"},
     "tfda taiwan": {"Taiwan"},
     "anvisa brazil": {"Brazil"},
     "cyprus pharmaceutical services": {"Cyprus"},
@@ -582,6 +584,7 @@ COUNTRY_SOURCE_DEFAULTS = {
     "Malta": "Malta Medicines Authority",
     "Bulgaria": "BDA Bulgaria",
     "Colombia": "INVIMA Colombia",
+    "Kazakhstan": "NDDA Kazakhstan",
 }
 REGION_SOURCE_DEFAULTS = {
     "AU": "TGA Australia",
@@ -626,6 +629,7 @@ REGIONAL_LIVE_SOURCES = {
         "DAV Vietnam",
         "MHLW Japan",
         "TFDA Taiwan",
+        "NDDA Kazakhstan",
         "Hong Kong Drug Office",
         "Israel Drug Registry",
         "SFDA Saudi Arabia",
@@ -1257,6 +1261,40 @@ def sort_rows(
     )
 
 
+def _centrally_authorised(row: dict[str, Any]) -> bool:
+    return (
+        str(row.get("registration_number") or "").upper().startswith("EU/")
+        or str(row.get("authorisation_scope") or "") == "Centralised"
+    )
+
+
+def suppress_ema_copies(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Leave out EMA's row for a country whose own register lists the product.
+
+    EMA's centrally authorised products are listed once per member state, and
+    the national registers list the same products with what EMA's row lacks:
+    the local holder, the packs, whether it is marketed. EMA writes its
+    procedure number (EMEA/H/C/004162) and the registers the EU number
+    (EU/1/15/1051), so the two are matched by name: the register's product
+    name begins with EMA's ("Ebymect" -> "Ebymect 5 mg/1000 mg ...").
+    """
+    national: dict[str, list[str]] = {}
+    for row in rows:
+        if row.get("source") != "EMA" and _centrally_authorised(row):
+            national.setdefault(str(row.get("country") or ""), []).append(
+                " ".join(re.findall(r"[a-z0-9]+", str(row.get("product") or "").lower()))
+            )
+    if not national:
+        return rows
+
+    def listed_nationally(row: dict[str, Any]) -> bool:
+        names = national.get(str(row.get("country") or ""))
+        brand = " ".join(re.findall(r"[a-z0-9]+", str(row.get("product") or "").lower()))
+        return bool(names and brand) and any(name == brand or name.startswith(brand + " ") for name in names)
+
+    return [row for row in rows if not (row.get("source") == "EMA" and listed_nationally(row))]
+
+
 def suppress_generic_lookup_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     countries_with_connector_rows = {
         row.get("country")
@@ -1563,10 +1601,10 @@ def filtered_search_results(
         force_live=force_live,
         freshness_report=freshness_report,
     )
-    all_rows = [
+    all_rows = suppress_ema_copies([
         row for row in all_rows
         if row_relevant_to_substance(row, substance) and matches_searched_strength(row, searched_strength)
-    ]
+    ])
     normalized_sort_dir = "desc" if sort_dir == "desc" else "asc"
     rows = filter_rows(
         all_rows,
