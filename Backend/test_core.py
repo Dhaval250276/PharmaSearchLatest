@@ -1,3 +1,4 @@
+import json
 import unittest
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -8,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 import repository
-from sources import national_registers
+from sources import europe_registers, national_registers
 from bs4 import BeautifulSoup
 
 from export_service import build_export_rows
@@ -4775,6 +4776,188 @@ class NationalRegisterTests(unittest.TestCase):
             self.assertIn(source, names)
             self.assertIn(source, sources_for_scope(DEFAULT_SOURCES, country=country))
             self.assertIn(source, sources_for_scope(DEFAULT_SOURCES, region="EU"))
+
+
+class EuropeRegisterTests(unittest.TestCase):
+    """Norway, Slovakia, Latvia and Turkey, read from their published files."""
+
+    def test_turkish_spellings_fold_to_the_english_search(self):
+        from sources.grls_russia import fold
+        from sources.open_registers import query_tokens
+
+        def finds(turkish, english):
+            have = set(europe_registers.turkish_tokens(turkish))
+            return all(fold(token) in have for token in query_tokens(english))
+
+        self.assertTrue(finds("dekzametazon", "dexamethasone"))
+        self.assertTrue(finds("parasetamol", "paracetamol"))
+        self.assertTrue(finds("siprofloksasin hidroklorür monohidrat", "ciprofloxacin"))
+        self.assertTrue(finds("setirizin dihidroklorür", "cetirizine"))
+        self.assertTrue(finds("zoledronik asit monohidrat", "zoledronic acid"))
+        self.assertTrue(finds("levotiroksin sodyum", "levothyroxine sodium"))
+        self.assertTrue(finds("metformin hidroklorür", "metformin hydrochloride"))
+        self.assertFalse(finds("metformin hidroklorür", "atorvastatin"))
+
+    def _workbook(self, directory, name, rows, sheet_title=None):
+        import openpyxl
+
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        if sheet_title:
+            sheet.title = sheet_title
+        for row in rows:
+            sheet.append(row)
+        path = Path(directory) / name
+        workbook.save(path)
+        return path
+
+    def test_turkey_groups_packs_under_the_licence_and_reads_suspension(self):
+        header = ["SIRA NO", "BARKOD", "ÜRÜN ADI", "ETKİN MADDE", "ATC KODU", "RUHSAT SAHİBİ", "RUHSAT TARİHİ",
+                  "RUHSAT NUMARASI", "DEĞİŞİKLİK", "", "DEĞİŞİKLİK TARİHİ", "RUHSATI ASKIDA OLMAYAN ÜRÜN: 0", "ASKIYA ALINMA TARİHİ"]
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._workbook(directory, "titck.xlsx", [
+                ["RUHSATLI BEŞERİ TIBBİ ÜRÜNLER LİSTESİ"], header,
+                [1, 8699508010752, "ONADRON 0.75 MG TABLET, 100 TABLET", "dekzametazon", "H02AB02",
+                 "MENARİNİ SAĞLIK VE İLAÇ SAN. TİC. A.Ş.", datetime(1960, 10, 1), "55/44", "", "", "", 0, ""],
+                [2, 8699508010134, "ONADRON 0.75 MG TABLET, 20 TABLET", "dekzametazon", "H02AB02",
+                 "MENARİNİ SAĞLIK VE İLAÇ SAN. TİC. A.Ş.", datetime(1960, 10, 1), "55/44", "", "", "", 0, ""],
+                [3, 8699000000000, "EZEROS 10 MG/10 MG FILM KAPLI TABLET, 30 TABLET", "rosuvastatin ve ezetimib", "C10BA06",
+                 "NUVOMED", datetime(2016, 1, 1), "231/97", "", "", "", 2, ""],
+            ], sheet_title=europe_registers.TURKEY_SHEET)
+            records = list(europe_registers.read_turkey(europe_registers.TITCK_TURKEY, path))
+        rows = [row for _, row in europe_registers.build_turkey_rows(records, "2026-09-22")]
+
+        self.assertEqual(len(rows), 2)
+        onadron = rows[0]
+        self.assertEqual(onadron["product"], "ONADRON 0.75 MG TABLET")
+        self.assertEqual(onadron["pack_size"], "100 TABLET; 20 TABLET")
+        self.assertEqual(onadron["registration_number"], "55/44")
+        self.assertEqual(onadron["registration_date"], "1960-10-01")
+        self.assertEqual(onadron["status"], "Licensed")
+        self.assertEqual(rows[1]["substance"], "rosuvastatin; ezetimib")
+        self.assertEqual(rows[1]["status"], "Suspended (pharmacovigilance)")
+        self.assertTrue(row_relevant_to_substance(rows[1], "rosuvastatin + ezetimibe"))
+
+    def test_slovakia_reads_the_list_from_its_html_page(self):
+        packs = [
+            {"lie_nazov": "Ebymect 5 mg/1000 mg filmom obalené tablety", "lie_rc": "EU/1/15/1051/012",
+             "lie_doplnok": "tbl flm 196", "drz_nazov": "AstraZeneca AB", "stav_kod": "E",
+             "atc_kod": "A10BD15", "atc_nazov": "Metformin and dapagliflozin", "lie_sila": "5 mg/1000 mg",
+             "form_nazov_en": "Film-coated tablet*", "form_nazov": "Filmom obalená tableta", "pod_nazov_en": "Oral use",
+             "reg_typ_nazov_en": "EU", "vyd_nazov_en": "?", "lie_registracia": "2015-11-16"},
+            {"lie_nazov": "Ebymect 5 mg/1000 mg filmom obalené tablety", "lie_rc": "EU/1/15/1051/013",
+             "lie_doplnok": "tbl flm 56", "drz_nazov": "AstraZeneca AB", "stav_kod": "E",
+             "atc_kod": "A10BD15", "atc_nazov": "Metformin and dapagliflozin", "lie_sila": "5 mg/1000 mg",
+             "form_nazov_en": "?", "form_nazov": "Filmom obalená tableta", "pod_nazov_en": "Oral use",
+             "reg_typ_nazov_en": "EU", "vyd_nazov_en": "?", "lie_registracia": "2015-11-16"},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sukl.html"
+            path.write_text(
+                "\n<!DOCTYPE html><html><head><title>Lieky JSON</title></head><body>"
+                + json.dumps(packs) + "  \n</body></html>", encoding="utf-8")
+            records = list(europe_registers.read_slovakia(europe_registers.SUKL_SLOVAKIA, path))
+        rows = [row for _, row in europe_registers.build_slovakia_rows(records, "2026-09-22")]
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["registration_number"], "EU/1/15/1051")
+        self.assertEqual(row["pack_size"], "tbl flm 196; tbl flm 56")
+        self.assertEqual(row["substance"], "Metformin; dapagliflozin")
+        self.assertEqual(row["status"], "Centralised authorisation")
+        self.assertEqual(row["dosage_form"], "Film-coated tablet")
+        self.assertEqual(row["classification"], "")  # "?" is SUKL's blank
+        self.assertTrue(row_relevant_to_substance(row, "metformin"))
+
+    def test_latvia_names_eu_strengths_and_parallel_imports_apart(self):
+        base = {
+            "original_name": "Abasaglar", "active_substance": "Insulinum glarginum",
+            "marketing_authorisation_holder": "Eli Lilly Nederland B.V., Netherlands",
+            "manufacturer": "Lilly France, France", "parallel_importer_en": "", "status": "1", "prd_removed": "0",
+            "atc_code": "A10AE04", "authorisation_procedure": "Eiropas centralizētā reģistrācijas procedūra",
+            "strength": "100 units/ml", "pharmaceutical_form": "Solution for injection",
+            "date_of_authorisation": "09-SEP-14", "summary_of_product_characteristics": "https://dati.zva.gov.lv/x/smpc",
+        }
+        packs = [
+            {**base, "authorisation_no": "EU/1/14/944/003", "package_en": "Cartridge, N5"},
+            {**base, "authorisation_no": "EU/1/14/944/007", "package_en": "Pre-filled pen, N5"},
+            {**base, "authorisation_no": "EU/1/14/944/008", "package_en": "Pre-filled pen, N10", "prd_removed": "1"},
+            {**base, "original_name": "Atoris 10 mg film-coated tablets", "active_substance": "Atorvastatinum",
+             "authorisation_no": "04-0142", "authorisation_procedure": "Paralēlais imports",
+             "parallel_importer_en": "Orivas UAB, Lithuania", "strength": "10 mg",
+             "pharmaceutical_form": "Film-coated tablet", "package_en": "Blister, N30"},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "zva.json.zip"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("HumanProducts.json", json.dumps(packs))
+            records = list(europe_registers.read_latvia(europe_registers.ZVA_LATVIA, path))
+        rows = [row for _, row in europe_registers.build_latvia_rows(records, "2026-09-22")]
+
+        self.assertEqual([row["product"] for row in rows], [
+            "Abasaglar 100 units/ml Solution for injection",
+            "Atoris 10 mg film-coated tablets (parallel import: Orivas UAB, Lithuania)",
+        ])
+        abasaglar = rows[0]
+        self.assertEqual(abasaglar["registration_number"], "EU/1/14/944")
+        self.assertEqual(abasaglar["pack_size"], "Cartridge, N5; Pre-filled pen, N5")  # the removed pack is left out
+        self.assertEqual(abasaglar["registration_date"], "2014-09-09")
+        self.assertEqual(abasaglar["authorisation_scope"], "Centralised")
+        self.assertEqual(abasaglar["manufacturer_name"], "Lilly France, France")
+        self.assertEqual(rows[1]["authorisation_scope"], "Parallel import")
+        self.assertTrue(row_relevant_to_substance(abasaglar, "insulin glargine"))
+
+    def test_norway_resolves_english_substances_and_keeps_only_authorised_products(self):
+        ns = "http://www.kith.no/xmlstds/eresept/forskrivning/2014-12-01"
+
+        def product(item_id, name, company, kind, ref, form="Tablett"):
+            return (
+                f'<OppfLegemiddelMerkevare><Id>{item_id}</Id><Status V="A" DN="Aktiv oppføring" />'
+                f'<LegemiddelMerkevare xmlns="{ns}"><Atc V="A10BA02" DN="Metformin" />'
+                f'<NavnFormStyrke>{name}</NavnFormStyrke><Preparattype V="7" DN="{kind}" />'
+                f'<LegemiddelformLang>{form}</LegemiddelformLang>'
+                f'<SortertVirkestoffMedStyrke><RefVirkestoffMedStyrke>{ref}</RefVirkestoffMedStyrke></SortertVirkestoffMedStyrke>'
+                f'<ProduktInfo><Produsent>{company}</Produsent></ProduktInfo>'
+                f'<Preparatomtaleavsnitt><Lenke><Www V="https://produktinformasjon.legemiddelsok.no/{item_id}.pdf" /></Lenke></Preparatomtaleavsnitt>'
+                f'</LegemiddelMerkevare></OppfLegemiddelMerkevare>'
+            )
+
+        xml = (
+            '<?xml version="1.0" encoding="utf-8"?><FEST xmlns="http://www.kith.no/xmlstds/eresept/m30/2014-12-01">'
+            "<KatLegemiddelMerkevare>"
+            + product("P1", "Glucophage tab 500 mg", "Merck", "Legemiddel", "S1")
+            + product("P2", "Glucophage tab 500 mg", "Orifarm AS", "Legemiddel", "S1")
+            + product("P3", "Metformin Exempt tab 500 mg", "Importer", "Krever godkj. Fritak", "S1")
+            + "</KatLegemiddelMerkevare><KatVirkestoff>"
+            f'<OppfVirkestoff><Id>O1</Id><VirkestoffMedStyrke xmlns="{ns}"><Id>S1</Id><RefVirkestoff>V1</RefVirkestoff></VirkestoffMedStyrke></OppfVirkestoff>'
+            f'<OppfVirkestoff><Id>O2</Id><Virkestoff xmlns="{ns}"><Id>V1</Id><Navn>Metforminhydroklorid</Navn><NavnEngelsk>Metformin hydrochloride</NavnEngelsk></Virkestoff></OppfVirkestoff>'
+            "</KatVirkestoff></FEST>"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fest.zip"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("fest251.xml", xml)
+            records = list(europe_registers.read_norway(europe_registers.DMP_NORWAY, path))
+        rows = [row for _, row in europe_registers.build_norway_rows(records, "2026-09-22")]
+
+        self.assertEqual([row["product"] for row in rows], [
+            "Glucophage tab 500 mg (Merck)", "Glucophage tab 500 mg (Orifarm AS)",
+        ])
+        self.assertEqual(rows[0]["substance"], "Metformin hydrochloride")
+        self.assertEqual(rows[0]["dosage_form"], "Tablet")
+        self.assertEqual(rows[0]["strength"], "500 mg")
+        self.assertEqual(rows[0]["classification"], "Medicinal product")
+        self.assertTrue(rows[0]["smpc_url"].endswith("P1.pdf"))
+
+    def test_the_four_registers_are_wired_into_search(self):
+        from services.search_pipeline import DEFAULT_SOURCES
+
+        names = {item["name"] for item in connector_metadata()}
+        for source, country, region in (("DMP Norway", "Norway", "EU"), ("SUKL Slovakia", "Slovakia", "EU"),
+                                        ("ZVA Latvia", "Latvia", "EU"), ("TITCK Turkey", "Turkey", "ME")):
+            self.assertIn(source, names)
+            self.assertIn(source, sources_for_scope(DEFAULT_SOURCES, country=country))
+            self.assertIn(source, sources_for_scope(DEFAULT_SOURCES, region=region))
 
 if __name__ == "__main__":
     unittest.main()

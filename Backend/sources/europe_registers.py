@@ -1,0 +1,615 @@
+"""National registers four more European regulators publish whole.
+
+    Norway    DMP's FEST, the prescribing catalogue, published every two weeks
+              as one XML file (NLOD 2.0); product, form and strength, ATC, the
+              company FEST names for it, English substance names, SPC link.
+    Slovakia  SUKL's list of every medicine with a valid registration, daily,
+              from its JSON service (CC0); holder and country, registration
+              number and type, and SUKL's own English form, route and status.
+    Latvia    ZVA's Medicines Register export, daily (CC0); English product
+              name and form, holder, manufacturer, parallel importer,
+              procedure, SmPC and leaflet.
+    Turkey    TITCK's weekly list of licensed human medicinal products; holder,
+              licence number and date, ATC, and whether the licence is
+              suspended.
+
+Indexed locally like the others (open_registers). Norway's substances come in
+English from FEST itself; Slovakia's list names no substance, so its rows are
+matched on the English WHO name of their ATC code and their product name.
+Turkish spells an INN as it is said ("dekzametazon", "parasetamol"), so
+Turkey is matched the way Russia is: both sides folded to one spelling.
+"""
+from __future__ import annotations
+
+import json
+import re
+import xml.etree.ElementTree as ET
+import zipfile
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Iterable, Iterator
+
+from sources.national_registers import _clean, _date, _indexed, _unique, national_match_text
+from sources.parser import extract_strength
+from sources.open_registers import (
+    OpenRegister,
+    RegisterNotReady,
+    _connect,
+    _fold,
+    _is_stale,
+    _status_rank,
+    add_register,
+    current_index,
+    download_file,
+    index_info,
+    inn_tokens,
+    query_tokens,
+    refresh_in_background,
+    search_register,
+)
+
+
+# ----------------------------------------------------------------- Norway
+
+NORWAY_URL = (
+    "https://www.dmp.no/globalassets/documents/om-oss/distribusjon-av-legemiddeldata/"
+    "fest/festfiler/fest251.zip"
+)
+NORWAY_PAGE = "https://www.dmp.no/om-oss/distribusjon-av-legemiddeldata/fest"
+_FEST = "{http://www.kith.no/xmlstds/eresept/forskrivning/2014-12-01}"
+NORWAY_FORMS = {
+    "tablett": "Tablet",
+    "tablett, filmdrasjert": "Film-coated tablet",
+    "filmdrasjert tablett": "Film-coated tablet",
+    "depottablett": "Prolonged-release tablet",
+    "enterotablett": "Gastro-resistant tablet",
+    "smeltetablett": "Orodispersible tablet",
+    "tyggetablett": "Chewable tablet",
+    "brusetablett": "Effervescent tablet",
+    "kapsel, hard": "Capsule, hard",
+    "kapsel, myk": "Capsule, soft",
+    "injeksjonsvæske, oppløsning": "Solution for injection",
+    "infusjonsvæske, oppløsning": "Solution for infusion",
+    "konsentrat til infusjonsvæske, oppløsning": "Concentrate for solution for infusion",
+    "mikstur, oppløsning": "Oral solution",
+    "mikstur, suspensjon": "Oral suspension",
+    "øyedråper, oppløsning": "Eye drops, solution",
+    "krem": "Cream",
+    "salve": "Ointment",
+    "gel": "Gel",
+    "depotplaster": "Transdermal patch",
+}
+
+
+# FEST also lists what is not authorised in Norway: medicines supplied on an
+# exemption ("Krever godkj. Fritak"), food supplements, hospital and pharmacy
+# preparations. Only these types are marketing authorisations or registrations.
+NORWAY_AUTHORISED_TYPES = {
+    "Legemiddel": "Medicinal product",
+    "Vaksine": "Vaccine",
+    "Medisinsk gass": "Medicinal gas",
+    "Radiofarmaka": "Radiopharmaceutical",
+    "Tradisjonelt plantebasert": "Traditional herbal medicinal product",
+    "Veletablert plantebasert": "Well-established herbal medicinal product",
+}
+
+
+def fetch_norway(register: OpenRegister, workdir: Path) -> Path:
+    return download_file(register, register.url, workdir / "fest.zip")
+
+
+def _text(element: ET.Element | None, tag: str) -> str:
+    found = element.find(f"{_FEST}{tag}") if element is not None else None
+    return _clean(found.text) if found is not None else ""
+
+
+def _display(element: ET.Element | None, tag: str) -> tuple[str, str]:
+    found = element.find(f"{_FEST}{tag}") if element is not None else None
+    return (found.get("V", ""), found.get("DN", "")) if found is not None else ("", "")
+
+
+def read_norway(register: OpenRegister, path: Path) -> Iterator[dict[str, Any]]:
+    """Products with their substances resolved to FEST's English names.
+
+    FEST keeps substances apart from products: a product refers to a
+    substance-with-strength, which refers to a substance. The file is read
+    once for the substances, then again for the products.
+    """
+    with zipfile.ZipFile(path) as archive:
+        name = next(item for item in archive.namelist() if item.lower().endswith(".xml"))
+        substances: dict[str, str] = {}
+        with_strength: dict[str, str] = {}
+        with archive.open(name) as handle:
+            for _event, element in ET.iterparse(handle):
+                if element.tag == f"{_FEST}Virkestoff":
+                    substances[_text(element, "Id")] = _text(element, "NavnEngelsk") or _text(element, "Navn")
+                    element.clear()
+                elif element.tag == f"{_FEST}VirkestoffMedStyrke":
+                    with_strength[_text(element, "Id")] = _text(element, "RefVirkestoff")
+                    element.clear()
+                elif element.tag.endswith(("OppfLegemiddelpakning", "OppfLegemiddelMerkevare")):
+                    element.clear()
+        records = []
+        with archive.open(name) as handle:
+            for _event, element in ET.iterparse(handle):
+                if not element.tag.endswith("}OppfLegemiddelMerkevare"):
+                    continue
+                status = element.find("{*}Status")
+                product = element.find(f"{_FEST}LegemiddelMerkevare")
+                if product is None or (status is not None and status.get("V") != "A"):
+                    element.clear()
+                    continue
+                refs = [
+                    _clean(ref.text)
+                    for ref in product.iter(f"{_FEST}RefVirkestoffMedStyrke")
+                ]
+                spc = next((link.get("V", "") for link in product.iter(f"{_FEST}Www")), "")
+                producer = product.find(f"{_FEST}ProduktInfo")
+                kind = _display(product, "Preparattype")[1]
+                if kind not in NORWAY_AUTHORISED_TYPES:
+                    element.clear()
+                    continue
+                records.append({
+                    "name": _text(product, "NavnFormStyrke"),
+                    "brand": _text(product, "Varenavn"),
+                    "form": _text(product, "LegemiddelformLang") or _display(product, "LegemiddelformKort")[1],
+                    "atc": _display(product, "Atc"),
+                    "prescription": _display(product, "Reseptgruppe")[1],
+                    "type": NORWAY_AUTHORISED_TYPES[kind],
+                    "route": _unique(
+                        route.get("DN", "") for route in product.iter(f"{_FEST}Administrasjonsvei")
+                    ),
+                    "company": _text(producer, "Produsent"),
+                    "actives": [substances.get(with_strength.get(ref, ""), "") for ref in refs],
+                    "spc": spc,
+                })
+                element.clear()
+    # One name, several entries: the holder and each parallel importer, which
+    # FEST does not tell apart. The company, then the form, tells them apart.
+    by_name: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        by_name[record["name"]].append(record)
+    for same in by_name.values():
+        if len(same) > 1:
+            for record in same:
+                record["label"] = f"{record['name']} ({record['company']})"
+            if len({record["label"] for record in same}) < len(same):
+                for record in same:
+                    record["label"] = f"{record['name']} ({record['company']}, {record['form']})"
+    yield from records
+
+
+def build_norway_rows(records: Iterable[dict[str, Any]], fetched_at: str) -> Iterator[tuple[str, dict[str, Any]]]:
+    for record in records:
+        active = _unique(record["actives"])
+        atc_code, atc_name = record["atc"]
+        name = record["name"]
+        if not (active or name):
+            continue
+        yield _indexed(national_match_text(active or atc_name or name), {
+            "substance": active,
+            "active_substance": active,
+            "source_substance": active,
+            "product": record.get("label") or name,
+            # FEST calls it the product's "produsent": the company DMP gave the
+            # permission to market it in Norway.
+            "company": record["company"],
+            "country": "Norway",
+            "region": "EU",
+            "status": "Listed in FEST",
+            "classification": _unique([record["prescription"], record["type"]]),
+            "strength": re.sub(r"^.*?(?=\d)", "", name) if re.search(r"\d", name) else "",
+            "dosage_form": NORWAY_FORMS.get(record["form"].lower(), record["form"]),
+            "route": record["route"],
+            "atc_code": atc_code,
+            "registration_number": "",
+            "source": "DMP Norway",
+            "source_url": NORWAY_PAGE,
+            "product_url": "",
+            "smpc_url": record["spc"],
+            "document_type": "DMP FEST prescribing catalogue record",
+            "last_checked": fetched_at,
+        })
+
+
+DMP_NORWAY = add_register(OpenRegister(
+    source="DMP Norway",
+    country="Norway",
+    region="EU",
+    url=NORWAY_URL,
+    slug="dmp_norway",
+    max_age_seconds=7 * 24 * 3600,
+    build_rows=build_norway_rows,
+    fetch=fetch_norway,
+    read_records=read_norway,
+))
+
+
+def run_dmp_norway_search(substance: str) -> list[dict[str, Any]]:
+    return search_register(DMP_NORWAY, substance)
+
+
+# --------------------------------------------------------------- Slovakia
+
+SLOVAKIA_URL = "https://api.sukl.sk/json/lieky_ui42.php?limit=1000000&offset=0"
+SLOVAKIA_PAGE = "https://www.sukl.sk/hlavna-stranka/slovenska-verzia/databazy-a-servis"
+SLOVAKIA_STATUS = {
+    "D": "Registered, unlimited validity",
+    "R": "Registered",
+    "E": "Centralised authorisation",
+    "Ex": "Conditional centralised authorisation",
+    "Ev": "Centralised authorisation under exceptional circumstances",
+}
+
+
+def fetch_slovakia(register: OpenRegister, workdir: Path) -> Path:
+    return download_file(register, register.url, workdir / "sukl_lieky.html")
+
+
+def read_slovakia(register: OpenRegister, path: Path) -> Iterator[dict[str, Any]]:
+    """The JSON array sits in the body of an HTML page; one record per registration."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    start = text.find("[")
+    if start < 0:
+        raise RuntimeError("SUKL's list came back without its data")
+    packs, _end = json.JSONDecoder().raw_decode(text[start:])
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for pack in packs:
+        number = _clean(pack.get("lie_rc"))
+        # An EU number names the pack in its last part: EU/1/15/1051/012.
+        if number.startswith("EU/"):
+            number = "/".join(number.split("/")[:4])
+        key = (number, _clean(pack.get("lie_nazov")))
+        record = grouped.get(key)
+        if record is None:
+            record = grouped[key] = {**pack, "registration": number, "packs": []}
+        record["packs"].append(_clean(pack.get("lie_doplnok")))
+    yield from grouped.values()
+
+
+def _sk(record: dict[str, Any], field: str) -> str:
+    """SUKL writes "?" where it has no value."""
+    value = _clean(record.get(field))
+    return "" if value == "?" else value
+
+
+def build_slovakia_rows(records: Iterable[dict[str, Any]], fetched_at: str) -> Iterator[tuple[str, dict[str, Any]]]:
+    for record in records:
+        product = _clean(record.get("lie_nazov"))
+        atc_name = _clean(record.get("atc_nazov"))
+        if not product:
+            continue
+        # SUKL's list names no substance; the WHO name of the ATC code is the
+        # molecule for most products, "and" joining a combination's parts.
+        active = "; ".join(part.strip() for part in re.split(r"\s+and\s+", atc_name) if part.strip())
+        status_code = _clean(record.get("stav_kod"))
+        yield _indexed(national_match_text(f"{atc_name} {product}"), {
+            "substance": active,
+            "active_substance": active,
+            "source_substance": atc_name,
+            "product": product,
+            "company": _clean(record.get("drz_nazov")),
+            "country": "Slovakia",
+            "region": "EU",
+            "status": SLOVAKIA_STATUS.get(status_code) or _clean(record.get("stav_nazov_en")) or _clean(record.get("stav_nazov")),
+            "authorisation_scope": _sk(record, "reg_typ_nazov_en"),
+            "strength": _clean(record.get("lie_sila")),
+            "dosage_form": _sk(record, "form_nazov_en").rstrip("*") or _sk(record, "form_nazov"),
+            "route": _sk(record, "pod_nazov_en") or _sk(record, "pod_nazov"),
+            "pack_size": _unique(record["packs"]),
+            "atc_code": _clean(record.get("atc_kod")),
+            "classification": _sk(record, "vyd_nazov_en"),
+            "registration_number": record["registration"],
+            "registration_date": _date(record.get("lie_registracia")),
+            "source": "SUKL Slovakia",
+            "source_url": SLOVAKIA_PAGE,
+            "product_url": "",
+            "document_type": "SUKL list of medicines with a valid registration",
+            "last_checked": fetched_at,
+        })
+
+
+SUKL_SLOVAKIA = add_register(OpenRegister(
+    source="SUKL Slovakia",
+    country="Slovakia",
+    region="EU",
+    url=SLOVAKIA_URL,
+    slug="sukl_slovakia",
+    max_age_seconds=24 * 3600,
+    build_rows=build_slovakia_rows,
+    fetch=fetch_slovakia,
+    read_records=read_slovakia,
+))
+
+
+def run_sukl_slovakia_search(substance: str) -> list[dict[str, Any]]:
+    return search_register(SUKL_SLOVAKIA, substance)
+
+
+# ----------------------------------------------------------------- Latvia
+
+LATVIA_URL = "https://dati.zva.gov.lv/zalu-registrs/export/HumanProducts.json.zip"
+LATVIA_PAGE = "https://dati.zva.gov.lv/zalu-registrs/"
+LATVIA_PROCEDURES = {
+    "Nacionālā reģistrācijas procedūra": "National",
+    "Decentralizētā reģistrācijas procedūra": "Decentralised",
+    "Savstarpējās atzīšanas procedūra": "Mutual recognition",
+    "Eiropas centralizētā reģistrācijas procedūra": "Centralised",
+    "Paralēlais imports": "Parallel import",
+    "Paralēlā izplatīšana": "Parallel distribution",
+    "Nereģistrētas zāles": "Unregistered medicine",
+}
+
+
+def fetch_latvia(register: OpenRegister, workdir: Path) -> Path:
+    return download_file(register, register.url, workdir / "zva_human_products.json.zip")
+
+
+def read_latvia(register: OpenRegister, path: Path) -> Iterator[dict[str, Any]]:
+    """One record per authorisation, strength and form, its packs gathered together."""
+    with zipfile.ZipFile(path) as archive:
+        name = next(item for item in archive.namelist() if item.lower().endswith(".json"))
+        packs = json.loads(archive.read(name))
+    grouped: dict[tuple[str, ...], dict[str, Any]] = {}
+    for pack in packs:
+        if _clean(pack.get("prd_removed")) == "1":
+            continue
+        number = _clean(pack.get("authorisation_no"))
+        # An EU number names the pack in its last part: EU/1/05/308/001.
+        if number.startswith("EU/"):
+            number = "/".join(number.split("/")[:4])
+        pack["authorisation_no"] = number
+        key = (
+            number, _clean(pack.get("strength")),
+            _clean(pack.get("pharmaceutical_form")), _clean(pack.get("parallel_importer_en")),
+        )
+        record = grouped.get(key)
+        if record is None:
+            record = grouped[key] = {**pack, "packs": []}
+        record["packs"].append(_clean(pack.get("package_en")) or _clean(pack.get("package")))
+    yield from grouped.values()
+
+
+def build_latvia_rows(records: Iterable[dict[str, Any]], fetched_at: str) -> Iterator[tuple[str, dict[str, Any]]]:
+    for record in records:
+        active = _unique(re.split(r"\s*(?:,|/|\+)\s*", _clean(record.get("active_substance"))))
+        product = _clean(record.get("original_name")) or _clean(record.get("medicine_name"))
+        if not (active or product):
+            continue
+        importer = _clean(record.get("parallel_importer_en")) or _clean(record.get("parallel_importer"))
+        procedure = _clean(record.get("authorisation_procedure"))
+        number = _clean(record.get("authorisation_no"))
+        if number.startswith("EU/"):
+            # A centrally authorised product is named without its strength
+            # ("Abasaglar"), and one EU number covers every strength.
+            product = " ".join(
+                part for part in (product, _clean(record.get("strength")), _clean(record.get("pharmaceutical_form"))) if part
+            )
+        if importer:
+            # Each parallel importer is listed under the original's name.
+            product = f"{product} (parallel import: {importer})"
+        maker = _clean(record.get("manufacturer"))
+        date_text = _clean(record.get("date_of_authorisation"))
+        try:
+            registered = datetime.strptime(date_text.title(), "%d-%b-%y").date().isoformat()
+        except ValueError:
+            registered = _date(date_text)
+        yield _indexed(national_match_text(active or product, latin=True), {
+            "substance": active,
+            "active_substance": active,
+            "source_substance": _clean(record.get("active_substance")),
+            "product": product,
+            "company": _clean(record.get("marketing_authorisation_holder")),
+            "country": "Latvia",
+            "region": "EU",
+            "status": "Authorised" if _clean(record.get("status")) == "1" else "Not currently authorised",
+            "authorisation_scope": LATVIA_PROCEDURES.get(procedure, procedure),
+            "strength": _clean(record.get("strength")),
+            "dosage_form": _clean(record.get("pharmaceutical_form")),
+            "pack_size": _unique(record["packs"]),
+            "atc_code": _clean(record.get("atc_code")),
+            "registration_number": number,
+            "registration_date": registered,
+            "manufacturer_name": maker,
+            "manufacturer_source": "Latvian Medicines Register" if maker else "",
+            "source": "ZVA Latvia",
+            "source_url": LATVIA_PAGE,
+            "product_url": "",
+            "smpc_url": _clean(record.get("summary_of_product_characteristics")),
+            "pil_url": _clean(record.get("package_leaflet")),
+            "document_type": "ZVA Medicines Register record",
+            "last_checked": fetched_at,
+        })
+
+
+ZVA_LATVIA = add_register(OpenRegister(
+    source="ZVA Latvia",
+    country="Latvia",
+    region="EU",
+    url=LATVIA_URL,
+    slug="zva_latvia",
+    max_age_seconds=24 * 3600,
+    build_rows=build_latvia_rows,
+    fetch=fetch_latvia,
+    read_records=read_latvia,
+))
+
+
+def run_zva_latvia_search(substance: str) -> list[dict[str, Any]]:
+    return search_register(ZVA_LATVIA, substance)
+
+
+# ----------------------------------------------------------------- Turkey
+
+TURKEY_PAGE = "https://www.titck.gov.tr/dinamikmodul/85"
+TURKEY_SHEET = "RUHSATLI ÜRÜNLER LİSTESİ"
+TURKEY_SUSPENSION = {
+    "1": "Suspended (Article 23)",
+    "2": "Suspended (pharmacovigilance)",
+    "3": "Suspended (Article 22)",
+}
+# Salt words as Turkish writes them, put into English so a search that names
+# the salt still finds the row.
+TURKISH_WORDS = {
+    "hidroklorur": "hydrochloride", "hcl": "hydrochloride", "klorur": "chloride", "bromur": "bromide",
+    "sodyum": "sodium", "disodyum": "disodium", "kalsiyum": "calcium", "potasyum": "potassium",
+    "magnezyum": "magnesium", "asit": "acid",
+}
+
+
+def fetch_turkey(register: OpenRegister, workdir: Path) -> Path:
+    """The list is republished weekly under a new file name; the page names the latest."""
+    import requests
+
+    from sources.open_registers import DOWNLOAD_TIMEOUT
+
+    page = requests.get(
+        TURKEY_PAGE, timeout=DOWNLOAD_TIMEOUT,
+        headers={"User-Agent": "PharmaSearch/1.0 (regulatory register download)"},
+    )
+    page.raise_for_status()
+    links = re.findall(r'https?://[^"\']*RuhsatlBeeri[^"\']*\.xlsx', page.text)
+    if not links:
+        raise RuntimeError("TITCK's page names no licensed products list")
+
+    def published(link: str) -> datetime:
+        found = re.search(r"(\d{2}\.\d{2}\.\d{4})", link)
+        return datetime.strptime(found.group(1), "%d.%m.%Y") if found else datetime.min
+
+    return download_file(register, max(links, key=published), workdir / "titck_licensed.xlsx")
+
+
+def turkish_tokens(text: object) -> list[str]:
+    """Turkish INN words folded the way English ones are, both spellings kept.
+
+    Turkish writes a soft c as s ("parasetamol", "setirizin"), so each word is
+    also kept with that s put back; the fold then meets the English spelling.
+    """
+    from sources.grls_russia import fold
+
+    words = _fold(str(text or "").replace("ı", "i").replace("I", "i").replace("İ", "i")).split()
+    tokens: list[str] = []
+    for word in words:
+        word = TURKISH_WORDS.get(word, word)
+        for variant in dict.fromkeys((word, re.sub(r"s(?=[eiy])", "c", word))):
+            tokens.extend(fold(token) for token in inn_tokens(variant))
+    return list(dict.fromkeys(tokens))
+
+
+def read_turkey(register: OpenRegister, path: Path) -> Iterator[dict[str, Any]]:
+    """One record per licence number and product name, its packs gathered together."""
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        sheet = workbook[TURKEY_SHEET] if TURKEY_SHEET in workbook.sheetnames else workbook[workbook.sheetnames[0]]
+        rows = sheet.iter_rows(values_only=True)
+        header: list[str] = []
+        for row in rows:
+            cells = [_clean(cell) for cell in row]
+            if "ÜRÜN ADI" in cells and "ETKİN MADDE" in cells:
+                header = cells
+                break
+        if not header:
+            raise RuntimeError("TITCK's list has changed: no ÜRÜN ADI / ETKİN MADDE header")
+        column = {name: header.index(name) for name in header if name}
+        suspended_column = next((index for index, name in enumerate(header) if name.startswith("RUHSATI ASKIDA")), None)
+        grouped: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            name = _clean(row[column["ÜRÜN ADI"]]) if len(row) > column["ÜRÜN ADI"] else ""
+            if not name:
+                continue
+            number = _clean(row[column["RUHSAT NUMARASI"]])
+            # "ONADRON 0.75 MG TABLET, 100 TABLET": the product, then the pack.
+            product, _, pack = name.rpartition(", ") if ", " in name else (name, "", "")
+            key = (number, product)
+            record = grouped.get(key)
+            if record is None:
+                record = grouped[key] = {
+                    "product": product,
+                    "active": _clean(row[column["ETKİN MADDE"]]),
+                    "atc": _clean(row[column["ATC KODU"]]),
+                    "holder": _clean(row[column["RUHSAT SAHİBİ"]]),
+                    "date": row[column["RUHSAT TARİHİ"]],
+                    "number": number,
+                    "suspended": _clean(row[suspended_column]) if suspended_column is not None else "",
+                    "packs": [],
+                }
+            if pack:
+                record["packs"].append(pack)
+        yield from grouped.values()
+    finally:
+        workbook.close()
+
+
+def build_turkey_rows(records: Iterable[dict[str, Any]], fetched_at: str) -> Iterator[tuple[str, dict[str, Any]]]:
+    for record in records:
+        active = "; ".join(
+            part.strip() for part in re.split(r",\s*|\s+ve\s+|\s*\+\s*", record["active"]) if part.strip()
+        )
+        tokens = turkish_tokens(record["active"] or record["product"])
+        row = {
+            "substance": active,
+            "active_substance": active,
+            "source_substance": record["active"],
+            "product": record["product"],
+            "company": record["holder"],
+            "country": "Turkey",
+            "region": "ME",
+            "status": TURKEY_SUSPENSION.get(record["suspended"], "Licensed"),
+            "strength": extract_strength(record["product"]),
+            "pack_size": _unique(record["packs"]),
+            "atc_code": record["atc"],
+            "registration_number": record["number"],
+            "registration_date": _date(record["date"]),
+            "source": "TITCK Turkey",
+            "source_url": TURKEY_PAGE,
+            "product_url": "",
+            "document_type": "TITCK licensed human medicinal products list",
+            "inn_fold_tokens": " ".join(tokens),
+            "last_checked": fetched_at,
+        }
+        yield " " + " ".join(tokens) + " ", row
+
+
+TITCK_TURKEY = add_register(OpenRegister(
+    source="TITCK Turkey",
+    country="Turkey",
+    region="ME",
+    url=TURKEY_PAGE,
+    slug="titck_turkey",
+    max_age_seconds=7 * 24 * 3600,
+    build_rows=build_turkey_rows,
+    fetch=fetch_turkey,
+    read_records=read_turkey,
+))
+
+
+def run_titck_turkey_search(substance: str) -> list[dict[str, Any]]:
+    """Rows whose INN holds every word of the molecule, both spelled the folded way."""
+    from sources.grls_russia import fold
+
+    tokens = [fold(token) for token in query_tokens(substance)]
+    if not tokens:
+        return []
+    path = current_index(TITCK_TURKEY)
+    if path is None:
+        started = refresh_in_background(TITCK_TURKEY)
+        raise RegisterNotReady(
+            "TITCK Turkey list is being downloaded for the first time"
+            f"{'' if started else ' (already in progress)'}; search again in a few minutes."
+        )
+    if _is_stale(TITCK_TURKEY, index_info(TITCK_TURKEY)):
+        refresh_in_background(TITCK_TURKEY)
+    where = " AND ".join("match LIKE ?" for _ in tokens)
+    with _connect(path) as conn:
+        rows = [json.loads(payload) for (payload,) in conn.execute(
+            f"SELECT payload FROM rows WHERE {where}", [f"% {token} %" for token in tokens]
+        )]
+    rows.sort(key=lambda row: (_status_rank(row), row.get("product", "").lower()))
+    bound = TITCK_TURKEY.max_results
+    if len(rows) > bound:
+        for row in rows[:bound]:
+            row["available_total"] = len(rows)
+    return rows[:bound]

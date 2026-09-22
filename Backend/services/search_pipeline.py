@@ -67,6 +67,10 @@ DEFAULT_SOURCES = [
     "URPL Poland",
     "SUKL Czech Republic",
     "DKMA Denmark",
+    "DMP Norway",
+    "SUKL Slovakia",
+    "ZVA Latvia",
+    "TITCK Turkey",
     "TFDA Taiwan",
     "BfArM Germany",
 ]
@@ -84,6 +88,9 @@ EU_NATIONAL_SOURCES = [
     "URPL Poland",
     "SUKL Czech Republic",
     "DKMA Denmark",
+    "DMP Norway",
+    "SUKL Slovakia",
+    "ZVA Latvia",
     "BfArM Germany",
     "Cyprus Pharmaceutical Services",
     "Ukraine DRLZ",
@@ -478,6 +485,10 @@ SOURCE_COUNTRIES = {
     "urpl poland": {"Poland"},
     "sukl czech republic": {"Czech Republic"},
     "dkma denmark": {"Denmark"},
+    "dmp norway": {"Norway"},
+    "sukl slovakia": {"Slovakia"},
+    "zva latvia": {"Latvia"},
+    "titck turkey": {"Turkey"},
     "tfda taiwan": {"Taiwan"},
     "anvisa brazil": {"Brazil"},
     "cyprus pharmaceutical services": {"Cyprus"},
@@ -520,6 +531,10 @@ COUNTRY_SOURCE_DEFAULTS = {
     "Poland": "URPL Poland",
     "Czech Republic": "SUKL Czech Republic",
     "Denmark": "DKMA Denmark",
+    "Norway": "DMP Norway",
+    "Slovakia": "SUKL Slovakia",
+    "Latvia": "ZVA Latvia",
+    "Turkey": "TITCK Turkey",
 }
 REGION_SOURCE_DEFAULTS = {
     "AU": "TGA Australia",
@@ -549,7 +564,7 @@ GENERIC_LOOKUP_SOURCES = {
 }
 REGIONAL_LIVE_SOURCES = {
     "AF": ["SAHPRA South Africa", "FDA Ghana"],
-    "ME": ["SFDA Saudi Arabia", "MoPH Lebanon", "Israel Drug Registry"],
+    "ME": ["SFDA Saudi Arabia", "MoPH Lebanon", "Israel Drug Registry", "TITCK Turkey"],
     "AS": [
         "CDSCO India",
         "NMPA China",

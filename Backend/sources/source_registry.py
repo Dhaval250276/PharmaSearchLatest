@@ -52,6 +52,12 @@ from sources.national_registers import (
     run_sukl_czech_search,
     run_urpl_poland_search,
 )
+from sources.europe_registers import (
+    run_dmp_norway_search,
+    run_sukl_slovakia_search,
+    run_titck_turkey_search,
+    run_zva_latvia_search,
+)
 from sources.sfda_saudi import run_sfda_saudi_search
 from sources.spain_cima import run_spain_cima_search
 from sources.swissmedic import run_swissmedic_search
@@ -128,6 +134,46 @@ CONNECTORS: list[SourceConnector] = [
         ),
         # DKMA's daily list of authorised medicines.
         run_dkma_denmark_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="DMP Norway",
+            region="EU",
+            countries=("Norway",),
+            supports_documents=True,
+        ),
+        # DMP's FEST prescribing catalogue, published every two weeks.
+        run_dmp_norway_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="SUKL Slovakia",
+            region="EU",
+            countries=("Slovakia",),
+            supports_documents=False,
+        ),
+        # SUKL's daily list of medicines with a valid registration.
+        run_sukl_slovakia_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="ZVA Latvia",
+            region="EU",
+            countries=("Latvia",),
+            supports_documents=True,
+        ),
+        # ZVA's Medicines Register, exported daily.
+        run_zva_latvia_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="TITCK Turkey",
+            region="ME",
+            countries=("Turkey",),
+            supports_documents=False,
+        ),
+        # TITCK's weekly list of licensed human medicinal products.
+        run_titck_turkey_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(
