@@ -34,6 +34,8 @@ from services.admin_auth import (
     read_session,
     record_failure,
     seconds_until_unlocked,
+    request_password_reset,
+    reset_password,
 )
 
 
@@ -273,6 +275,66 @@ def verify_email_page(request: Request):
     else:
         logger.warning("Email verification failed: %s", message)
         return _render(request, "verify-email.html", success=False, message=message)
+
+
+@router.get("/forgot-password", response_class=HTMLResponse)
+def forgot_password_page(request: Request):
+    if _signed_in_user(request):
+        return RedirectResponse("/admin", status_code=303)
+    return _render(request, "forgot-password.html", error="", success="", email="")
+
+
+@router.post("/forgot-password")
+async def forgot_password(request: Request):
+    form = await _form(request)
+    email = (form.get("email") or "").strip()
+
+    success, message = request_password_reset(email)
+    if success:
+        logger.info("Password reset requested for email: %s", email)
+        return _render(
+            request, "forgot-password.html", error="", success=message, email=""
+        )
+    else:
+        return _render(
+            request, "forgot-password.html", error=message, success="", email=email
+        )
+
+
+@router.get("/reset-password", response_class=HTMLResponse)
+def reset_password_page(request: Request):
+    if _signed_in_user(request):
+        return RedirectResponse("/admin", status_code=303)
+
+    token = request.query_params.get("token", "")
+    if not token:
+        return _render(request, "reset-password.html", error="No reset link provided.", token="")
+
+    return _render(request, "reset-password.html", error="", token=token)
+
+
+@router.post("/reset-password")
+async def reset_password_route(request: Request):
+    form = await _form(request)
+    token = (form.get("token") or "").strip()
+    password = form.get("password") or ""
+    confirm_password = form.get("confirm_password") or ""
+
+    if not token:
+        return _render(request, "reset-password.html", error="No reset link provided.", token="")
+
+    if password != confirm_password:
+        return _render(
+            request, "reset-password.html", error="Passwords do not match.", token=token
+        )
+
+    success, message = reset_password(token, password)
+    if success:
+        logger.info("Password reset successfully")
+        return _render(request, "reset-password.html", success=True, message=message, token="")
+    else:
+        logger.warning("Password reset failed: %s", message)
+        return _render(request, "reset-password.html", error=message, token=token)
 
 
 @router.get("", response_class=HTMLResponse)

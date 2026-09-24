@@ -413,3 +413,155 @@ def user_exists(username: str) -> bool:
             return bool(result)
     except Exception:
         return False
+
+
+def request_password_reset(email: str, app_url: str = "http://localhost:8000") -> tuple[bool, str]:
+    """Generate password reset token and send reset email.
+
+    Returns (success, message).
+    """
+    from repository import get_connection, initialize_database
+
+    email = email.strip()
+    if not email:
+        return False, "Email cannot be empty."
+    if not _is_valid_email(email):
+        return False, "Please enter a valid email address."
+
+    initialize_database()
+    try:
+        with get_connection() as conn:
+            user = conn.execute(
+                "SELECT id FROM admin_users WHERE username = ? AND is_active = 1",
+                (email.lower(),)
+            ).fetchone()
+            if not user:
+                return True, "If an account exists with this email, a password reset link has been sent."
+
+            # Generate reset token
+            reset_token = _generate_verification_token()
+            reset_expires = (datetime.now(timezone.utc) + __import__('datetime').timedelta(hours=1)).isoformat()
+
+            # Store reset token
+            conn.execute(
+                "UPDATE admin_users SET reset_token = ?, reset_expires = ? WHERE id = ?",
+                (reset_token, reset_expires, user[0])
+            )
+            logger.info(f"Password reset requested for {email}")
+
+            # Send reset email
+            send_password_reset_email(email, reset_token, app_url)
+            return True, "If an account exists with this email, a password reset link has been sent."
+    except Exception as e:
+        logger.error(f"Password reset request failed: {e}")
+        return False, "Password reset request failed. Please try again."
+
+
+def send_password_reset_email(email: str, reset_token: str, app_url: str = "http://localhost:8000") -> bool:
+    """Send password reset email with link.
+
+    Returns True if sent successfully, False otherwise.
+    """
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    try:
+        smtp_host = os.getenv("SMTP_HOST", "localhost")
+        smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        smtp_user = os.getenv("SMTP_USER", "")
+        smtp_password = os.getenv("SMTP_PASSWORD", "")
+        from_email = os.getenv("FROM_EMAIL", "noreply@pharmasearch.local")
+
+        reset_url = f"{app_url}/admin/reset-password?token={reset_token}"
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "Reset Your PharmaSearch Admin Password"
+        msg["From"] = from_email
+        msg["To"] = email
+
+        text = f"""Password Reset Request
+
+We received a request to reset the password for your PharmaSearch admin account.
+
+Click the link below to reset your password:
+
+{reset_url}
+
+This link will expire in 1 hour.
+
+If you did not request this password reset, please ignore this email."""
+
+        html = f"""<html>
+  <body>
+    <h2>Password Reset Request</h2>
+    <p>We received a request to reset the password for your PharmaSearch admin account.</p>
+    <p><a href="{reset_url}" style="background-color: #4a90e2; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Reset Password</a></p>
+    <p>Or copy this link:<br>{reset_url}</p>
+    <p><small>This link will expire in 1 hour.</small></p>
+    <p><small>If you did not request this password reset, please ignore this email.</small></p>
+  </body>
+</html>"""
+
+        part1 = MIMEText(text, "plain")
+        part2 = MIMEText(html, "html")
+        msg.attach(part1)
+        msg.attach(part2)
+
+        if smtp_host and smtp_host != "localhost":
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                if smtp_user and smtp_password:
+                    server.starttls()
+                    server.login(smtp_user, smtp_password)
+                server.send_message(msg)
+                logger.info(f"Password reset email sent to {email}")
+                return True
+        else:
+            logger.warning(f"SMTP not configured. Password reset email not sent to {email}")
+            return False
+    except Exception as e:
+        logger.error(f"Failed to send password reset email to {email}: {e}")
+        return False
+
+
+def reset_password(token: str, new_password: str) -> tuple[bool, str]:
+    """Reset password using reset token.
+
+    Returns (success, message).
+    """
+    from repository import get_connection, initialize_database
+
+    new_password = new_password or ""
+    if len(new_password) < 12:
+        return False, "Password must be at least 12 characters."
+    if not new_password:
+        return False, "Password cannot be empty."
+
+    initialize_database()
+    try:
+        with get_connection() as conn:
+            user = conn.execute(
+                """SELECT id, reset_expires, username
+                   FROM admin_users
+                   WHERE reset_token = ? AND reset_token IS NOT NULL""",
+                (token,)
+            ).fetchone()
+
+            if not user:
+                return False, "Invalid or expired password reset link."
+
+            # Check if token has expired
+            if datetime.fromisoformat(user[1]) < datetime.now(timezone.utc):
+                return False, "Password reset link has expired. Please request a new one."
+
+            # Update password
+            password_hash = hash_password(new_password)
+            conn.execute(
+                "UPDATE admin_users SET password_hash = ?, reset_token = NULL, reset_expires = NULL WHERE id = ?",
+                (password_hash, user[0])
+            )
+            logger.info(f"Password reset for user: {user[2]}")
+            return True, "Password reset successfully! You can now sign in with your new password."
+    except Exception as e:
+        logger.error(f"Password reset failed: {e}")
+        return False, "Password reset failed. Please try again."

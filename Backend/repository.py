@@ -601,6 +601,17 @@ def _create_and_migrate_schema() -> None:
             except sqlite3.OperationalError:
                 pass  # Column already exists
 
+        if _migrate("add_password_reset_to_admin_users"):
+            # Add password reset support to admin_users table
+            try:
+                cursor.execute("ALTER TABLE admin_users ADD COLUMN reset_token TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            try:
+                cursor.execute("ALTER TABLE admin_users ADD COLUMN reset_expires TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
         _seed_product_details_if_sparse(cursor)
 
 
