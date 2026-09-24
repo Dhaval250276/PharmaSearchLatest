@@ -585,6 +585,22 @@ def _create_and_migrate_schema() -> None:
                    WHERE source='ANMDMR Romania'
                      AND manufacturer_source='ANMDMR nomenclator producer field'"""
             )
+
+        if _migrate("add_email_verification_to_admin_users"):
+            # Add email verification support to admin_users table
+            try:
+                cursor.execute("ALTER TABLE admin_users ADD COLUMN email_verified INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            try:
+                cursor.execute("ALTER TABLE admin_users ADD COLUMN verification_token TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            try:
+                cursor.execute("ALTER TABLE admin_users ADD COLUMN verification_expires TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
         _seed_product_details_if_sparse(cursor)
 
 
