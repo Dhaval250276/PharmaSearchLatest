@@ -368,7 +368,10 @@ def _create_and_migrate_schema() -> None:
                 password_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 last_login TEXT,
-                is_active INTEGER DEFAULT 1
+                is_active INTEGER DEFAULT 1,
+                email_verified INTEGER DEFAULT 0,
+                verification_token TEXT,
+                verification_expires TEXT
             )
             """
         )

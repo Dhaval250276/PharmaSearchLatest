@@ -191,7 +191,83 @@ def _is_valid_email(email: str) -> bool:
     return re.match(pattern, email) is not None
 
 
-def register_user(email: str, password: str) -> tuple[bool, str]:
+def _generate_verification_token() -> str:
+    """Generate a secure verification token for email confirmation."""
+    return secrets.token_urlsafe(32)
+
+
+def send_verification_email(email: str, verification_token: str, app_url: str = "http://localhost:8000") -> bool:
+    """Send verification email with confirmation link.
+
+    Returns True if sent successfully, False otherwise.
+    """
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    try:
+        # Get email config from environment
+        smtp_host = os.getenv("SMTP_HOST", "localhost")
+        smtp_port = int(os.getenv("SMTP_PORT", "587"))
+        smtp_user = os.getenv("SMTP_USER", "")
+        smtp_password = os.getenv("SMTP_PASSWORD", "")
+        from_email = os.getenv("FROM_EMAIL", "noreply@pharmasearch.local")
+
+        # Create verification link
+        verification_url = f"{app_url}/admin/verify-email?token={verification_token}"
+
+        # Create email
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "Confirm Your PharmaSearch Admin Account"
+        msg["From"] = from_email
+        msg["To"] = email
+
+        # Plain text version
+        text = f"""Welcome to PharmaSearch!
+
+Please confirm your email address by clicking the link below:
+
+{verification_url}
+
+This link will expire in 24 hours.
+
+If you did not create this account, please ignore this email."""
+
+        # HTML version
+        html = f"""<html>
+  <body>
+    <h2>Welcome to PharmaSearch!</h2>
+    <p>Please confirm your email address by clicking the button below:</p>
+    <p><a href="{verification_url}" style="background-color: #4a90e2; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Confirm Email</a></p>
+    <p>Or copy this link:<br>{verification_url}</p>
+    <p><small>This link will expire in 24 hours.</small></p>
+    <p><small>If you did not create this account, please ignore this email.</small></p>
+  </body>
+</html>"""
+
+        part1 = MIMEText(text, "plain")
+        part2 = MIMEText(html, "html")
+        msg.attach(part1)
+        msg.attach(part2)
+
+        # Send email
+        if smtp_host and smtp_host != "localhost":
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                if smtp_user and smtp_password:
+                    server.starttls()
+                    server.login(smtp_user, smtp_password)
+                server.send_message(msg)
+                logger.info(f"Verification email sent to {email}")
+                return True
+        else:
+            logger.warning(f"SMTP not configured. Verification email not sent to {email}")
+            return False
+    except Exception as e:
+        logger.error(f"Failed to send verification email to {email}: {e}")
+        return False
+
+
+def register_user(email: str, password: str, app_url: str = "http://localhost:8000") -> tuple[bool, str]:
     """Register a new admin user in the database.
 
     Returns (success, message). On success, message is empty.
@@ -220,17 +296,64 @@ def register_user(email: str, password: str) -> tuple[bool, str]:
             if existing:
                 return False, "Email already registered."
 
+            # Create verification token
+            verification_token = _generate_verification_token()
+            verification_expires = (datetime.now(timezone.utc) + __import__('datetime').timedelta(hours=24)).isoformat()
+
             # Create new user
             password_hash = hash_password(password)
             conn.execute(
-                "INSERT INTO admin_users (username, password_hash, created_at, is_active) VALUES (?, ?, ?, ?)",
-                (email.lower(), password_hash, datetime.now(timezone.utc).isoformat(), 1)
+                """INSERT INTO admin_users
+                   (username, password_hash, created_at, is_active, email_verified,
+                    verification_token, verification_expires)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (email.lower(), password_hash, datetime.now(timezone.utc).isoformat(), 1, 0,
+                 verification_token, verification_expires)
             )
             logger.info(f"New admin user registered: {email}")
+
+            # Send verification email
+            send_verification_email(email, verification_token, app_url)
             return True, ""
     except Exception as e:
         logger.error(f"Registration failed: {e}")
         return False, "Registration failed. Please try again."
+
+
+def verify_email(token: str) -> tuple[bool, str]:
+    """Verify email using the verification token.
+
+    Returns (success, message).
+    """
+    from repository import get_connection, initialize_database
+
+    initialize_database()
+    try:
+        with get_connection() as conn:
+            user = conn.execute(
+                """SELECT id, verification_expires, username
+                   FROM admin_users
+                   WHERE verification_token = ? AND email_verified = 0""",
+                (token,)
+            ).fetchone()
+
+            if not user:
+                return False, "Invalid or expired verification link."
+
+            # Check if token has expired
+            if datetime.fromisoformat(user[1]) < datetime.now(timezone.utc):
+                return False, "Verification link has expired. Please register again."
+
+            # Mark email as verified
+            conn.execute(
+                "UPDATE admin_users SET email_verified = 1, verification_token = NULL WHERE id = ?",
+                (user[0],)
+            )
+            logger.info(f"Email verified for user: {user[2]}")
+            return True, "Email verified successfully! You can now sign in."
+    except Exception as e:
+        logger.error(f"Email verification failed: {e}")
+        return False, "Verification failed. Please try again."
 
 
 def authenticate_db_user(username: str, password: str) -> bool:
