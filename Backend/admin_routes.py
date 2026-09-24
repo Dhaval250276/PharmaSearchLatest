@@ -28,6 +28,7 @@ from services.admin_auth import (
     SESSION_TTL_SECONDS,
     admin_is_configured,
     authenticate,
+    authenticate_db_user,
     clear_failures,
     issue_session,
     read_session,
@@ -154,6 +155,34 @@ async def login(request: Request):
             error=f"Too many attempts. Try again in {max(1, wait // 60)} minute(s).",
         )
 
+    # Try database authentication first (for email-based users)
+    success, email_error = authenticate_db_user(username, password)
+    if success:
+        clear_failures(username, client_ip)
+        logger.info("Admin %s signed in from %s", username, client_ip)
+        response = RedirectResponse(next_path, status_code=303)
+        response.set_cookie(
+            SESSION_COOKIE_NAME,
+            issue_session(username),
+            max_age=SESSION_TTL_SECONDS,
+            httponly=True,
+            samesite="lax",
+            secure=request_is_secure(request),
+            path=SESSION_COOKIE_PATH,
+        )
+        return response
+
+    # If DB auth failed due to email verification, show that specific error
+    if email_error:
+        record_failure(username, client_ip)
+        logger.warning("Admin sign-in refused for %s from %s: %s", username or "(blank)", client_ip, email_error)
+        return _render(
+            request, "login.html", configured=True, username=username,
+            next_path=next_path,
+            error=email_error,
+        )
+
+    # Fall back to environment-based authentication for backward compatibility
     if not authenticate(username, password):
         record_failure(username, client_ip)
         logger.warning("Admin sign-in refused for %s from %s", username or "(blank)", client_ip)

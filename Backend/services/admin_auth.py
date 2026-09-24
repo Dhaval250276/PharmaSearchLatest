@@ -356,35 +356,47 @@ def verify_email(token: str) -> tuple[bool, str]:
         return False, "Verification failed. Please try again."
 
 
-def authenticate_db_user(username: str, password: str) -> bool:
-    """Check credentials against the admin_users database."""
+def authenticate_db_user(username: str, password: str) -> tuple[bool, str]:
+    """Check credentials against the admin_users database.
+
+    Returns (success, message). On success, message is empty.
+    On failure, message explains why (email not verified, etc).
+    """
     from repository import get_connection, initialize_database
 
     username = username.strip()
     if not username or not password:
-        return False
+        return False, ""
 
     initialize_database()
     try:
         with get_connection() as conn:
             user = conn.execute(
-                "SELECT password_hash FROM admin_users WHERE username = ? AND is_active = 1",
+                "SELECT password_hash, email_verified FROM admin_users WHERE username = ? AND is_active = 1",
                 (username.lower(),)
             ).fetchone()
             if not user:
-                return False
+                return False, ""
 
-            password_ok = verify_password(password, user[0])
-            if password_ok:
-                # Update last_login
-                conn.execute(
-                    "UPDATE admin_users SET last_login = ? WHERE username = ?",
-                    (datetime.now(timezone.utc).isoformat(), username.lower())
-                )
-            return password_ok
+            password_hash, email_verified = user
+            password_ok = verify_password(password, password_hash)
+
+            if not password_ok:
+                return False, ""
+
+            # Check if email is verified
+            if not email_verified:
+                return False, "Please verify your email address before signing in."
+
+            # Update last_login
+            conn.execute(
+                "UPDATE admin_users SET last_login = ? WHERE username = ?",
+                (datetime.now(timezone.utc).isoformat(), username.lower())
+            )
+            return True, ""
     except Exception as e:
         logger.error(f"Database authentication failed: {e}")
-        return False
+        return False, ""
 
 
 def user_exists(username: str) -> bool:
