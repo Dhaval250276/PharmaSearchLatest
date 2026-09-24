@@ -216,13 +216,34 @@ async def register(request: Request):
         logger.info("New admin user registered: %s", username)
         return _render(
             request, "register.html", error="", username="", password="",
-            success="Account created! You can now sign in.",
+            success="Account created! Check your email for a confirmation link to activate your account.",
         )
     else:
         return _render(
             request, "register.html", error=error_msg, username=username,
             password="", success="",
         )
+
+
+@router.get("/verify-email", response_class=HTMLResponse)
+def verify_email_page(request: Request):
+    from services.admin_auth import verify_email
+
+    if _signed_in_user(request):
+        return RedirectResponse("/admin", status_code=303)
+
+    token = request.query_params.get("token", "")
+    if not token:
+        return _render(request, "verify-email.html", success=False,
+                      message="No verification link provided.")
+
+    success, message = verify_email(token)
+    if success:
+        logger.info("Email verified successfully")
+        return _render(request, "verify-email.html", success=True, message=message)
+    else:
+        logger.warning("Email verification failed: %s", message)
+        return _render(request, "verify-email.html", success=False, message=message)
 
 
 @router.get("", response_class=HTMLResponse)

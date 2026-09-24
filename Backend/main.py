@@ -70,7 +70,7 @@ app.include_router(admin_router)
 
 # The sign-in page is the only way in. Everything below it needs a session:
 # the search pages, the exports and the JSON endpoints alike.
-PUBLIC_PATHS = {"/admin/login", "/admin/register", "/favicon.ico", "/healthz"}
+PUBLIC_PATHS = {"/admin/login", "/admin/register", "/admin/verify-email", "/favicon.ico", "/healthz"}
 PUBLIC_PREFIXES = ("/static",)
 
 

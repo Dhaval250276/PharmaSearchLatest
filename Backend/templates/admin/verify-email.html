@@ -1,0 +1,115 @@
+{% extends "admin/base.html" %}
+{% block title %}Verify Email{% endblock %}
+
+{% block body %}
+<div class="login-wrap">
+    <div class="login-card verification-card">
+        {% if success %}
+            <div class="success-icon">✓</div>
+            <h1>Email Verified!</h1>
+            <p class="verification-message">{{ message }}</p>
+            <p class="next-step">You can now sign in with your email and password.</p>
+            <a href="/admin/login" class="verify-button">Sign In</a>
+        {% else %}
+            <div class="error-icon">✕</div>
+            <h1>Verification Failed</h1>
+            <p class="verification-message">{{ message }}</p>
+            <p class="next-step">
+                <a href="/admin/register">Create a new account</a> or
+                <a href="/admin/login">sign in</a>
+            </p>
+        {% endif %}
+    </div>
+</div>
+
+<style>
+.login-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    background: linear-gradient(135deg, #1a1f3a 0%, #0f1419 100%);
+}
+
+.verification-card {
+    text-align: center;
+    width: 100%;
+    max-width: 450px;
+    padding: 60px 40px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(10px);
+}
+
+.verification-card h1 {
+    margin: 20px 0 16px;
+    font-size: 28px;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+.success-icon {
+    font-size: 80px;
+    color: #10b981;
+    margin-bottom: 20px;
+    display: inline-block;
+}
+
+.error-icon {
+    font-size: 80px;
+    color: #ef4444;
+    margin-bottom: 20px;
+    display: inline-block;
+}
+
+.verification-message {
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 16px;
+    margin: 20px 0;
+    line-height: 1.6;
+}
+
+.next-step {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 14px;
+    margin: 24px 0;
+}
+
+.next-step a {
+    color: #4a90e2;
+    text-decoration: none;
+    font-weight: 600;
+    transition: color 0.3s ease;
+}
+
+.next-step a:hover {
+    color: #357abd;
+}
+
+.verify-button {
+    display: inline-block;
+    padding: 12px 32px;
+    background: linear-gradient(135deg, #4a90e2 0%, #357abd 100%);
+    border: none;
+    border-radius: 6px;
+    color: #ffffff;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.3s ease;
+    margin-top: 20px;
+}
+
+.verify-button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px rgba(74, 144, 226, 0.3);
+}
+
+.verify-button:active {
+    transform: translateY(0);
+}
+</style>
+{% endblock %}
