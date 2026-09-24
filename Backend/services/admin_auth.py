@@ -26,6 +26,7 @@ import os
 import secrets
 import threading
 import time
+from datetime import datetime, timezone
 
 import config  # noqa: F401 -- loads Backend/.env before the variables below are read
 from core.logging_config import get_logger
@@ -181,3 +182,92 @@ def authenticate(username: str, password: str) -> bool:
     password_ok = verify_password(password, expected_hash)
     user_ok = hmac.compare_digest(username.strip(), expected_user)
     return password_ok and user_ok
+
+
+def register_user(username: str, password: str) -> tuple[bool, str]:
+    """Register a new admin user in the database.
+
+    Returns (success, message). On success, message is empty.
+    On failure, message explains why (username taken, invalid password, etc).
+    """
+    from repository import get_connection, initialize_database
+
+    username = username.strip()
+    if not username:
+        return False, "Username cannot be empty."
+    if len(username) < 3:
+        return False, "Username must be at least 3 characters."
+    if len(password) < 12:
+        return False, "Password must be at least 12 characters."
+    if not password:
+        return False, "Password cannot be empty."
+
+    initialize_database()
+    try:
+        with get_connection() as conn:
+            # Check if username already exists
+            existing = conn.execute(
+                "SELECT id FROM admin_users WHERE username = ?",
+                (username.lower(),)
+            ).fetchone()
+            if existing:
+                return False, "Username already taken."
+
+            # Create new user
+            password_hash = hash_password(password)
+            conn.execute(
+                "INSERT INTO admin_users (username, password_hash, created_at, is_active) VALUES (?, ?, ?, ?)",
+                (username.lower(), password_hash, datetime.now(timezone.utc).isoformat(), 1)
+            )
+            logger.info(f"New admin user registered: {username}")
+            return True, ""
+    except Exception as e:
+        logger.error(f"Registration failed: {e}")
+        return False, "Registration failed. Please try again."
+
+
+def authenticate_db_user(username: str, password: str) -> bool:
+    """Check credentials against the admin_users database."""
+    from repository import get_connection, initialize_database
+
+    username = username.strip()
+    if not username or not password:
+        return False
+
+    initialize_database()
+    try:
+        with get_connection() as conn:
+            user = conn.execute(
+                "SELECT password_hash FROM admin_users WHERE username = ? AND is_active = 1",
+                (username.lower(),)
+            ).fetchone()
+            if not user:
+                return False
+
+            password_ok = verify_password(password, user[0])
+            if password_ok:
+                # Update last_login
+                conn.execute(
+                    "UPDATE admin_users SET last_login = ? WHERE username = ?",
+                    (datetime.now(timezone.utc).isoformat(), username.lower())
+                )
+            return password_ok
+    except Exception as e:
+        logger.error(f"Database authentication failed: {e}")
+        return False
+
+
+def user_exists(username: str) -> bool:
+    """Check if a user exists in the database."""
+    from repository import get_connection, initialize_database
+
+    initialize_database()
+    try:
+        with get_connection() as conn:
+            result = conn.execute(
+                "SELECT id FROM admin_users WHERE username = ?",
+                (username.strip().lower(),)
+            ).fetchone()
+            return bool(result)
+    except Exception:
+        return False

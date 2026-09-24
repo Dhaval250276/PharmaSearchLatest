@@ -1,0 +1,263 @@
+{% extends "admin/base.html" %}
+{% block title %}Create Account{% endblock %}
+
+{% block body %}
+<div class="login-wrap">
+    <div class="login-card">
+        <h1>PharmaSearch</h1>
+        <p class="sub">Create your admin account</p>
+
+        {% if success %}
+            <div class="success-message">
+                <div class="checkmark">✓</div>
+                <p>{{ success }}</p>
+                <p style="margin-top: 16px; font-size: 14px;">
+                    <a href="/admin/login" style="color: #4a90e2; text-decoration: none;">Sign in now →</a>
+                </p>
+            </div>
+        {% else %}
+            {% if error %}<div class="login-error">{{ error }}</div>{% endif %}
+            <form method="post" action="/admin/register" autocomplete="off">
+                <label for="username">User name</label>
+                <input id="username" name="username" type="text" value="{{ username }}"
+                       autocomplete="username" required autofocus
+                       placeholder="Choose a username (3+ chars)">
+
+                <label for="password">Password</label>
+                <input id="password" name="password" type="password"
+                       autocomplete="new-password" required
+                       placeholder="12+ characters recommended">
+
+                <div class="password-strength">
+                    <div class="strength-bar" id="strengthBar"></div>
+                    <span class="strength-text" id="strengthText"></span>
+                </div>
+
+                <label for="confirm_password">Confirm Password</label>
+                <input id="confirm_password" name="confirm_password" type="password"
+                       autocomplete="new-password" required
+                       placeholder="Re-enter your password">
+
+                <button type="submit">Create Account</button>
+
+                <div class="form-footer">
+                    Already have an account?
+                    <a href="/admin/login">Sign in here</a>
+                </div>
+            </form>
+        {% endif %}
+    </div>
+</div>
+
+<style>
+.login-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    background: linear-gradient(135deg, #1a1f3a 0%, #0f1419 100%);
+}
+
+.login-card {
+    width: 100%;
+    max-width: 400px;
+    padding: 40px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(10px);
+}
+
+.login-card h1 {
+    margin: 0 0 8px;
+    font-size: 32px;
+    font-weight: 700;
+    color: #ffffff;
+    text-align: center;
+}
+
+.login-card .sub {
+    margin: 0 0 24px;
+    text-align: center;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 14px;
+}
+
+.login-error {
+    padding: 12px 16px;
+    margin-bottom: 20px;
+    background-color: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 6px;
+    color: #fca5a5;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.success-message {
+    text-align: center;
+    padding: 20px 0;
+}
+
+.checkmark {
+    font-size: 48px;
+    color: #10b981;
+    margin-bottom: 16px;
+}
+
+.success-message p {
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 16px;
+    margin: 8px 0;
+    line-height: 1.5;
+}
+
+form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+label {
+    display: block;
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 14px;
+    font-weight: 500;
+    margin-bottom: 6px;
+}
+
+input[type="text"],
+input[type="password"] {
+    width: 100%;
+    padding: 12px 16px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    color: #ffffff;
+    font-size: 14px;
+    transition: all 0.3s ease;
+    box-sizing: border-box;
+}
+
+input[type="text"]::placeholder,
+input[type="password"]::placeholder {
+    color: rgba(255, 255, 255, 0.4);
+}
+
+input[type="text"]:focus,
+input[type="password"]:focus {
+    outline: none;
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(74, 144, 226, 0.5);
+    box-shadow: 0 0 0 3px rgba(74, 144, 226, 0.1);
+}
+
+.password-strength {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: -8px 0 8px;
+}
+
+.strength-bar {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.strength-bar::after {
+    content: '';
+    display: block;
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #ef4444, #f59e0b, #10b981);
+    transition: width 0.3s ease;
+}
+
+.strength-text {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.5);
+    text-align: right;
+}
+
+button {
+    padding: 12px 24px;
+    background: linear-gradient(135deg, #4a90e2 0%, #357abd 100%);
+    border: none;
+    border-radius: 6px;
+    color: #ffffff;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    margin-top: 8px;
+}
+
+button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px rgba(74, 144, 226, 0.3);
+}
+
+button:active {
+    transform: translateY(0);
+}
+
+.form-footer {
+    text-align: center;
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.7);
+    margin-top: 8px;
+}
+
+.form-footer a {
+    color: #4a90e2;
+    text-decoration: none;
+    font-weight: 500;
+    transition: color 0.3s ease;
+}
+
+.form-footer a:hover {
+    color: #357abd;
+}
+</style>
+
+<script>
+document.getElementById('password')?.addEventListener('input', function() {
+    const password = this.value;
+    const strengthBar = document.getElementById('strengthBar');
+    const strengthText = document.getElementById('strengthText');
+
+    let strength = 0;
+    let text = 'Weak';
+    let color = '#ef4444';
+
+    if (password.length >= 12) strength += 25;
+    if (password.length >= 16) strength += 25;
+    if (/[a-z]/.test(password)) strength += 12;
+    if (/[A-Z]/.test(password)) strength += 12;
+    if (/[0-9]/.test(password)) strength += 12;
+    if (/[^a-zA-Z0-9]/.test(password)) strength += 14;
+
+    if (strength < 40) {
+        text = 'Weak';
+        color = '#ef4444';
+    } else if (strength < 70) {
+        text = 'Good';
+        color = '#f59e0b';
+    } else {
+        text = 'Strong';
+        color = '#10b981';
+    }
+
+    strengthBar.style.setProperty('--width', strength + '%');
+    const afterContent = strengthBar.querySelector('::after');
+    strengthBar.style.background = `linear-gradient(90deg, #ef4444, #f59e0b, #10b981)`;
+    strengthBar.style.opacity = strength > 0 ? '1' : '0.3';
+
+    strengthText.textContent = strength > 0 ? text : '';
+    strengthText.style.color = color;
+});
+</script>
+{% endblock %}

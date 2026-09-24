@@ -189,6 +189,42 @@ def logout(request: Request):
     return response
 
 
+@router.get("/register", response_class=HTMLResponse)
+def register_page(request: Request):
+    if _signed_in_user(request):
+        return RedirectResponse("/admin", status_code=303)
+    return _render(request, "register.html", error="", success="", username="", password="")
+
+
+@router.post("/register")
+async def register(request: Request):
+    from services.admin_auth import register_user
+
+    form = await _form(request)
+    username = (form.get("username") or "").strip()
+    password = form.get("password") or ""
+    confirm_password = form.get("confirm_password") or ""
+
+    if password != confirm_password:
+        return _render(
+            request, "register.html", error="Passwords do not match.", username=username,
+            password="", success="",
+        )
+
+    success, error_msg = register_user(username, password)
+    if success:
+        logger.info("New admin user registered: %s", username)
+        return _render(
+            request, "register.html", error="", username="", password="",
+            success="Account created! You can now sign in.",
+        )
+    else:
+        return _render(
+            request, "register.html", error=error_msg, username=username,
+            password="", success="",
+        )
+
+
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):

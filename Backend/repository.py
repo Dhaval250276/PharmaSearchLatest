@@ -360,6 +360,18 @@ def _create_and_migrate_schema() -> None:
             )
             """
         )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS admin_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_login TEXT,
+                is_active INTEGER DEFAULT 1
+            )
+            """
+        )
         applied_migrations = {
             row["name"] for row in cursor.execute("SELECT name FROM schema_migrations")
         }

@@ -1,0 +1,96 @@
+Traceback (most recent call last):
+  File "<string>", line 7, in <module>
+  File "C:\Users\dhava\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2713' in position 2: character maps to <undefined>
+Starting production data repairs...
+{
+  "non_pharmaceutical": {
+    "no_regulator": 0,
+    "homeopathic": 12,
+    "indonesian_non_medicine": 0,
+    "dry_run": false
+  },
+  "markup": {
+    "values_cleaned": {
+      "company": 94,
+      "product": 118,
+      "pack_size": 27,
+      "manufacturer_name": 49,
+      "registration_number": 59,
+      "dosage_form": 13,
+      "strength": 110,
+      "atc_code": 22,
+      "substance": 9
+    },
+    "dry_run": false
+  },
+  "mhra": {
+    "mhra_rows": 7428,
+    "doubtful": 3813,
+    "confirmed": 3802,
+    "relinked_to_current_document": 30,
+    "removed": 14,
+    "removed_because": {
+      "another_molecule": 5,
+      "licence_not_in_register": 5,
+      "merged_into_same_product": 4
+    },
+    "rows_updated": 33,
+    "left_unchecked_no_licence": 1,
+    "left_unchecked_lookup_failed": 0,
+    "dry_run": false
+  },
+  "duplicates": {
+    "copies_removed": 221,
+    "keepers_filled_from_copies": 0,
+    "dry_run": false
+  },
+  "health_canada_links": {
+    "rows_relinked": 0,
+    "assertions_relinked": 0,
+    "dry_run": false
+  },
+  "mhra_dead_links": {
+    "links_checked": 10742,
+    "dead_links": 85,
+    "rows_affected": 48,
+    "links_replaced_with_current_document": 118,
+    "links_removed_no_current_document": 1,
+    "rows_whose_dead_reference_was_removed": 0,
+    "left_unchecked_lookup_failed": 0,
+    "dry_run": false
+  },
+  "rekey": {
+    "rows": 53063,
+    "rekeyed": 0,
+    "dry_run": false
+  },
+  "atc_codes": {
+    "combination_rows_corrected": 27,
+    "combination_rows_left_without_code": 27,
+    "unstated_combination_rows_cleared": 0,
+    "single_molecule_rows_corrected": 191,
+    "dry_run": false
+  },
+  "borrowed_values": {
+    "rows": 53063,
+    "categories_removed": 17,
+    "atc_codes_removed": 191,
+    "dry_run": false
+  },
+  "health_canada_register": {
+    "canadian_rows": 9247,
+    "atc_codes_restored_from_register": 191,
+    "categories_restored_from_register": 0,
+    "dry_run": false
+  },
+  "romanian_packs": {
+    "romanian_rows": 833,
+    "products": 833,
+    "pack_rows_merged_away": 0,
+    "product_rows_updated": 0,
+    "dry_run": false
+  }
+}
