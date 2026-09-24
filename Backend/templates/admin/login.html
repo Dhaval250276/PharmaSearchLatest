@@ -2,6 +2,47 @@
 {% block title %}Sign in{% endblock %}
 
 {% block body %}
+<style>
+.register-link {
+    display: inline-block;
+    color: #4a90e2;
+    text-decoration: none;
+    font-weight: 600;
+    transition: color 0.3s ease;
+    border-bottom: 2px solid transparent;
+    padding-bottom: 2px;
+}
+.register-link:hover {
+    color: #357abd;
+    border-bottom-color: #357abd;
+}
+.form-footer {
+    text-align: center;
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.7);
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+.form-footer a {
+    color: #4a90e2;
+    text-decoration: none;
+    font-weight: 500;
+    transition: color 0.3s ease;
+}
+.form-footer a:hover {
+    color: #357abd;
+}
+.setup-steps code {
+    background: rgba(0, 0, 0, 0.3);
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    display: block;
+    margin: 8px 0;
+    overflow-x: auto;
+}
+</style>
 <div class="login-wrap">
     <div class="login-card">
         <h1>PharmaSearch</h1>
@@ -9,10 +50,14 @@
 
         {% if not configured %}
             <div class="setup-steps">
-                <strong>No account is configured yet.</strong>
-                <p style="margin:9px 0 0">From the Backend folder, create the credentials and save them, then restart the server:</p>
-                <code>python tools/make_admin_password.py &lt;username&gt; --write-env</code>
-                <p style="margin:0">It asks for a password and saves only its scrypt digest to <code>Backend/.env</code>, which is git-ignored. The password itself is never stored.</p>
+                <strong>Create your first admin account.</strong>
+                <p style="margin:12px 0 0">
+                    <a href="/admin/register" class="register-link">Create account →</a>
+                </p>
+                <p style="margin:12px 0 0; font-size: 13px; color: rgba(255,255,255,0.6);">
+                    Or configure via environment:<br>
+                    <code>python tools/make_admin_password.py &lt;username&gt; --write-env</code>
+                </p>
             </div>
         {% else %}
             {% if error %}<div class="login-error">{{ error }}</div>{% endif %}
@@ -27,6 +72,11 @@
                        autocomplete="current-password" required>
 
                 <button type="submit">Sign in</button>
+
+                <div class="form-footer">
+                    Don't have an account?
+                    <a href="/admin/register">Create one here</a>
+                </div>
             </form>
         {% endif %}
     </div>
