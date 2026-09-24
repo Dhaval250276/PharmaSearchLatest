@@ -18,10 +18,10 @@
         {% else %}
             {% if error %}<div class="login-error">{{ error }}</div>{% endif %}
             <form method="post" action="/admin/register" autocomplete="off">
-                <label for="username">User name</label>
-                <input id="username" name="username" type="text" value="{{ username }}"
-                       autocomplete="username" required autofocus
-                       placeholder="Choose a username (3+ chars)">
+                <label for="email">Email Address</label>
+                <input id="email" name="username" type="email" value="{{ username }}"
+                       autocomplete="email" required autofocus
+                       placeholder="your.email@example.com">
 
                 <label for="password">Password</label>
                 <input id="password" name="password" type="password"

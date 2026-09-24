@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -184,19 +185,25 @@ def authenticate(username: str, password: str) -> bool:
     return password_ok and user_ok
 
 
-def register_user(username: str, password: str) -> tuple[bool, str]:
+def _is_valid_email(email: str) -> bool:
+    """Validate email format using RFC 5322 simplified pattern."""
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return re.match(pattern, email) is not None
+
+
+def register_user(email: str, password: str) -> tuple[bool, str]:
     """Register a new admin user in the database.
 
     Returns (success, message). On success, message is empty.
-    On failure, message explains why (username taken, invalid password, etc).
+    On failure, message explains why (email invalid, taken, invalid password, etc).
     """
     from repository import get_connection, initialize_database
 
-    username = username.strip()
-    if not username:
-        return False, "Username cannot be empty."
-    if len(username) < 3:
-        return False, "Username must be at least 3 characters."
+    email = email.strip()
+    if not email:
+        return False, "Email cannot be empty."
+    if not _is_valid_email(email):
+        return False, "Please enter a valid email address."
     if len(password) < 12:
         return False, "Password must be at least 12 characters."
     if not password:
@@ -205,21 +212,21 @@ def register_user(username: str, password: str) -> tuple[bool, str]:
     initialize_database()
     try:
         with get_connection() as conn:
-            # Check if username already exists
+            # Check if email already exists
             existing = conn.execute(
                 "SELECT id FROM admin_users WHERE username = ?",
-                (username.lower(),)
+                (email.lower(),)
             ).fetchone()
             if existing:
-                return False, "Username already taken."
+                return False, "Email already registered."
 
             # Create new user
             password_hash = hash_password(password)
             conn.execute(
                 "INSERT INTO admin_users (username, password_hash, created_at, is_active) VALUES (?, ?, ?, ?)",
-                (username.lower(), password_hash, datetime.now(timezone.utc).isoformat(), 1)
+                (email.lower(), password_hash, datetime.now(timezone.utc).isoformat(), 1)
             )
-            logger.info(f"New admin user registered: {username}")
+            logger.info(f"New admin user registered: {email}")
             return True, ""
     except Exception as e:
         logger.error(f"Registration failed: {e}")
