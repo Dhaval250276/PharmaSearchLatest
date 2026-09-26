@@ -53,8 +53,12 @@ class BatchManufacturerFill:
             if limit:
                 query += f" LIMIT {limit}"
 
-            results = self.db.execute_query(query)
-            return results if results else []
+            cursor = self.db.cursor()
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            results = [dict(row) for row in rows] if rows else []
+            cursor.close()
+            return results
 
         except Exception as e:
             logger.error(f"Error fetching products without manufacturer: {e}")
@@ -142,7 +146,8 @@ class BatchManufacturerFill:
                 'pdf_method': result.get('all_pdf_sources', [{}])[0].get('source') if result.get('all_pdf_sources') else None,
             })
 
-            self.db.execute_update(insert_query, (
+            cursor = self.db.cursor()
+            cursor.execute(insert_query, (
                 result['product_id'],
                 result.get('manufacturer'),
                 result.get('source', 'Combined'),
@@ -152,6 +157,8 @@ class BatchManufacturerFill:
                 notes,
                 datetime.now().isoformat()
             ))
+            self.db.commit()
+            cursor.close()
 
             return True
 
@@ -305,8 +312,11 @@ def run_batch_fill(db=None, limit: int = None, test_mode: bool = False):
 
     if db is None:
         # Import database connection
-        from core.database import get_db
-        db = get_db()
+        import sqlite3
+        from pathlib import Path
+        db_path = Path(__file__).parent.parent / 'pharmadb.sqlite'
+        db = sqlite3.connect(str(db_path), timeout=30)
+        db.row_factory = sqlite3.Row
 
     batch_job = BatchManufacturerFill(db)
     return batch_job.run_batch(limit=limit, test_mode=test_mode)
