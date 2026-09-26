@@ -33,21 +33,21 @@ class BatchManufacturerFill:
     def get_products_without_manufacturer(self, limit: int = None) -> List[Dict]:
         """Get all products missing manufacturer data."""
         try:
-            # Query products table for null/empty manufacturer
+            # Query medicines table for null/empty manufacturer
             query = """
                 SELECT
                     id,
-                    product_name,
+                    name as product_name,
                     substance,
                     country,
-                    active_ingredient,
-                    product_type
-                FROM products
+                    substance as active_ingredient,
+                    'medicine' as product_type
+                FROM medicines
                 WHERE
                     (manufacturer IS NULL OR manufacturer = '' OR manufacturer = 'UNKNOWN')
-                    AND product_name IS NOT NULL
-                    AND LENGTH(TRIM(product_name)) > 0
-                ORDER BY product_name ASC
+                    AND name IS NOT NULL
+                    AND LENGTH(TRIM(name)) > 0
+                ORDER BY name ASC
             """
 
             if limit:
