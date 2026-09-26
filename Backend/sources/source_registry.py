@@ -56,6 +56,8 @@ from sources.americas_registers import run_invima_colombia_search
 from sources.mexico_cofepris import run_cofepris_mexico_search
 from sources.peru_digemid import run_digemid_peru_search
 from sources.egypt_edma import run_edma_egypt_search
+from sources.kenya_pharmacy import run_kenya_ppb_search
+from sources.nigeria_nafdac import run_nafdac_nigeria_search
 from sources.vietnam_moh import run_vietnam_moh_search
 from sources.thailand_fda import run_thailand_fda_search
 from sources.asia_registers import run_ndda_kazakhstan_search
@@ -254,6 +256,26 @@ CONNECTORS: list[SourceConnector] = [
         ),
         # Egyptian Drug Authority pharmaceutical products registry.
         run_edma_egypt_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="Kenya PPB",
+            region="AF",
+            countries=("Kenya",),
+            supports_documents=False,
+        ),
+        # Kenya Pharmacy and Poisons Board pharmaceutical registry.
+        run_kenya_ppb_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="NAFDAC Nigeria",
+            region="AF",
+            countries=("Nigeria",),
+            supports_documents=False,
+        ),
+        # NAFDAC Nigeria pharmaceutical products registry.
+        run_nafdac_nigeria_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(
