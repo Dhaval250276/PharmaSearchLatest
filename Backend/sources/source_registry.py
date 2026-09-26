@@ -54,6 +54,10 @@ from sources.national_registers import (
 )
 from sources.americas_registers import run_invima_colombia_search
 from sources.mexico_cofepris import run_cofepris_mexico_search
+from sources.peru_digemid import run_digemid_peru_search
+from sources.egypt_edma import run_edma_egypt_search
+from sources.vietnam_moh import run_vietnam_moh_search
+from sources.thailand_fda import run_thailand_fda_search
 from sources.asia_registers import run_ndda_kazakhstan_search
 from sources.europe_registers import (
     run_alims_serbia_search,
@@ -230,6 +234,46 @@ CONNECTORS: list[SourceConnector] = [
         ),
         # COFEPRIS pharmaceutical registry via public search interface.
         run_cofepris_mexico_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="DIGEMID Peru",
+            region="LA",
+            countries=("Peru",),
+            supports_documents=False,
+        ),
+        # DIGEMID Peru pharmaceutical registry via web search interface.
+        run_digemid_peru_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="EDMA Egypt",
+            region="AF",
+            countries=("Egypt",),
+            supports_documents=False,
+        ),
+        # Egyptian Drug Authority pharmaceutical products registry.
+        run_edma_egypt_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="Vietnam MOH",
+            region="AS",
+            countries=("Vietnam",),
+            supports_documents=False,
+        ),
+        # Vietnam Ministry of Health pharmaceutical database.
+        run_vietnam_moh_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="Thailand FDA",
+            region="AS",
+            countries=("Thailand",),
+            supports_documents=False,
+        ),
+        # Thai FDA pharmaceutical products registry and approved medicines.
+        run_thailand_fda_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(
