@@ -300,9 +300,10 @@
         <h1>💊 Operations Dashboard</h1>
         <div class="subtitle">Real-time pharmaceutical data platform • Generated {{ generated_at }}</div>
         <div class="stat-bars">
-            <div class="stat-bar"><strong>{{ overview.countries }}</strong> Countries</div>
-            <div class="stat-bar"><strong>{{ overview.sources }}</strong> Data Sources</div>
-            <div class="stat-bar"><strong>{{ "{:,}".format(overview.products) }}</strong> Products</div>
+            <div class="stat-bar"><strong>{{ coverage.countries }}</strong> Countries searchable</div>
+            <div class="stat-bar"><strong>{{ coverage.sources }}</strong> Live sources</div>
+            <div class="stat-bar"><strong>{{ "{:,}".format(coverage.register_rows) }}</strong> Register products</div>
+            <div class="stat-bar"><strong>{{ "{:,}".format(overview.products) }}</strong> Stored from searches</div>
             <div class="stat-bar"><strong>{{ "{:,}".format(overview.documents) }}</strong> Documents</div>
         </div>
     </div>

@@ -66,6 +66,47 @@ def _percent(part: int, whole: int) -> float:
     return round(100.0 * part / whole, 1) if whole else 0.0
 
 
+def coverage() -> dict[str, Any]:
+    """What a search can reach today, counting only sources that return products.
+
+    A downloaded register counts when its index exists; a live source counts
+    once it has returned rows. Connectors that only hand back a link to the
+    regulator's search page, or have never produced a row, are left out.
+    """
+    from sources.open_registers import REGISTERS, index_info
+    from sources.source_registry import CONNECTORS
+
+    initialize_database()
+    with get_connection() as conn:
+        producing = {
+            str(row[0])
+            for row in conn.execute("SELECT DISTINCT source FROM source_runs WHERE status = 'SUCCESS'")
+        }
+        producing |= {
+            str(row[0])
+            for row in conn.execute("SELECT DISTINCT source FROM product_details WHERE COALESCE(source,'')<>''")
+        }
+    countries: set[str] = set()
+    sources = 0
+    register_rows = 0
+    for connector in CONNECTORS:
+        meta = connector.metadata
+        if not meta.enabled:
+            continue
+        register = REGISTERS.get(meta.name)
+        info = index_info(register) if register is not None else None
+        if info is not None:
+            try:
+                register_rows += int(info.get("rows", 0))
+            except (TypeError, ValueError):
+                pass
+        elif meta.name not in producing:
+            continue
+        sources += 1
+        countries.update(meta.countries)
+    return {"countries": len(countries), "sources": sources, "register_rows": register_rows}
+
+
 def overview() -> dict[str, Any]:
     initialize_database()
     with get_connection() as conn:
@@ -274,6 +315,7 @@ def migrations() -> list[dict[str, Any]]:
 def dashboard() -> dict[str, Any]:
     return {
         "overview": overview(),
+        "coverage": coverage(),
         "source_health": source_health(),
         "recent_failures": recent_failures(),
         "field_coverage": field_coverage(),
