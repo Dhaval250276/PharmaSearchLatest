@@ -44,7 +44,6 @@ from sources.grls_russia import run_grls_register_search
 from sources.open_data_registers import (
     run_hpra_ireland_search,
     run_hsa_singapore_search,
-    run_ukraine_drlz_search,
 )
 from sources.national_registers import (
     run_cbg_netherlands_search,
@@ -791,15 +790,6 @@ CONNECTORS: list[SourceConnector] = [
             supports_documents=False,
         ),
         run_cyprus_pharmaceutical_services_search,
-    ),
-    FunctionSourceConnector(
-        SourceMetadata(
-            name="Ukraine DRLZ",
-            region="EU",
-            countries=("Ukraine",),
-            supports_documents=False,
-        ),
-        run_ukraine_drlz_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(
