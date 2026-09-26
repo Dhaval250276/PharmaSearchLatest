@@ -67,6 +67,7 @@ from sources.sfda_saudi import run_sfda_saudi_search
 from sources.spain_cima import run_spain_cima_search
 from sources.swissmedic import run_swissmedic_search
 from sources.tga import run_tga_search
+from sources.pbs_australia import run_pbs_australia_search
 
 
 CONNECTORS: list[SourceConnector] = [
@@ -359,6 +360,16 @@ CONNECTORS: list[SourceConnector] = [
             supports_documents=True,
         ),
         run_tga_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="PBS Australia",
+            region="AU",
+            countries=("Australia",),
+            supports_documents=False,
+        ),
+        # PBS Schedule, monthly CSV tables: subsidised brands with their sponsor.
+        run_pbs_australia_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(
