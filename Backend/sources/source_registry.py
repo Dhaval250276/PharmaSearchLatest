@@ -58,6 +58,14 @@ from sources.peru_digemid import run_digemid_peru_search
 from sources.egypt_edma import run_edma_egypt_search
 from sources.kenya_pharmacy import run_kenya_ppb_search
 from sources.nigeria_nafdac import run_nafdac_nigeria_search
+from sources.argentina_anmat import run_anmat_argentina_search
+from sources.srilanka_medicines import run_nmra_srilanka_search
+from sources.morocco_ansm import run_ansm_morocco_search
+from sources.tunisia_inpp import run_inpp_tunisia_search
+from sources.jordan_jfda import run_jfda_jordan_search
+from sources.ukraine_drlz import run_drlz_ukraine_search
+from sources.guatemala_mspas import run_mspas_guatemala_search
+from sources.costarica_meic import run_meic_costarica_search
 from sources.vietnam_moh import run_vietnam_moh_search
 from sources.thailand_fda import run_thailand_fda_search
 from sources.asia_registers import run_ndda_kazakhstan_search
@@ -276,6 +284,86 @@ CONNECTORS: list[SourceConnector] = [
         ),
         # NAFDAC Nigeria pharmaceutical products registry.
         run_nafdac_nigeria_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="ANMAT Argentina",
+            region="LA",
+            countries=("Argentina",),
+            supports_documents=False,
+        ),
+        # ANMAT Argentina pharmaceutical products registry - major Latin American market.
+        run_anmat_argentina_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="NMRA Sri Lanka",
+            region="AS",
+            countries=("Sri Lanka",),
+            supports_documents=False,
+        ),
+        # NMRA Sri Lanka pharmaceutical registry.
+        run_nmra_srilanka_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="Morocco ANSM",
+            region="AF",
+            countries=("Morocco",),
+            supports_documents=False,
+        ),
+        # Morocco ANSM pharmaceutical registry.
+        run_ansm_morocco_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="INPP Tunisia",
+            region="AF",
+            countries=("Tunisia",),
+            supports_documents=False,
+        ),
+        # Tunisia INPP pharmaceutical registry.
+        run_inpp_tunisia_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="JFDA Jordan",
+            region="ME",
+            countries=("Jordan",),
+            supports_documents=False,
+        ),
+        # JFDA Jordan pharmaceutical registry - Middle East hub.
+        run_jfda_jordan_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="DRLZ Ukraine",
+            region="EU",
+            countries=("Ukraine",),
+            supports_documents=False,
+        ),
+        # DRLZ Ukraine pharmaceutical registry - Eastern Europe.
+        run_drlz_ukraine_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="MSPAS Guatemala",
+            region="LA",
+            countries=("Guatemala",),
+            supports_documents=False,
+        ),
+        # MSPAS Guatemala pharmaceutical registry - Central America.
+        run_mspas_guatemala_search,
+    ),
+    FunctionSourceConnector(
+        SourceMetadata(
+            name="MEIC Costa Rica",
+            region="LA",
+            countries=("Costa Rica",),
+            supports_documents=False,
+        ),
+        # MEIC Costa Rica pharmaceutical registry - Central America.
+        run_meic_costarica_search,
     ),
     FunctionSourceConnector(
         SourceMetadata(
