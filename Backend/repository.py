@@ -375,6 +375,27 @@ def _create_and_migrate_schema() -> None:
             )
             """
         )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS manufacturer_suggestions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id INTEGER NOT NULL,
+                manufacturer_name TEXT,
+                manufacturer_country TEXT,
+                manufacturer_address TEXT,
+                source_url TEXT,
+                confidence_score REAL DEFAULT 0,
+                suggestion_json TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                reviewed_at TEXT,
+                reviewed_by TEXT,
+                rejection_reason TEXT,
+                FOREIGN KEY(product_id) REFERENCES product_details(id),
+                UNIQUE(product_id, manufacturer_name, status)
+            )
+            """
+        )
         applied_migrations = {
             row["name"] for row in cursor.execute("SELECT name FROM schema_migrations")
         }

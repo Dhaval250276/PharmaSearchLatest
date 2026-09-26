@@ -7,6 +7,69 @@
    a full-width input overflows the panel holding it. */
 *, *::before, *::after { box-sizing: border-box; }
 
+/* ============ PHARMACEUTICAL UI ENHANCEMENTS ============ */
+@keyframes float {
+    0%, 100% { transform: translateY(0px); }
+    50% { transform: translateY(-12px); }
+}
+
+@keyframes pulse-glow {
+    0%, 100% { box-shadow: 0 0 15px rgba(96, 165, 250, 0.3); }
+    50% { box-shadow: 0 0 30px rgba(96, 165, 250, 0.6); }
+}
+
+@keyframes shimmer-gradient {
+    0% { background-position: -1000px 0; }
+    100% { background-position: 1000px 0; }
+}
+
+@keyframes slide-up {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes card-hover {
+    0% { transform: translateY(0); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); }
+    100% { transform: translateY(-4px); box-shadow: 0 12px 24px rgba(96, 165, 250, 0.2); }
+}
+
+/* Smooth transitions for all admin elements */
+.admin-shell, .admin-rail, .nav-item, button, input, select, textarea {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Enhance card and panel elements with glassmorphism */
+.card, [class*="panel"], [class*="card"], [class*="box"], .stat {
+    background: var(--admin-surface) !important;
+    border: 1px solid var(--admin-border) !important;
+    border-radius: 12px !important;
+    backdrop-filter: blur(10px) !important;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2) !important;
+    animation: slide-up 0.5s ease-out;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.card:hover, [class*="panel"]:hover, .stat:hover {
+    transform: translateY(-4px);
+    background: var(--admin-surface-2) !important;
+    border-color: #60a5fa !important;
+    box-shadow: 0 25px 70px rgba(96, 165, 250, 0.2) !important;
+}
+
+/* Buttons with gradient */
+button, input[type="submit"], .btn {
+    background: linear-gradient(135deg, #4a90e2 0%, #357abd 100%) !important;
+    border: none !important;
+    color: #ffffff !important;
+    transition: all 0.3s ease;
+    border-radius: 8px !important;
+}
+
+button:hover, input[type="submit"]:hover, .btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px rgba(74, 144, 226, 0.4) !important;
+}
+
 :root {
     --admin-bg: #f4f6fb;
     --admin-surface: #ffffff;
@@ -28,21 +91,21 @@
 
 @media (prefers-color-scheme: dark) {
     :root {
-        --admin-bg: #0b1120;
-        --admin-surface: #111827;
-        --admin-surface-2: #0f172a;
-        --admin-border: #1f2937;
+        --admin-bg: linear-gradient(135deg, #1a1f3a 0%, #0f1419 100%);
+        --admin-surface: rgba(255, 255, 255, 0.08);
+        --admin-surface-2: rgba(255, 255, 255, 0.05);
+        --admin-border: rgba(74, 144, 226, 0.2);
         --admin-text: #e5e7eb;
         --admin-muted: #94a3b8;
         --admin-accent: #60a5fa;
         --admin-accent-soft: #1e3a8a;
-        --admin-rail: #060b16;
+        --admin-rail: linear-gradient(180deg, #060b16 0%, #0a0f1e 100%);
         --admin-rail-text: #94a3b8;
-        --admin-rail-active: #1e293b;
+        --admin-rail-active: rgba(96, 165, 250, 0.2);
         --admin-good: #34d399;
         --admin-warn: #fbbf24;
         --admin-bad: #f87171;
-        --admin-shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 32px -16px rgba(0, 0, 0, .8);
+        --admin-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
     }
 }
 
@@ -52,6 +115,20 @@ body.admin {
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     margin: 0;
     min-height: 100vh;
+    position: relative;
+}
+
+body.admin::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: radial-gradient(circle at 20% 50%, rgba(74, 144, 226, 0.1) 0%, transparent 50%),
+                radial-gradient(circle at 80% 50%, rgba(16, 185, 129, 0.05) 0%, transparent 50%);
+    pointer-events: none;
+    z-index: -1;
 }
 
 /* ---- shell ---------------------------------------------------------- */
@@ -102,17 +179,77 @@ body.admin {
     border-radius: 9px;
     font-size: .89rem;
     display: block;
-    transition: background .15s, color .15s;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    border: 1px solid transparent;
 }
 
-.admin-rail a.nav-item:hover { background: var(--admin-rail-active); color: #fff; }
-.admin-rail a.nav-item.active { background: var(--admin-accent); color: #fff; font-weight: 550; }
+.admin-rail a.nav-item:hover {
+    background: linear-gradient(135deg, rgba(96, 165, 250, 0.2), rgba(34, 197, 94, 0.1));
+    color: #60a5fa;
+    border-color: rgba(96, 165, 250, 0.3);
+    transform: translateX(4px);
+}
+
+.admin-rail a.nav-item.active {
+    background: linear-gradient(135deg, #4a90e2 0%, #357abd 100%);
+    color: #fff;
+    font-weight: 550;
+    border-color: #60a5fa;
+    box-shadow: 0 8px 20px rgba(74, 144, 226, 0.3);
+}
+
+.admin-rail a.search-app-link {
+    background: linear-gradient(135deg, rgba(34, 197, 94, 0.2), rgba(96, 165, 250, 0.15));
+    border: 1px solid rgba(34, 197, 94, 0.3) !important;
+    color: #34d399 !important;
+    font-weight: 600;
+    margin-top: 8px;
+}
+
+.admin-rail a.search-app-link:hover {
+    background: linear-gradient(135deg, rgba(34, 197, 94, 0.3), rgba(96, 165, 250, 0.2));
+    color: #6ee7b7 !important;
+    border-color: #34d399 !important;
+    box-shadow: 0 8px 20px rgba(52, 211, 153, 0.2);
+    transform: translateX(4px);
+}
 
 .admin-rail .rail-foot {
     margin-top: auto;
-    border-top: 1px solid rgba(148, 163, 184, .18);
+    border-top: 1px solid rgba(96, 165, 250, 0.15);
     padding-top: 14px;
     font-size: .78rem;
+}
+
+.admin-rail .rail-foot strong {
+    color: #60a5fa;
+}
+
+.admin-rail .rail-foot .btn-quiet,
+.admin-rail .rail-foot button {
+    width: 100%;
+    background: linear-gradient(135deg, #4a90e2 0%, #357abd 100%);
+    color: #fff;
+    border: 1px solid rgba(96, 165, 250, 0.3);
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: .89rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    margin-top: 12px;
+    box-shadow: 0 8px 20px rgba(74, 144, 226, 0.2);
+}
+
+.admin-rail .rail-foot button:hover {
+    background: linear-gradient(135deg, #357abd 0%, #2a5a9e 100%);
+    border-color: #60a5fa;
+    transform: translateY(-2px);
+    box-shadow: 0 12px 30px rgba(74, 144, 226, 0.4);
+}
+
+.admin-rail .rail-foot button:active {
+    transform: translateY(0);
 }
 
 .admin-main { flex: 1 1 auto; padding: 26px 30px 60px; min-width: 0; }

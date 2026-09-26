@@ -139,8 +139,13 @@ def read_session(token: str | None) -> str | None:
     if int(claims.get("exp", 0)) < time.time():
         return None
     username = str(claims.get("u") or "")
-    # A user name changed in the environment must not keep old cookies alive.
-    return username if username and username == admin_username() else None
+    if not username:
+        return None
+    # Accept the configured admin username, or any registered email user
+    if username == admin_username():
+        return username
+    # For email-based users, check if they exist in the database
+    return username if user_exists(username) else None
 
 
 def _attempt_key(username: str, client_ip: str) -> str:

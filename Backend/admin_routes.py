@@ -629,3 +629,74 @@ async def export_route(request: Request) -> Response:
         filename=path.name,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+# --------------------------------------------------------- manufacturer lookup
+
+@router.get("/manufacturer", response_class=HTMLResponse)
+def manufacturer_page(request: Request):
+    redirect = _login_required(request)
+    if redirect:
+        return redirect
+
+    from services.admin_manufacturer_task import get_pending_suggestions
+
+    suggestions = get_pending_suggestions(limit=100)
+    pending_count = len(suggestions)
+
+    return _render(
+        request, "manufacturer.html", active="data",
+        pending_count=pending_count,
+        suggestions=suggestions,
+    )
+
+
+@router.post("/manufacturer/run-lookup")
+async def run_manufacturer_lookup(request: Request) -> Response:
+    redirect = _login_required(request)
+    if redirect:
+        return redirect
+
+    from services.admin_manufacturer_task import run_manufacturer_lookup
+
+    # Run lookup with small batch (don't overload)
+    stats = run_manufacturer_lookup(batch_size=50)
+
+    logger.info(f"Manufacturer lookup completed: {stats}")
+    return RedirectResponse(
+        f"/admin/manufacturer?found={stats['found']}&saved={stats['saved']}",
+        status_code=303
+    )
+
+
+@router.post("/manufacturer/approve/{suggestion_id}")
+async def approve_manufacturer(request: Request, suggestion_id: int) -> Response:
+    redirect = _login_required(request)
+    if redirect:
+        return redirect
+
+    from services.admin_manufacturer_task import approve_suggestion
+
+    user = _signed_in_user(request)
+    if approve_suggestion(suggestion_id, admin_email=user):
+        logger.info(f"Admin {user} approved manufacturer suggestion {suggestion_id}")
+
+    return RedirectResponse("/admin/manufacturer", status_code=303)
+
+
+@router.post("/manufacturer/reject/{suggestion_id}")
+async def reject_manufacturer(request: Request, suggestion_id: int) -> Response:
+    redirect = _login_required(request)
+    if redirect:
+        return redirect
+
+    form = await _form(request)
+    reason = (form.get("reason") or "").strip()
+
+    from services.admin_manufacturer_task import reject_suggestion
+
+    user = _signed_in_user(request)
+    if reject_suggestion(suggestion_id, admin_email=user, reason=reason):
+        logger.info(f"Admin {user} rejected manufacturer suggestion {suggestion_id}: {reason}")
+
+    return RedirectResponse("/admin/manufacturer", status_code=303)
