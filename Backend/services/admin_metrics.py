@@ -84,7 +84,10 @@ def coverage() -> dict[str, Any]:
         }
         producing |= {
             str(row[0])
-            for row in conn.execute("SELECT DISTINCT source FROM product_details WHERE COALESCE(source,'')<>''")
+            for row in conn.execute(
+                "SELECT DISTINCT source FROM product_details WHERE COALESCE(source,'')<>''"
+                " AND COALESCE(document_type,'') NOT LIKE '%handoff%'"
+            )
         }
     countries: set[str] = set()
     sources = 0

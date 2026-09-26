@@ -558,6 +558,97 @@ def _run_dav_vietnam_api_search(substance: str, limit: int = MAX_RESULTS) -> lis
     return rows or _fallback_rows(config, clean_substance, limit)
 
 
+MFDS_SEARCH_URL = "https://nedrug.mfds.go.kr/searchDrug"
+MFDS_PAGE_SIZE = 15  # fixed by the site
+MFDS_STATUS = {"정상": "Authorised", "취하": "Withdrawn", "취소": "Cancelled", "유효기간 만료": "Expired"}
+MFDS_CLASS = {"전문의약품": "Prescription only", "일반의약품": "Non-prescription"}
+
+
+def _mfds_page(session: requests.Session, name: str, page: int) -> tuple[int, list[dict[str, str]]]:
+    response = session.get(
+        MFDS_SEARCH_URL,
+        # makeMaterialGb 01 = finished products; raw materials are left out.
+        params={"ingrEngName": name, "makeMaterialGb": "01", "searchYn": "true", "page": page},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    total_match = re.search(r"총\s*([\d,]+)\s*건", response.text)
+    total = int(total_match.group(1).replace(",", "")) if total_match else 0
+    records = []
+    for tr in BeautifulSoup(response.text, "html.parser").select("table tbody tr"):
+        record: dict[str, str] = {}
+        for td in tr.find_all("td"):
+            label = td.select_one("span.s-th")
+            if label is None:
+                continue
+            value = label.find_next_sibling("span")
+            record[_clean_text(label.get_text())] = _clean_text(value.get_text(" ") if value else "")
+            link = td.select_one("a[href*='getItemDetail']")
+            if link is not None:
+                record["_detail"] = urljoin(MFDS_SEARCH_URL, link["href"])
+        if record.get("품목기준코드"):
+            records.append(record)
+    return total, records
+
+
+def _run_mfds_korea_search(substance: str, limit: int = MAX_RESULTS) -> list[dict[str, Any]]:
+    """Korea's nedrug public product search, queried by English ingredient name.
+
+    Korea files paracetamol as acetaminophen, so each equivalent name is tried
+    until one returns products.
+    """
+    from sources.synonyms import names_for
+
+    config = REGIONAL_SOURCES["MFDS South Korea"]
+    session = requests.Session()
+    records: list[dict[str, str]] = []
+    try:
+        for name in names_for(substance) or [substance]:
+            total, page_records = _mfds_page(session, name, 1)
+            if not total:
+                continue
+            records = page_records
+            pages = min((total + MFDS_PAGE_SIZE - 1) // MFDS_PAGE_SIZE, (limit + MFDS_PAGE_SIZE - 1) // MFDS_PAGE_SIZE)
+            for page in range(2, pages + 1):
+                records.extend(_mfds_page(session, name, page)[1])
+            break
+    except requests.RequestException as exc:
+        logger.warning("%s live search unavailable: %s", config.source, exc)
+        if not records:
+            return _fallback_rows(config, substance, limit)
+
+    rows = []
+    for record in records[:limit]:
+        product = record.get("제품영문명") or record.get("제품명", "")
+        item_seq = record["품목기준코드"]
+        product_url = record.get("_detail") or f"https://nedrug.mfds.go.kr/pbp/CCBBB01/getItemDetail?itemSeq={item_seq}"
+        cancel = record.get("취소/취하구분", "")
+        rows.append(
+            {
+                "substance": record.get("주성분영문명") or substance,
+                "active_substance": record.get("주성분영문명", ""),
+                "product": product,
+                "company": record.get("업체명(영문)") or record.get("업체명", ""),
+                "country": config.country,
+                "region": config.region,
+                "status": MFDS_STATUS.get(cancel, cancel or "Authorised"),
+                "classification": MFDS_CLASS.get(record.get("전문의약품", ""), record.get("전문의약품", "")),
+                "strength": extract_strength(product),
+                "dosage_form": extract_dosage_form(product),
+                "registration_number": item_seq,
+                "registration_date": record.get("허가일", ""),
+                "atc_code": record.get("ATC코드", ""),
+                "source": config.source,
+                "source_url": MFDS_SEARCH_URL,
+                "product_url": product_url,
+                "url": product_url,
+                "document_type": "MFDS nedrug product record",
+            }
+        )
+    return rows or _fallback_rows(config, substance, limit)
+
+
 def _header_index(headers: list[str], *needles: str) -> int | None:
     normalized_needles = [needle.lower() for needle in needles]
     for index, header in enumerate(headers):
@@ -962,6 +1053,8 @@ def run_regional_source_search(
         return _run_npra_malaysia_search(clean_substance, limit)
     if source_name == "DAV Vietnam":
         return _run_dav_vietnam_api_search(clean_substance, limit)
+    if source_name == "MFDS South Korea":
+        return _run_mfds_korea_search(clean_substance, limit)
 
     source_url = _source_url(config, clean_substance)
     try:
